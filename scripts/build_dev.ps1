@@ -17,6 +17,8 @@ $BuildDir = Join-Path $RepoRoot "build-dev"
     -CMake $CMake `
     -Ninja $Ninja `
     -RustCompiler $RustCompiler `
-    -RustCargo $RustCargo
+    -RustCargo $RustCargo `
+    -Diagnostics $true `
+    -BuildTests $true
 
 Write-Host "Dev build output: $BuildDir"

@@ -6,7 +6,9 @@ param(
     [string]$Ninja = "",
     [string]$RustCompiler = "",
     [string]$RustCargo = "",
-    [string]$Generator = "Ninja"
+    [string]$Generator = "Ninja",
+    [bool]$Diagnostics = $false,
+    [bool]$BuildTests = $true
 )
 
 $ErrorActionPreference = "Stop"
@@ -28,7 +30,9 @@ $ConfigureArgs = @(
     "-G", $Generator,
     "-DCMAKE_BUILD_TYPE=$BuildType",
     "-DUE4SS_ROOT=$UE4SSRoot",
-    "-DUE4SS_VERSION_CHECK=OFF"
+    "-DUE4SS_VERSION_CHECK=OFF",
+    "-DMECCHA_CAMOUFLAGE_DIAGNOSTICS=$($Diagnostics.ToString().ToUpperInvariant())",
+    "-DMECCHA_CAMOUFLAGE_BUILD_TESTS=$($BuildTests.ToString().ToUpperInvariant())"
 )
 if ($Ninja) {
     $ConfigureArgs += "-DCMAKE_MAKE_PROGRAM=$Ninja"
@@ -128,3 +132,6 @@ function Invoke-BuildCommand([string]$Executable, [string[]]$Arguments) {
 
 Invoke-BuildCommand $CMake $ConfigureArgs
 Invoke-BuildCommand $CMake @("--build", $BuildDir, "--target", "MecchaCamouflage")
+if ($BuildTests) {
+    Invoke-BuildCommand $CMake @("--build", $BuildDir, "--target", "MecchaCamouflageTests")
+}
