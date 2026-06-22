@@ -146,6 +146,15 @@ namespace
         bool floor_like{false};
     };
 
+    struct VirtualSideCapturePlan
+    {
+        StringType label{STR("unknown")};
+        Unreal::FVector eye{};
+        Unreal::FVector look_at{};
+        Unreal::FRotator rotation{};
+        std::vector<ScreenHitSample> samples{};
+    };
+
     struct ResolvedSurfaceSeed
     {
         double u{0.0};
@@ -5940,6 +5949,7 @@ namespace
         {
             call_no_params(capture.capture_actor, STR("K2_DestroyActor"));
         }
+        capture.ok = false;
         capture.capture_actor = nullptr;
         capture.capture_component = nullptr;
         capture.render_target = nullptr;
@@ -7902,6 +7912,406 @@ namespace
             stats.first_failure = stats.seeds > 0 ? STR("<none>") : STR("front_brush_query_no_new_seeds");
         }
         return front_samples;
+    }
+
+    auto collect_current_capture_side_edge_samples(Unreal::UObject* pawn,
+                                                   Unreal::UObject* mesh,
+                                                   Unreal::UObject* controller,
+                                                   const ViewportInfo& viewport,
+                                                   const std::vector<ScreenHitSample>& front_samples,
+                                                   ProbeState& state,
+                                                   BrushQuerySideStats& stats,
+                                                   MecchaCamouflage::Core::FrameBudget& budget)
+        -> std::vector<ScreenHitSample>
+    {
+        std::vector<ScreenHitSample> side_samples{};
+        if (!pawn || !mesh || !controller || viewport.width <= 0 || viewport.height <= 0 ||
+            front_samples.empty() || state.cancelled)
+        {
+            stats.first_failure = STR("current_side_prereq_unavailable");
+            return side_samples;
+        }
+
+        auto* query = find_screen_space_brush_query_for_pawn(pawn);
+        if (!query)
+        {
+            stats.first_failure = STR("screen_space_brush_query_unavailable");
+            return side_samples;
+        }
+        stats.query_name = query->GetFullName();
+        if (!configure_screen_space_brush_query(query, pawn, mesh))
+        {
+            stats.first_failure = STR("screen_space_brush_query_config_failed");
+            return side_samples;
+        }
+
+        constexpr int bin_count = 56;
+        struct EdgeBin
+        {
+            bool used{false};
+            double min_nx{1.0};
+            double max_nx{0.0};
+            double sum_ny{0.0};
+            int count{0};
+        };
+        std::array<EdgeBin, bin_count> bins{};
+        const auto encode_texel = [](double u, double v) -> std::uint64_t {
+            const auto x = static_cast<std::uint64_t>(std::max(0, std::min(4095, static_cast<int>(u * 4096.0))));
+            const auto y = static_cast<std::uint64_t>(std::max(0, std::min(4095, static_cast<int>(v * 4096.0))));
+            return (y << 32) | x;
+        };
+        std::unordered_set<std::uint64_t> unique_texels{};
+        unique_texels.reserve(front_samples.size() + 256);
+        for (const auto& sample : front_samples)
+        {
+            unique_texels.insert(encode_texel(sample.u, sample.v));
+            const auto bin = std::max(0, std::min(bin_count - 1, static_cast<int>(sample.ny * bin_count)));
+            auto& edge = bins[static_cast<size_t>(bin)];
+            edge.used = true;
+            edge.min_nx = std::min(edge.min_nx, sample.nx);
+            edge.max_nx = std::max(edge.max_nx, sample.nx);
+            edge.sum_ny += sample.ny;
+            ++edge.count;
+        }
+
+        constexpr int max_side_samples = 384;
+        constexpr int max_side_attempts = 96;
+        const std::array<double, 3> offsets{{0.010, 0.022, 0.036}};
+        for (int bin = 0; bin < bin_count && static_cast<int>(side_samples.size()) < max_side_samples; ++bin)
+        {
+            if (state.cancelled || stats.budget_exhausted)
+            {
+                break;
+            }
+            const auto& edge = bins[static_cast<size_t>(bin)];
+            if (!edge.used || edge.count <= 0)
+            {
+                continue;
+            }
+            const auto ny = clamp(edge.sum_ny / static_cast<double>(edge.count), 0.0, 0.999999);
+            for (const auto side : {-1, 1})
+            {
+                for (const auto offset : offsets)
+                {
+                    if (static_cast<int>(side_samples.size()) >= max_side_samples ||
+                        stats.attempts >= max_side_attempts)
+                    {
+                        stats.budget_exhausted = stats.attempts >= max_side_attempts;
+                        break;
+                    }
+                    const auto attempt_start = SteadyClock::now();
+                    const auto nx = side < 0
+                                        ? clamp(edge.min_nx - offset, 0.0, 0.999999)
+                                        : clamp(edge.max_nx + offset, 0.0, 0.999999);
+                    if (nx <= 0.0 || nx >= 0.999999)
+                    {
+                        continue;
+                    }
+                    const auto screen_x = nx * static_cast<double>(viewport.width);
+                    const auto screen_y = ny * static_cast<double>(viewport.height);
+                    const auto ray = deproject_screen_position(controller, screen_x, screen_y);
+                    if (!ray.ok)
+                    {
+                        if (stats.first_failure.empty())
+                        {
+                            stats.first_failure = ray.failure.empty() ? STR("current_side_deproject_failed") : ray.failure;
+                        }
+                        budget.consume(elapsed_ms_since(attempt_start));
+                        continue;
+                    }
+
+                    ++stats.attempts;
+                    auto hit = query_brush_from_world_ray(query, ray.location, ray.direction);
+                    if (!hit.params_ok)
+                    {
+                        if (stats.first_failure.empty())
+                        {
+                            stats.first_failure = hit.failure.empty() ? STR("current_side_brush_query_params_failed") : hit.failure;
+                        }
+                        budget.consume(elapsed_ms_since(attempt_start));
+                        continue;
+                    }
+                    if (!hit.success)
+                    {
+                        budget.consume(elapsed_ms_since(attempt_start));
+                        continue;
+                    }
+                    ++stats.success;
+                    const auto owner_hit = hit.component == mesh || object_is_or_belongs_to(hit.actor, pawn) ||
+                                           object_is_or_belongs_to(hit.component, pawn);
+                    if (!owner_hit)
+                    {
+                        budget.consume(elapsed_ms_since(attempt_start));
+                        continue;
+                    }
+                    ++stats.owner_hits;
+                    if (!hit.has_uv || !std::isfinite(hit.u) || !std::isfinite(hit.v))
+                    {
+                        budget.consume(elapsed_ms_since(attempt_start));
+                        continue;
+                    }
+                    ++stats.uv_hits;
+                    const auto texel_key = encode_texel(hit.u, hit.v);
+                    if (!unique_texels.insert(texel_key).second)
+                    {
+                        ++stats.duplicate_texels;
+                        budget.consume(elapsed_ms_since(attempt_start));
+                        continue;
+                    }
+
+                    ScreenHitSample sample{};
+                    sample.screen_x = screen_x;
+                    sample.screen_y = screen_y;
+                    sample.nx = nx;
+                    sample.ny = ny;
+                    sample.capture_nx = nx;
+                    sample.capture_ny = ny;
+                    sample.u = clamp(hit.u, 0.0, 0.999999);
+                    sample.v = clamp(hit.v, 0.0, 0.999999);
+                    sample.world_position = hit.world_position;
+                    sample.normal = hit.normal;
+                    sample.color = Color{0.0, 0.0, 0.0, 0.85, 0.0};
+                    sample.floor_like = false;
+                    side_samples.push_back(sample);
+                    ++stats.seeds;
+                    ++stats.frame_projected_pixels;
+                    ++stats.projected_pixels;
+                    if (budget.consume(elapsed_ms_since(attempt_start)))
+                    {
+                        stats.budget_exhausted = true;
+                        if (stats.first_failure.empty())
+                        {
+                            stats.first_failure = STR("current_side_budget_exhausted");
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (stats.first_failure.empty())
+        {
+            stats.first_failure = side_samples.empty() ? STR("current_side_no_samples") : STR("<none>");
+        }
+        return side_samples;
+    }
+
+    auto build_virtual_side_back_capture_plans(Unreal::UObject* pawn,
+                                               Unreal::UObject* mesh,
+                                               const ViewportInfo& viewport,
+                                               const ProjectionFrame& frame,
+                                               const std::vector<ScreenHitSample>& existing_samples,
+                                               ProbeState& state,
+                                               BrushQuerySideStats& stats,
+                                               MecchaCamouflage::Core::FrameBudget& budget)
+        -> std::vector<VirtualSideCapturePlan>
+    {
+        std::vector<VirtualSideCapturePlan> plans{};
+        if (!pawn || !mesh || viewport.width <= 0 || viewport.height <= 0 ||
+            existing_samples.empty() || state.cancelled)
+        {
+            if (stats.first_failure.empty())
+            {
+                stats.first_failure = STR("virtual_side_prereq_unavailable");
+            }
+            return plans;
+        }
+        auto* query = find_screen_space_brush_query_for_pawn(pawn);
+        if (!query)
+        {
+            if (stats.first_failure.empty())
+            {
+                stats.first_failure = STR("screen_space_brush_query_unavailable");
+            }
+            return plans;
+        }
+        stats.query_name = query->GetFullName();
+        if (!configure_screen_space_brush_query(query, pawn, mesh))
+        {
+            if (stats.first_failure.empty())
+            {
+                stats.first_failure = STR("screen_space_brush_query_config_failed");
+            }
+            return plans;
+        }
+
+        Unreal::FVector min_world = existing_samples.front().world_position;
+        Unreal::FVector max_world = existing_samples.front().world_position;
+        Unreal::FVector sum_world{};
+        const auto encode_texel = [](double u, double v) -> std::uint64_t {
+            const auto x = static_cast<std::uint64_t>(std::max(0, std::min(4095, static_cast<int>(u * 4096.0))));
+            const auto y = static_cast<std::uint64_t>(std::max(0, std::min(4095, static_cast<int>(v * 4096.0))));
+            return (y << 32) | x;
+        };
+        std::unordered_set<std::uint64_t> unique_texels{};
+        unique_texels.reserve(existing_samples.size() + 768);
+        for (const auto& sample : existing_samples)
+        {
+            unique_texels.insert(encode_texel(sample.u, sample.v));
+            sum_world = add(sum_world, sample.world_position);
+            min_world = vec(std::min(min_world.X(), sample.world_position.X()),
+                            std::min(min_world.Y(), sample.world_position.Y()),
+                            std::min(min_world.Z(), sample.world_position.Z()));
+            max_world = vec(std::max(max_world.X(), sample.world_position.X()),
+                            std::max(max_world.Y(), sample.world_position.Y()),
+                            std::max(max_world.Z(), sample.world_position.Z()));
+        }
+        const auto center = mul(sum_world, 1.0 / static_cast<double>(std::max<size_t>(1, existing_samples.size())));
+        const auto extent = sub(max_world, min_world);
+        const auto half_width = clamp(std::max({std::abs(extent.X()), std::abs(extent.Y()), 96.0}) * 0.74, 80.0, 260.0);
+        const auto half_height = clamp(std::max(std::abs(extent.Z()) * 0.74, 120.0), 100.0, 320.0);
+        const auto ray_distance = clamp(std::max({std::abs(extent.X()), std::abs(extent.Y()), std::abs(extent.Z()), 180.0}) * 2.7,
+                                        260.0,
+                                        820.0);
+        auto base_outward = vec(sub(frame.eye, center).X(), sub(frame.eye, center).Y(), 0.0);
+        if (length(base_outward) < 0.01)
+        {
+            base_outward = vec(-frame.forward.X(), -frame.forward.Y(), 0.0);
+        }
+        base_outward = normalize(base_outward);
+
+        struct ViewSpec
+        {
+            const CharType* label;
+            double yaw;
+        };
+        const std::array<ViewSpec, 3> view_specs{{
+            {STR("left"), -90.0},
+            {STR("right"), 90.0},
+            {STR("back"), 180.0},
+        }};
+        for (const auto& spec : view_specs)
+        {
+            const auto outward = normalize(rotate_yaw_pitch(base_outward, spec.yaw, 0.0));
+            VirtualSideCapturePlan plan{};
+            plan.label = spec.label;
+            plan.eye = add(center, mul(outward, ray_distance));
+            plan.look_at = center;
+            plan.rotation = rotator_from_forward(sub(plan.look_at, plan.eye));
+            plans.push_back(std::move(plan));
+        }
+
+        constexpr int grid_x = 18;
+        constexpr int grid_y = 30;
+        constexpr int max_attempts = 192;
+        constexpr int max_samples_per_view = 160;
+        for (int y = 0; y < grid_y; ++y)
+        {
+            for (int x = 0; x < grid_x; ++x)
+            {
+                for (auto& plan : plans)
+                {
+                    if (state.cancelled || stats.budget_exhausted || stats.attempts >= max_attempts)
+                    {
+                        stats.budget_exhausted = stats.attempts >= max_attempts || stats.budget_exhausted;
+                        break;
+                    }
+                    if (static_cast<int>(plan.samples.size()) >= max_samples_per_view)
+                    {
+                        continue;
+                    }
+                    const auto attempt_start = SteadyClock::now();
+                    const auto nx = (static_cast<double>(x) + 0.5) / static_cast<double>(grid_x);
+                    const auto ny = (static_cast<double>(y) + 0.5) / static_cast<double>(grid_y);
+                    const auto lx = (nx - 0.5) * 2.0;
+                    const auto ly = (ny - 0.5) * 2.0;
+                    const auto forward = normalize(sub(plan.look_at, plan.eye));
+                    auto right = normalize(cross(vec(0.0, 0.0, 1.0), forward));
+                    if (length(right) < 0.01)
+                    {
+                        right = frame.right;
+                    }
+                    auto up = normalize(cross(forward, right));
+                    if (length(up) < 0.01)
+                    {
+                        up = vec(0.0, 0.0, 1.0);
+                    }
+                    const auto target = add(add(center, mul(right, lx * half_width)), mul(up, -ly * half_height));
+                    const auto ray_dir = normalize(sub(target, plan.eye));
+                    ++stats.attempts;
+                    auto hit = query_brush_from_world_ray(query, plan.eye, ray_dir);
+                    if (!hit.params_ok)
+                    {
+                        if (stats.first_failure.empty())
+                        {
+                            stats.first_failure = hit.failure.empty() ? STR("virtual_side_brush_query_params_failed") : hit.failure;
+                        }
+                        budget.consume(elapsed_ms_since(attempt_start));
+                        continue;
+                    }
+                    if (!hit.success)
+                    {
+                        budget.consume(elapsed_ms_since(attempt_start));
+                        continue;
+                    }
+                    ++stats.success;
+                    const auto owner_hit = hit.component == mesh || object_is_or_belongs_to(hit.actor, pawn) ||
+                                           object_is_or_belongs_to(hit.component, pawn);
+                    if (!owner_hit)
+                    {
+                        budget.consume(elapsed_ms_since(attempt_start));
+                        continue;
+                    }
+                    ++stats.owner_hits;
+                    if (!hit.has_uv || !std::isfinite(hit.u) || !std::isfinite(hit.v))
+                    {
+                        budget.consume(elapsed_ms_since(attempt_start));
+                        continue;
+                    }
+                    ++stats.uv_hits;
+                    const auto texel_key = encode_texel(hit.u, hit.v);
+                    if (!unique_texels.insert(texel_key).second)
+                    {
+                        ++stats.duplicate_texels;
+                        budget.consume(elapsed_ms_since(attempt_start));
+                        continue;
+                    }
+
+                    ScreenHitSample sample{};
+                    sample.screen_x = nx * static_cast<double>(std::max(1, viewport.width));
+                    sample.screen_y = ny * static_cast<double>(std::max(1, viewport.height));
+                    sample.nx = nx;
+                    sample.ny = ny;
+                    sample.capture_nx = nx;
+                    sample.capture_ny = ny;
+                    sample.u = clamp(hit.u, 0.0, 0.999999);
+                    sample.v = clamp(hit.v, 0.0, 0.999999);
+                    sample.world_position = hit.world_position;
+                    sample.normal = hit.normal;
+                    sample.color = Color{0.0, 0.0, 0.0, 0.85, 0.0};
+                    sample.floor_like = false;
+                    plan.samples.push_back(sample);
+                    ++stats.seeds;
+                    if (plan.label == STR("back"))
+                    {
+                        ++stats.material_hits;
+                    }
+                    else
+                    {
+                        ++stats.projected_pixels;
+                    }
+                    if (budget.consume(elapsed_ms_since(attempt_start)))
+                    {
+                        stats.budget_exhausted = true;
+                        if (stats.first_failure.empty())
+                        {
+                            stats.first_failure = STR("virtual_side_budget_exhausted");
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        plans.erase(std::remove_if(plans.begin(), plans.end(), [](const VirtualSideCapturePlan& plan) {
+                        return plan.samples.empty();
+                    }),
+                    plans.end());
+        if (stats.first_failure.empty())
+        {
+            stats.first_failure = plans.empty() ? STR("virtual_side_no_samples") : STR("<none>");
+        }
+        return plans;
     }
 
     auto collect_brush_query_side_samples(Unreal::UObject* component,
@@ -10443,8 +10853,20 @@ namespace
             BrushQuerySideStats side_stats{};
             int side_sample_count{0};
             int side_inferred_samples{0};
+            int back_sample_count{0};
+            int side_back_inferred_color_used{0};
+            int virtual_side_capture_count{0};
+            int virtual_side_capture_started{0};
+            int virtual_side_capture_failed{0};
+            bool side_back_query_started{false};
+            bool virtual_side_back_complete{false};
+            std::vector<VirtualSideCapturePlan> virtual_side_capture_plans{};
+            int virtual_side_capture_cursor{0};
+            StringType virtual_side_capture_label{STR("<none>")};
             bool side_quality_success{false};
             bool side_quality_failed{false};
+            bool back_quality_success{false};
+            bool back_quality_failed{false};
             StringType side_quality_failure{STR("not_run")};
             int stretch_inferred_strokes{0};
             int stretch_rejected_seam{0};
@@ -12271,17 +12693,172 @@ namespace
                         return;
                     }
 
-                    m_pipeline_job.side_quality_success = false;
-                    m_pipeline_job.side_quality_failed = false;
-                    m_pipeline_job.side_quality_failure = STR("front_quality_deferred");
-                    m_state.side_enabled = 0;
-                    m_state.side_backend = STR("front_quality_deferred");
+                    BrushQuerySideStats side_stats{};
+                    std::vector<ScreenHitSample> side_seed_basis = front_samples;
+                    const auto side_query_start = SteadyClock::now();
+                    auto current_side_samples =
+                        collect_current_capture_side_edge_samples(m_pipeline_job.pawn,
+                                                                  m_pipeline_job.mesh,
+                                                                  m_pipeline_job.controller,
+                                                                  m_pipeline_job.viewport,
+                                                                  front_samples,
+                                                                  m_state,
+                                                                  side_stats,
+                                                                  budget);
+                    side_seed_basis.insert(side_seed_basis.end(),
+                                           current_side_samples.begin(),
+                                           current_side_samples.end());
+                    m_pipeline_job.virtual_side_capture_plans =
+                        build_virtual_side_back_capture_plans(m_pipeline_job.pawn,
+                                                              m_pipeline_job.mesh,
+                                                              m_pipeline_job.viewport,
+                                                              m_pipeline_job.frame,
+                                                              side_seed_basis,
+                                                              m_state,
+                                                              side_stats,
+                                                              budget);
+                    m_pipeline_job.timing.side_query_ms += elapsed_ms_since(side_query_start);
+                    m_pipeline_job.side_stats = side_stats;
+                    m_pipeline_job.side_sample_count = static_cast<int>(current_side_samples.size());
+                    m_pipeline_job.back_sample_count = 0;
+                    for (const auto& plan : m_pipeline_job.virtual_side_capture_plans)
+                    {
+                        const auto count = static_cast<int>(plan.samples.size());
+                        if (plan.label == STR("back"))
+                        {
+                            m_pipeline_job.back_sample_count += count;
+                        }
+                        else
+                        {
+                            m_pipeline_job.side_sample_count += count;
+                        }
+                    }
+                    m_pipeline_job.side_inferred_samples = 0;
+                    m_pipeline_job.side_back_inferred_color_used = 0;
+                    m_pipeline_job.virtual_side_capture_count =
+                        static_cast<int>(m_pipeline_job.virtual_side_capture_plans.size());
+                    for (const auto& side_sample : current_side_samples)
+                    {
+                        m_pipeline_job.apply_samples.push_back(side_sample);
+                        m_pipeline_job.sampled_readback_colors.push_back(std::nullopt);
+                    }
+                    const auto side_quality = MecchaCamouflage::Core::evaluate_side_coverage(MecchaCamouflage::Core::SideCoverageInput{
+                        m_pipeline_job.front_coverage_ok,
+                        m_pipeline_job.side_sample_count,
+                        0,
+                        96,
+                        m_pipeline_job.side_stats.budget_exhausted});
+                    m_pipeline_job.side_quality_success = side_quality.side_quality_success;
+                    m_pipeline_job.side_quality_failed = side_quality.side_quality_failed;
+                    m_pipeline_job.side_quality_failure = RC::ensure_str(side_quality.failure.c_str());
+                    m_pipeline_job.back_quality_success = m_pipeline_job.back_sample_count > 0;
+                    m_pipeline_job.back_quality_failed = m_pipeline_job.back_sample_count <= 0;
+                    m_state.side_enabled = 1;
+                    m_state.side_backend = STR("screen_space_brush_query_replicated_virtual_capture");
+                    m_state.side_query_attempts = m_pipeline_job.side_stats.attempts;
+                    m_state.side_query_success = m_pipeline_job.side_stats.success;
+                    m_state.side_query_uv_hits = m_pipeline_job.side_stats.uv_hits;
+                    m_state.side_projected_pixels = m_pipeline_job.side_stats.projected_pixels;
+                    m_state.side_material_hits = m_pipeline_job.side_stats.material_hits;
+                    m_state.side_seeds = m_pipeline_job.side_sample_count + m_pipeline_job.back_sample_count;
+                    m_state.side_nearest_sources = 0;
+                    m_state.side_duplicate_texels = m_pipeline_job.side_stats.duplicate_texels;
+                    m_state.side_normal_suspect = m_pipeline_job.side_stats.normal_suspect;
+                    m_state.side_budget_exhausted = m_pipeline_job.side_stats.budget_exhausted ? 1 : 0;
+                    m_pipeline_job.side_back_query_started = true;
                     m_pipeline_job.sampled_front_finalized = true;
                     RC::Output::send<RC::LogLevel::Warning>(
-                        STR("{} post_front_extension_disabled side_enabled=0 side_backend=front_quality_deferred side_quality_success=0 side_quality_failed=0 side_quality_failure=front_quality_deferred stretch_enabled=0 stretch_backend=disabled_quality_regression stretch_inferred_strokes=0 readback_backend=sampled_pixel_tick bulk_readback_used=0 queued_strokes={} front_streaming_samples={} job_stage=scene_capture_supplement\n"),
+                        STR("{} side_back_query_planned side_enabled=1 side_backend=screen_space_brush_query_replicated_virtual_capture side_quality_success={} side_quality_failed={} side_quality_failure={} side_samples={} back_samples={} current_side_samples={} virtual_side_capture={} virtual_side_capture_started=0 virtual_side_capture_failed=0 side_back_inferred_color_used=0 nearest_front_color_used=0 side_budget_exhausted={} side_attempts={} side_success={} side_uv_hits={} side_duplicate_texels={} stretch_enabled=0 stretch_backend=disabled_quality_regression stretch_inferred_strokes=0 readback_backend=sampled_pixel_tick bulk_readback_used=0 queued_strokes={} front_streaming_samples={} job_stage=scene_capture_supplement\n"),
                         ModTag,
+                        m_pipeline_job.side_quality_success ? 1 : 0,
+                        m_pipeline_job.side_quality_failed ? 1 : 0,
+                        m_pipeline_job.side_quality_failure,
+                        m_pipeline_job.side_sample_count,
+                        m_pipeline_job.back_sample_count,
+                        current_side_samples.size(),
+                        m_pipeline_job.virtual_side_capture_count,
+                        m_pipeline_job.side_stats.budget_exhausted ? 1 : 0,
+                        m_pipeline_job.side_stats.attempts,
+                        m_pipeline_job.side_stats.success,
+                        m_pipeline_job.side_stats.uv_hits,
+                        m_pipeline_job.side_stats.duplicate_texels,
                         m_pipeline_job.apply_cursor,
                         m_pipeline_job.sampled_front_sample_count);
+                    if (m_pipeline_job.sampled_readback_cursor <
+                        static_cast<int>(m_pipeline_job.sampled_readback_colors.size()))
+                    {
+                        return;
+                    }
+                }
+
+                if (m_pipeline_job.sampled_front_finalized &&
+                    m_pipeline_job.side_back_query_started &&
+                    m_pipeline_job.sampled_readback_cursor >=
+                        static_cast<int>(m_pipeline_job.sampled_readback_colors.size()) &&
+                    m_pipeline_job.virtual_side_capture_cursor <
+                        static_cast<int>(m_pipeline_job.virtual_side_capture_plans.size()))
+                {
+                    if (budget.overrun || budget.hard_overrun)
+                    {
+                        return;
+                    }
+                    destroy_sampled_scene_capture(m_pipeline_job.sampled_capture);
+                    const auto plan_index = static_cast<size_t>(m_pipeline_job.virtual_side_capture_cursor);
+                    const auto& plan = m_pipeline_job.virtual_side_capture_plans[plan_index];
+                    ++m_pipeline_job.virtual_side_capture_cursor;
+                    ++m_pipeline_job.virtual_side_capture_started;
+                    m_pipeline_job.virtual_side_capture_label = plan.label;
+                    const auto capture_width = std::max(1, m_pipeline_job.sampled_capture.width);
+                    const auto capture_height = std::max(1, m_pipeline_job.sampled_capture.height);
+                    m_pipeline_job.sampled_capture =
+                        begin_sampled_scene_capture(m_pipeline_job.pawn,
+                                                    plan.eye,
+                                                    plan.look_at,
+                                                    capture_width,
+                                                    capture_height,
+                                                    true,
+                                                    m_state,
+                                                    m_pipeline_job.frame.fov_degrees,
+                                                    &plan.rotation);
+                    m_pipeline_job.timing.capture_scene_ms += m_pipeline_job.sampled_capture.capture_ms;
+                    if (!m_pipeline_job.sampled_capture.ok)
+                    {
+                        ++m_pipeline_job.virtual_side_capture_failed;
+                        RC::Output::send<RC::LogLevel::Warning>(
+                            STR("{} virtual_side_capture_failed label={} failure={} virtual_side_capture_started={} virtual_side_capture_failed={} side_back_inferred_color_used=0 job_stage=scene_capture_supplement\n"),
+                            ModTag,
+                            plan.label,
+                            m_pipeline_job.sampled_capture.failure,
+                            m_pipeline_job.virtual_side_capture_started,
+                            m_pipeline_job.virtual_side_capture_failed);
+                        return;
+                    }
+                    const auto append_start = m_pipeline_job.sampled_readback_colors.size();
+                    for (const auto& sample : plan.samples)
+                    {
+                        m_pipeline_job.apply_samples.push_back(sample);
+                        m_pipeline_job.sampled_readback_colors.push_back(std::nullopt);
+                    }
+                    RC::Output::send<RC::LogLevel::Warning>(
+                        STR("{} virtual_side_capture_started label={} samples={} append_start={} sampled_readback_total={} virtual_side_capture_started={} virtual_side_capture={} rt_size={}x{} capture_ms={} readback_backend=sampled_pixel_tick bulk_readback_used=0 side_back_inferred_color_used=0 job_stage=scene_capture_supplement\n"),
+                        ModTag,
+                        plan.label,
+                        plan.samples.size(),
+                        append_start,
+                        m_pipeline_job.sampled_readback_colors.size(),
+                        m_pipeline_job.virtual_side_capture_started,
+                        m_pipeline_job.virtual_side_capture_count,
+                        m_pipeline_job.sampled_capture.width,
+                        m_pipeline_job.sampled_capture.height,
+                        m_pipeline_job.sampled_capture.capture_ms);
+                    return;
+                }
+                if (m_pipeline_job.sampled_front_finalized &&
+                    m_pipeline_job.side_back_query_started &&
+                    m_pipeline_job.virtual_side_capture_cursor >=
+                        static_cast<int>(m_pipeline_job.virtual_side_capture_plans.size()))
+                {
+                    m_pipeline_job.virtual_side_back_complete = true;
                 }
 
                 if (m_pipeline_job.streaming_apply_enabled && m_pipeline_job.sampled_front_finalized)
@@ -12313,7 +12890,7 @@ namespace
                                                    : STR("<none>");
                     }
                     RC::Output::send<RC::LogLevel::Warning>(
-                        STR("{} play replicated_paint result reason={} success={} visible_backend={} queued_strokes={} streaming_apply=1 replicated_apply=1 replicated_strokes_sent={} local_echo_strokes={} replicated_strokes_failed={} apply_rpc={} local_echo_rpc={} import_backend=0 texture_import_used=0 no_apply=0 albedo_only={} material_channels_sent={} replicated_partial={} quality_success={} front_coverage_ok={} front_coverage_failed={} coverage_failure={} refined_reaches_coarse_bottom={} refined_grid_complete={} vertical_band_hits={}/{} refined_grid_cursor={} refined_total_cells={} side_enabled={} side_backend={} side_quality_success={} side_quality_failed={} side_samples={} side_inferred_samples={} stretch_enabled=0 stretch_backend=disabled_quality_regression stretch_inferred_strokes={} stretch_rejected_seam={} stretch_normal_limit={} readback_backend=sampled_pixel_tick bulk_readback_used=0 sampled_readback_cursor={}/{} atlas_source={} atlas_probe_ok={} exact_material_source=unavailable material_confidence={} material_source={} color_source=hidden_character_capture brush_payload=1 apply_mode=AlphaBlend brush_radius={} effective_brush_world_radius={} brush_seed_radius_px={} brush_radius_source={} requested_brush_radius={} brush_radius_clamped_by_game_min={} brush_footprint_texels={} strokes_before_merge={} duplicate_merged_strokes={} capture_alignment=project_world_to_screen alignment_used=1 projected_delta_avg_px={} projected_delta_p95_px={} projected_delta_max_px={} alignment_fallback_samples={} brush_subdivision_level={} brush_subdivision_pixel_size={} frame_budget_overrun={} apply_frame_overruns={} phase_ms=({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}) fallback_used=0 legacy_splat_success=0 job_stage=complete\n"),
+                        STR("{} play replicated_paint result reason={} success={} visible_backend={} queued_strokes={} streaming_apply=1 replicated_apply=1 replicated_strokes_sent={} local_echo_strokes={} replicated_strokes_failed={} apply_rpc={} local_echo_rpc={} import_backend=0 texture_import_used=0 no_apply=0 albedo_only={} material_channels_sent={} replicated_partial={} quality_success={} front_coverage_ok={} front_coverage_failed={} coverage_failure={} refined_reaches_coarse_bottom={} refined_grid_complete={} vertical_band_hits={}/{} refined_grid_cursor={} refined_total_cells={} side_enabled={} side_backend={} side_quality_success={} side_quality_failed={} side_samples={} back_samples={} side_inferred_samples={} side_back_inferred_color_used={} virtual_side_capture={} virtual_side_capture_started={} virtual_side_capture_failed={} virtual_side_back_complete={} stretch_enabled=0 stretch_backend=disabled_quality_regression stretch_inferred_strokes={} stretch_rejected_seam={} stretch_normal_limit={} readback_backend=sampled_pixel_tick bulk_readback_used=0 sampled_readback_cursor={}/{} atlas_source={} atlas_probe_ok={} exact_material_source=unavailable material_confidence={} material_source={} color_source=hidden_character_capture brush_payload=1 apply_mode=AlphaBlend brush_radius={} effective_brush_world_radius={} brush_seed_radius_px={} brush_radius_source={} requested_brush_radius={} brush_radius_clamped_by_game_min={} brush_footprint_texels={} strokes_before_merge={} duplicate_merged_strokes={} capture_alignment=project_world_to_screen alignment_used=1 projected_delta_avg_px={} projected_delta_p95_px={} projected_delta_max_px={} alignment_fallback_samples={} brush_subdivision_level={} brush_subdivision_pixel_size={} frame_budget_overrun={} apply_frame_overruns={} phase_ms=({}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}) fallback_used=0 legacy_splat_success=0 job_stage=complete\n"),
                         ModTag,
                         m_pipeline_job.reason.empty() ? STR("<none>") : m_pipeline_job.reason,
                         m_state.success,
@@ -12342,7 +12919,13 @@ namespace
                         m_pipeline_job.side_quality_success ? 1 : 0,
                         m_pipeline_job.side_quality_failed ? 1 : 0,
                         m_pipeline_job.side_sample_count,
+                        m_pipeline_job.back_sample_count,
                         m_pipeline_job.side_inferred_samples,
+                        m_pipeline_job.side_back_inferred_color_used,
+                        m_pipeline_job.virtual_side_capture_count,
+                        m_pipeline_job.virtual_side_capture_started,
+                        m_pipeline_job.virtual_side_capture_failed,
+                        m_pipeline_job.virtual_side_back_complete ? 1 : 0,
                         m_pipeline_job.stretch_inferred_strokes,
                         m_pipeline_job.stretch_rejected_seam,
                         m_pipeline_job.stretch_normal_limit,
