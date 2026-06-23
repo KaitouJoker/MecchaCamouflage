@@ -6092,14 +6092,12 @@ namespace
             const auto raw_color = sdk_apply_bulk_color_transform(bulk.pixels[pixel_index], best_transform);
             const auto floor_like = projected_sample.surface.floor_like;
             const auto material_hint = sdk_infer_surface_material(raw_color, floor_like);
-            auto color = sdk_sanitize_background_color(raw_color, material_hint);
-            color = sdk_compensate_projected_albedo_preserve_material(color, floor_like);
             FrontSample sample = projected_sample.surface;
-            sample.r = clamp01(color.r);
-            sample.g = clamp01(color.g);
-            sample.b = clamp01(color.b);
-            sample.metallic = clamp01(color.metallic);
-            sample.roughness = clamp01(color.roughness);
+            sample.r = clamp01(raw_color.r);
+            sample.g = clamp01(raw_color.g);
+            sample.b = clamp01(raw_color.b);
+            sample.metallic = clamp01(material_hint.metallic);
+            sample.roughness = clamp01(material_hint.roughness);
             sample.radius = std::max(0.0015, std::min(0.0035, 2.5 / static_cast<double>(std::max(out.width, out.height))));
             sample.floor_like = floor_like;
             sample.atlas_priority = 11;
@@ -7832,9 +7830,12 @@ namespace
                 roughness_sum += roughness_value;
             }
             const auto denom = static_cast<double>(std::max(1, material_samples));
-            metadata += std::string(",\"front_material_source\":\"38923_capture_sanitize_compensate_no_trace\"") +
+            metadata += std::string(",\"front_albedo_source\":\"bulk_calibrated_srgb_exact_no_compensation\"") +
+                        ",\"front_material_source\":\"no_material_api_yet_infer_surface_material\"" +
                         ",\"front_material_trace_evidence_ported\":false" +
-                        ",\"front_material_compensation_passes\":1" +
+                        ",\"front_material_compensation_passes\":0" +
+                        ",\"front_color_sanitize_used\":false" +
+                        ",\"front_color_lift_used\":false" +
                         ",\"front_material_metallic_override\":\"none\"" +
                         ",\"front_material_samples\":" + std::to_string(material_samples) +
                         ",\"front_material_valid\":" + std::to_string(material_valid) +
