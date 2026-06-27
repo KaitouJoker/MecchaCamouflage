@@ -38,6 +38,8 @@ namespace
     constexpr std::size_t MaxRequestBytes = 8 * 1024 * 1024;
     constexpr int ProcessEventVtableIndex = 0x4C;
     constexpr UINT PaintDispatchMessage = WM_APP + 0x4D43;
+    constexpr int ServerPaintBatchStrokeLimit = 50;
+    constexpr int ServerPaintBatchDelayMs = 150;
 
     constexpr std::uintptr_t OffClass = 0x10;
     constexpr std::uintptr_t OffName = 0x18;
@@ -5730,9 +5732,9 @@ namespace
         {
             return;
         }
-        const double root = std::sqrt(static_cast<double>(std::max(1, total_points)));
-        job->server_batch_limit = std::max(1, static_cast<int>(std::ceil(root * 0.42)));
-        job->server_batch_delay_ms = std::max(1, static_cast<int>(std::ceil(1000.0 / root)));
+        (void)total_points;
+        job->server_batch_limit = ServerPaintBatchStrokeLimit;
+        job->server_batch_delay_ms = ServerPaintBatchDelayMs;
     }
 
     auto start_template_uv_brush_async_job(const std::string& request, const std::shared_ptr<QueuedPaintJob>& queued_job) -> bool
@@ -5912,7 +5914,7 @@ namespace
         job->metadata += ",\"template_base_probe_policy\":\"fixed_brush_radius\"";
         job->metadata += ",\"template_base_probe_formula\":\"ceil(visible_probe_extent/(sqrt(visible_probe_area)*base_probe_radius*0.75))\"";
         job->metadata += ",\"template_explicit_stroke_batch_enabled\":true";
-        job->metadata += ",\"template_explicit_stroke_batch_mode\":\"sqrt_dynamic_timer_drained\"";
+        job->metadata += ",\"template_explicit_stroke_batch_mode\":\"fixed_50_strokes_150ms_timer_drained\"";
         job->metadata += ",\"template_dense_order\":\"front_silhouette_interval_top_down\"";
         job->metadata += ",\"template_hittest_tick_chunk\":256";
         job->metadata += ",\"single_pass_radius\":0.01";
@@ -6358,9 +6360,10 @@ namespace
                                       ",\"paint_send_order\":\"single_pass_top_down\"" +
                                       ",\"server_rpc\":\"ServerPaintBatch\"" +
                                       ",\"server_batch_limit\":" + std::to_string(job->server_batch_limit) +
-                                      ",\"server_batch_limit_formula\":\"ceil(sqrt(paint_samples)*0.42)\"" +
+                                      ",\"server_batch_limit_formula\":\"fixed_50_strokes_per_rpc\"" +
                                       ",\"server_batch_delay_ms\":" + std::to_string(job->server_batch_delay_ms) +
-                                      ",\"server_batch_delay_formula\":\"ceil(1000/sqrt(paint_samples))\"");
+                                      ",\"server_batch_delay_formula\":\"fixed_150ms\"" +
+                                      ",\"server_batch_pacing_profile\":\"50_strokes_per_150ms\"");
             job->replicate_index = 0;
             job->phase = TemplateUvBrushAsyncJob::Phase::ReplicateStrokes;
             post_next();
@@ -6556,9 +6559,10 @@ namespace
             metadata += ",\"server_paint_batch_used\":true";
             metadata += ",\"server_batch_rpc\":\"" + json_escape(job->server_batch_rpc) + "\"";
             metadata += ",\"server_batch_limit\":" + std::to_string(job->server_batch_limit);
-            metadata += ",\"server_batch_limit_formula\":\"ceil(sqrt(paint_samples)*0.42)\"";
+            metadata += ",\"server_batch_limit_formula\":\"fixed_50_strokes_per_rpc\"";
             metadata += ",\"server_batch_delay_ms\":" + std::to_string(job->server_batch_delay_ms);
-            metadata += ",\"server_batch_delay_formula\":\"ceil(1000/sqrt(paint_samples))\"";
+            metadata += ",\"server_batch_delay_formula\":\"fixed_150ms\"";
+            metadata += ",\"server_batch_pacing_profile\":\"50_strokes_per_150ms\"";
             metadata += ",\"server_batch_schedule\":\"timer_drained\"";
             metadata += ",\"server_batch_calls\":" + std::to_string(job->server_batch_calls);
             metadata += ",\"server_batch_success\":" + std::to_string(job->server_batch_success);
