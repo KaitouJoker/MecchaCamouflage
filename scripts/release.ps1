@@ -19,6 +19,8 @@ New-Item -ItemType Directory -Force -Path $TmpRoot | Out-Null
 
 Copy-Item -Force $ExePath (Join-Path $TmpRoot $([System.IO.Path]::GetFileName($ExePath)))
 Copy-Item -Force (Join-Path $RuntimeRoot "README.md") (Join-Path $TmpRoot "README.md")
+Copy-Item -Force (Join-Path $RuntimeRoot "LICENSE.txt") (Join-Path $TmpRoot "LICENSE.txt")
+Copy-Item -Force (Join-Path $RuntimeRoot "BRANDING.md") (Join-Path $TmpRoot "BRANDING.md")
 $AssetOutDir = Join-Path $TmpRoot "assets"
 New-Item -ItemType Directory -Force -Path $AssetOutDir | Out-Null
 Copy-Item -Force (Join-Path $RuntimeRoot "assets\icon.png") (Join-Path $AssetOutDir "icon.png")

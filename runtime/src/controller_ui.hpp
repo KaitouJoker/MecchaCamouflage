@@ -31,6 +31,7 @@ namespace meccha
         bool save_paint_clicked{false};
         bool reset_paint_clicked{false};
         bool open_logs_clicked{false};
+        bool open_repository_clicked{false};
         bool copy_log_clicked{false};
         bool copy_trace_clicked{false};
         bool start_hotkey_recording{false};

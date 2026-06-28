@@ -1566,6 +1566,13 @@ namespace
                 diagnostics.event("logs_opened", "info", "ui", "Opened log directory.");
                 trace_buffer.push("shell", "open", std::string("{\"path\":") + json_string(wide_to_utf8(logs)) + "}");
             }
+            if (actions.open_repository_clicked)
+            {
+                constexpr wchar_t RepositoryUrl[] = L"https://github.com/acentrist/MecchaCamouflage";
+                ShellExecuteW(nullptr, L"open", RepositoryUrl, nullptr, nullptr, SW_SHOWNORMAL);
+                diagnostics.event("repository_opened", "info", "ui", "Opened GitHub repository.");
+                trace_buffer.push("shell", "open", "{\"url\":\"https://github.com/acentrist/MecchaCamouflage\"}");
+            }
             if (actions.copy_log_clicked)
             {
                 ImGui::SetClipboardText(full_human_log_text.c_str());

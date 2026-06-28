@@ -38,4 +38,11 @@ make run
 
 ## License
 
-This project is licensed under the [MIT License](LICENSE.txt).
+This project is licensed under [GPL-3.0-or-later](LICENSE.txt).
+
+The official project repository is:
+
+- https://github.com/acentrist/MecchaCamouflage
+
+Modified builds must preserve the license notice and must not imply they are
+official releases. See [BRANDING.md](BRANDING.md).

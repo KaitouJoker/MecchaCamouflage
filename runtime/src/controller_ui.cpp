@@ -26,10 +26,14 @@ namespace meccha
         enum class UiIcon
         {
             Copy,
+            GitHub,
             Record,
         };
 
         auto icon_button(const char* id, UiIcon icon, const char* tooltip, ImVec2 size = ImVec2(28.0f, 28.0f)) -> bool;
+        constexpr const char* RepositoryUrl = "https://github.com/acentrist/MecchaCamouflage";
+        constexpr const char* RepositoryLabel = "github.com/acentrist/MecchaCamouflage";
+        constexpr const char* LicenseLabel = "GPL-3.0-or-later";
 
         auto tone_color(const std::string& tone) -> ImVec4
         {
@@ -77,6 +81,33 @@ namespace meccha
             {
                 ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
                 ImGui::SetTooltip("%s", value.c_str());
+            }
+            if (item_clicked)
+                clicked = true;
+            ImGui::PopStyleColor();
+        }
+
+        void repository_row(bool& clicked)
+        {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextDisabled("%s", "Repository");
+            ImGui::TableSetColumnIndex(1);
+            if (icon_button("##RepositoryLinkIcon", UiIcon::GitHub, "Open GitHub repository", ImVec2(28.0f, 28.0f)))
+                clicked = true;
+            ImGui::SameLine();
+            ImGui::AlignTextToFramePadding();
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.66f, 0.80f, 0.94f, 1.0f));
+            ImGui::TextUnformatted(RepositoryLabel);
+            const bool hovered = ImGui::IsItemHovered();
+            const bool item_clicked = ImGui::IsItemClicked();
+            const ImVec2 min = ImGui::GetItemRectMin();
+            const ImVec2 max = ImGui::GetItemRectMax();
+            ImGui::GetWindowDrawList()->AddLine(ImVec2(min.x, max.y), ImVec2(max.x, max.y), ImGui::GetColorU32(ImGuiCol_Text), 1.0f);
+            if (hovered)
+            {
+                ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+                ImGui::SetTooltip("%s", RepositoryUrl);
             }
             if (item_clicked)
                 clicked = true;
@@ -138,6 +169,24 @@ namespace meccha
                               1.5f * scale,
                               0,
                               1.5f * scale);
+            }
+            else if (icon == UiIcon::GitHub)
+            {
+                draw->AddCircle(center, 7.5f * scale, color, 24, 1.6f * scale);
+                draw->AddCircleFilled(ImVec2(center.x - 3.0f * scale, center.y - 1.0f * scale), 1.0f * scale, color, 12);
+                draw->AddCircleFilled(ImVec2(center.x + 3.0f * scale, center.y - 1.0f * scale), 1.0f * scale, color, 12);
+                draw->AddLine(ImVec2(center.x - 3.5f * scale, center.y + 3.0f * scale),
+                              ImVec2(center.x + 3.5f * scale, center.y + 3.0f * scale),
+                              color,
+                              1.5f * scale);
+                draw->AddLine(ImVec2(center.x - 4.0f * scale, center.y - 6.5f * scale),
+                              ImVec2(center.x - 1.5f * scale, center.y - 8.5f * scale),
+                              color,
+                              1.3f * scale);
+                draw->AddLine(ImVec2(center.x + 4.0f * scale, center.y - 6.5f * scale),
+                              ImVec2(center.x + 1.5f * scale, center.y - 8.5f * scale),
+                              color,
+                              1.3f * scale);
             }
             else
             {
@@ -523,8 +572,8 @@ namespace meccha
         const float pane_gap = style.ItemSpacing.x;
         const float left_width = std::max(1.0f, (total_width - pane_gap) * 0.5f);
         const float left_available_height = std::max(1.0f, content_height - style.ItemSpacing.y * 2.0f);
-        const float info_block_height = std::max(220.0f, left_available_height * 0.27f);
-        const float app_block_height = std::max(275.0f, left_available_height * 0.34f);
+        const float info_block_height = std::max(250.0f, left_available_height * 0.30f);
+        const float app_block_height = std::max(270.0f, left_available_height * 0.33f);
         const float paint_block_height = std::max(1.0f, left_available_height - info_block_height - app_block_height);
 
         if (ImGui::BeginChild("InfoPane", ImVec2(left_width, content_height), false))
@@ -540,6 +589,8 @@ namespace meccha
                     text_row("Process", runtime.process_name.empty() ? "-" : runtime.process_name);
                     text_row("PID", std::to_string(runtime.pid));
                     status_row("Bridge", runtime.bridge_ready ? "Ready" : runtime.bridge_state);
+                    text_row("License", LicenseLabel);
+                    repository_row(actions.open_repository_clicked);
                     path_row("Log dir", runtime.log_dir, actions.open_logs_clicked);
                     ImGui::EndTable();
                 }
