@@ -12,6 +12,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdio>
+#include <cctype>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -83,7 +84,9 @@ namespace
     std::atomic<bool> g_dump_cancel_requested{false};
 
     auto paint_full_route_native_direct(const std::string& request) -> std::string;
+    auto is_mesh_first_paint_request(const std::string& request) -> bool;
     auto is_template_uv_brush_request(const std::string& request) -> bool;
+    auto paint_mesh_first_on_game_thread(const std::string& request) -> std::string;
     auto start_template_uv_brush_async_job(const std::string& request, const std::shared_ptr<QueuedPaintJob>& queued_job) -> bool;
     auto tick_template_uv_brush_async_job() -> void;
     auto drain_paint_jobs_on_game_thread() -> void;
@@ -150,6 +153,22 @@ namespace
     {
         const double value = json_number_field(text, key, static_cast<double>(fallback));
         return std::max(min_value, std::min(max_value, static_cast<int>(value)));
+    }
+
+    auto json_bool_field(const std::string& text, const std::string& key, bool fallback) -> bool
+    {
+        const std::string needle = std::string("\"") + key + "\":";
+        const auto start = text.find(needle);
+        if (start == std::string::npos)
+            return fallback;
+        auto pos = start + needle.size();
+        while (pos < text.size() && std::isspace(static_cast<unsigned char>(text[pos])))
+            ++pos;
+        if (text.compare(pos, 4, "true") == 0)
+            return true;
+        if (text.compare(pos, 5, "false") == 0)
+            return false;
+        return fallback;
     }
 
     auto json_escape(const std::string& text) -> std::string
@@ -322,6 +341,37 @@ namespace
         const auto ok = WriteFile(file, text.data(), static_cast<DWORD>(text.size()), &written, nullptr);
         CloseHandle(file);
         return ok && written == text.size();
+    }
+
+    auto read_bridge_sidecar_text(const wchar_t* suffix, std::string& text) -> bool
+    {
+        text.clear();
+        const auto path = bridge_sidecar_path(suffix);
+        if (path.empty())
+        {
+            return false;
+        }
+        HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file == INVALID_HANDLE_VALUE)
+        {
+            return false;
+        }
+        LARGE_INTEGER size{};
+        if (!GetFileSizeEx(file, &size) || size.QuadPart <= 0 || size.QuadPart > 16LL * 1024LL * 1024LL)
+        {
+            CloseHandle(file);
+            return false;
+        }
+        text.resize(static_cast<std::size_t>(size.QuadPart));
+        DWORD read = 0;
+        const auto ok = ReadFile(file, text.data(), static_cast<DWORD>(text.size()), &read, nullptr);
+        CloseHandle(file);
+        if (!ok || read != text.size())
+        {
+            text.clear();
+            return false;
+        }
+        return true;
     }
 
     auto ensure_directory(const std::wstring& path) -> bool
@@ -952,22 +1002,6 @@ namespace
         return structure;
     }
 
-    auto function_param_schema(Reflection& ref, std::uintptr_t function) -> std::string
-    {
-        std::string out{};
-        int count = 0;
-        for (auto prop = safe_read<std::uintptr_t>(function + OffChildProperties); prop && count < 32; prop = safe_read<std::uintptr_t>(prop + OffFFieldNext), ++count)
-        {
-            if (!out.empty())
-            {
-                out += ";";
-            }
-            const auto name = ref.names.resolve(safe_read<std::uint32_t>(prop + OffFFieldName));
-            out += name + "@" + std::to_string(prop_offset(prop)) + "#" + std::to_string(prop_element_size(prop));
-        }
-        return out;
-    }
-
     auto early_hex_address(std::uintptr_t value) -> std::string
     {
         char buffer[32]{};
@@ -978,33 +1012,6 @@ namespace
     auto hex_address(std::uintptr_t value) -> std::string
     {
         return early_hex_address(value);
-    }
-
-    auto early_json_bool(bool value) -> const char*
-    {
-        return value ? "true" : "false";
-    }
-
-    auto property_list_json(Reflection& ref, std::uintptr_t object, int max_props = 96) -> std::string
-    {
-        std::string out = "[";
-        int count = 0;
-        for (auto cls = ref.class_ptr(object); cls && count < max_props; cls = safe_read<std::uintptr_t>(cls + OffSuperStruct))
-        {
-            for (auto prop = safe_read<std::uintptr_t>(cls + OffChildProperties); prop && count < max_props; prop = safe_read<std::uintptr_t>(prop + OffFFieldNext), ++count)
-            {
-                if (count > 0)
-                {
-                    out += ",";
-                }
-                out += "{\"name\":\"" + json_escape(ref.names.resolve(safe_read<std::uint32_t>(prop + OffFFieldName))) + "\"";
-                out += ",\"offset\":" + std::to_string(prop_offset(prop));
-                out += ",\"element_size\":" + std::to_string(prop_element_size(prop));
-                out += "}";
-            }
-        }
-        out += "]";
-        return out;
     }
 
     auto property_name_at_or_before_offset(Reflection& ref, std::uintptr_t object, int offset) -> std::string
@@ -1028,424 +1035,6 @@ namespace
             return "";
         }
         return best_name + "+" + std::to_string(offset - best_offset);
-    }
-
-    auto function_list_json(Reflection& ref, std::uintptr_t object, int max_functions = 96) -> std::string
-    {
-        std::string out = "[";
-        int count = 0;
-        for (auto cls = ref.class_ptr(object); cls && count < max_functions; cls = safe_read<std::uintptr_t>(cls + OffSuperStruct))
-        {
-            for (auto child = safe_read<std::uintptr_t>(cls + OffChildren); child && count < max_functions; child = safe_read<std::uintptr_t>(child + OffUFieldNext))
-            {
-                const auto name = ref.object_name(child);
-                if (name.empty())
-                {
-                    continue;
-                }
-                if (count > 0)
-                {
-                    out += ",";
-                }
-                out += "{\"name\":\"" + json_escape(name) + "\"";
-                out += ",\"params_size\":" + std::to_string(safe_read<int>(child + OffPropertiesSize, 0));
-                out += ",\"schema\":\"" + json_escape(function_param_schema(ref, child)) + "\"}";
-                ++count;
-            }
-        }
-        out += "]";
-        return out;
-    }
-
-    auto array_header_scan_json(std::uintptr_t object, int scan_bytes = 0x1000, int max_entries = 96) -> std::string
-    {
-        std::string out = "[";
-        int count = 0;
-        for (int offset = 0; object && offset + 16 <= scan_bytes && count < max_entries; offset += 8)
-        {
-            const auto data = safe_read<std::uintptr_t>(object + static_cast<std::uintptr_t>(offset), 0);
-            const auto num = safe_read<int>(object + static_cast<std::uintptr_t>(offset + 8), 0);
-            const auto max = safe_read<int>(object + static_cast<std::uintptr_t>(offset + 12), 0);
-            if (!data || num <= 0 || max < num || max > 2000000)
-            {
-                continue;
-            }
-            const auto first = safe_read<std::uintptr_t>(data, 0);
-            if (count > 0)
-            {
-                out += ",";
-            }
-            out += "{\"offset\":" + std::to_string(offset);
-            out += ",\"data\":\"" + early_hex_address(data) + "\"";
-            out += ",\"num\":" + std::to_string(num);
-            out += ",\"max\":" + std::to_string(max);
-            out += ",\"first_qword\":\"" + early_hex_address(first) + "\"}";
-            ++count;
-        }
-        out += "]";
-        return out;
-    }
-
-    auto pointer_scan_json(std::uintptr_t object, int scan_bytes = 0x1000, int max_entries = 128) -> std::string
-    {
-        std::string out = "[";
-        int count = 0;
-        for (int offset = 0; object && offset + 8 <= scan_bytes && count < max_entries; offset += 8)
-        {
-            const auto ptr = safe_read<std::uintptr_t>(object + static_cast<std::uintptr_t>(offset), 0);
-            if (!ptr || address_in_main_module(ptr))
-            {
-                continue;
-            }
-            const auto first = safe_read<std::uintptr_t>(ptr, 0);
-            if (!first)
-            {
-                continue;
-            }
-            if (count > 0)
-            {
-                out += ",";
-            }
-            out += "{\"offset\":" + std::to_string(offset);
-            out += ",\"ptr\":\"" + early_hex_address(ptr) + "\"";
-            out += ",\"first_qword\":\"" + early_hex_address(first) + "\"";
-            out += ",\"live_uobject\":" + std::string(early_json_bool(live_uobject(ptr))) + "}";
-            ++count;
-        }
-        out += "]";
-        return out;
-    }
-
-    auto json_float_or_null(float value) -> std::string
-    {
-        if (!std::isfinite(static_cast<double>(value)))
-        {
-            return "null";
-        }
-        return std::to_string(value);
-    }
-
-    auto bytes_preview_hex(std::uintptr_t data, int byte_count) -> std::string
-    {
-        static constexpr char digits[] = "0123456789abcdef";
-        std::string out{};
-        out.reserve(static_cast<std::size_t>(std::max(0, byte_count) * 2));
-        for (int i = 0; data && i < byte_count; ++i)
-        {
-            const auto value = safe_read<std::uint8_t>(data + static_cast<std::uintptr_t>(i), 0);
-            out.push_back(digits[(value >> 4) & 0x0f]);
-            out.push_back(digits[value & 0x0f]);
-        }
-        return out;
-    }
-
-    auto nonzero_preview_bytes(std::uintptr_t data, int byte_count) -> int
-    {
-        int count = 0;
-        for (int i = 0; data && i < byte_count; ++i)
-        {
-            if (safe_read<std::uint8_t>(data + static_cast<std::uintptr_t>(i), 0) != 0)
-            {
-                ++count;
-            }
-        }
-        return count;
-    }
-
-    auto float_preview_json(std::uintptr_t data, int float_count) -> std::string
-    {
-        std::string out = "[";
-        for (int i = 0; data && i < float_count; ++i)
-        {
-            if (i > 0)
-            {
-                out += ",";
-            }
-            out += json_float_or_null(safe_read<float>(data + static_cast<std::uintptr_t>(i * 4), 0.0f));
-        }
-        out += "]";
-        return out;
-    }
-
-    auto u16_preview_json(std::uintptr_t data, int count) -> std::string
-    {
-        std::string out = "[";
-        for (int i = 0; data && i < count; ++i)
-        {
-            if (i > 0)
-            {
-                out += ",";
-            }
-            out += std::to_string(safe_read<std::uint16_t>(data + static_cast<std::uintptr_t>(i * 2), 0));
-        }
-        out += "]";
-        return out;
-    }
-
-    auto u32_preview_json(std::uintptr_t data, int count) -> std::string
-    {
-        std::string out = "[";
-        for (int i = 0; data && i < count; ++i)
-        {
-            if (i > 0)
-            {
-                out += ",";
-            }
-            out += std::to_string(safe_read<std::uint32_t>(data + static_cast<std::uintptr_t>(i * 4), 0));
-        }
-        out += "]";
-        return out;
-    }
-
-    auto array_candidate_kind(int num, int max) -> std::string
-    {
-        if (num >= 8192 && max <= 1000000)
-        {
-            return "large_mesh_buffer_candidate";
-        }
-        if (num >= 256 && max <= 1000000)
-        {
-            return "mesh_buffer_candidate";
-        }
-        return "array";
-    }
-
-    auto array_candidate_score(int num,
-                               int max,
-                               std::uintptr_t first_qword,
-                               std::uint32_t first_dword,
-                               float first_float,
-                               int nonzero_bytes,
-                               bool pointer_table_suspect) -> int
-    {
-        int score = 0;
-        if (num >= 8192)
-        {
-            score += 40;
-        }
-        else if (num >= 2048)
-        {
-            score += 28;
-        }
-        else if (num >= 256)
-        {
-            score += 14;
-        }
-        if (max >= num && max <= num + std::max(64, num / 4))
-        {
-            score += 12;
-        }
-        if (first_qword != 0)
-        {
-            score += 8;
-        }
-        if (first_dword < 1000000)
-        {
-            score += 6;
-        }
-        if (std::isfinite(static_cast<double>(first_float)) && first_float > -100000.0f && first_float < 100000.0f)
-        {
-            score += 6;
-        }
-        if (nonzero_bytes >= 24)
-        {
-            score += 36;
-        }
-        else if (nonzero_bytes >= 8)
-        {
-            score += 18;
-        }
-        else if (nonzero_bytes == 0)
-        {
-            score -= 48;
-        }
-        if (pointer_table_suspect)
-        {
-            score -= 64;
-        }
-        return score;
-    }
-
-    auto pointer_target_array_scan_json(std::uintptr_t object,
-                                        int owner_scan_bytes = 0x1800,
-                                        int target_scan_bytes = 0x800,
-                                        int max_targets = 96,
-                                        int max_arrays_per_target = 32) -> std::string
-    {
-        std::string out = "[";
-        int target_count = 0;
-        for (int owner_offset = 0; object && owner_offset + 8 <= owner_scan_bytes && target_count < max_targets; owner_offset += 8)
-        {
-            const auto target = safe_read<std::uintptr_t>(object + static_cast<std::uintptr_t>(owner_offset), 0);
-            if (!target || address_in_main_module(target))
-            {
-                continue;
-            }
-            std::string arrays = "[";
-            int array_count = 0;
-            for (int target_offset = 0; target_offset + 16 <= target_scan_bytes && array_count < max_arrays_per_target; target_offset += 8)
-            {
-                const auto data = safe_read<std::uintptr_t>(target + static_cast<std::uintptr_t>(target_offset), 0);
-                const auto num = safe_read<int>(target + static_cast<std::uintptr_t>(target_offset + 8), 0);
-                const auto max = safe_read<int>(target + static_cast<std::uintptr_t>(target_offset + 12), 0);
-                if (!data || num <= 0 || max < num || max > 4000000)
-                {
-                    continue;
-                }
-                if (array_count > 0)
-                {
-                    arrays += ",";
-                }
-                const auto first_qword = safe_read<std::uintptr_t>(data, 0);
-                const auto first_dword = safe_read<std::uint32_t>(data, 0);
-                const auto first_float = safe_read<float>(data, 0.0f);
-                const auto nonzero_bytes = nonzero_preview_bytes(data, 64);
-                const auto candidate_kind = array_candidate_kind(num, max);
-                arrays += "{\"offset\":" + std::to_string(target_offset);
-                arrays += ",\"data\":\"" + early_hex_address(data) + "\"";
-                arrays += ",\"num\":" + std::to_string(num);
-                arrays += ",\"max\":" + std::to_string(max);
-                arrays += ",\"first_qword\":\"" + early_hex_address(first_qword) + "\"";
-                arrays += ",\"first_dword\":" + std::to_string(first_dword);
-                arrays += ",\"first_float\":" + json_float_or_null(first_float);
-                arrays += ",\"preview_nonzero_bytes\":" + std::to_string(nonzero_bytes);
-                arrays += ",\"candidate_kind\":\"" + candidate_kind + "\"";
-                arrays += "}";
-                ++array_count;
-            }
-            arrays += "]";
-            if (array_count <= 0)
-            {
-                continue;
-            }
-            if (target_count > 0)
-            {
-                out += ",";
-            }
-            out += "{\"owner_offset\":" + std::to_string(owner_offset);
-            out += ",\"target\":\"" + early_hex_address(target) + "\"";
-            out += ",\"target_first_qword\":\"" + early_hex_address(safe_read<std::uintptr_t>(target, 0)) + "\"";
-            out += ",\"target_live_uobject\":" + std::string(early_json_bool(live_uobject(target)));
-            out += ",\"arrays\":" + arrays + "}";
-            ++target_count;
-        }
-        out += "]";
-        return out;
-    }
-
-    auto mesh_buffer_candidates_json(Reflection& ref,
-                                     std::uintptr_t object,
-                                     int owner_scan_bytes = 0x1800,
-                                     int target_scan_bytes = 0x900,
-                                     int max_candidates = 80) -> std::string
-    {
-        struct Candidate
-        {
-            int score{0};
-            int owner_offset{0};
-            int target_offset{0};
-            std::uintptr_t target{0};
-            bool target_live_uobject{false};
-            bool pointer_table_suspect{false};
-            std::uintptr_t data{0};
-            int num{0};
-            int max{0};
-            std::uintptr_t first_qword{0};
-            std::uint32_t first_dword{0};
-            float first_float{0.0f};
-            int nonzero_bytes{0};
-            std::string kind{};
-        };
-        std::vector<Candidate> candidates{};
-        for (int owner_offset = 0; object && owner_offset + 8 <= owner_scan_bytes; owner_offset += 8)
-        {
-            const auto target = safe_read<std::uintptr_t>(object + static_cast<std::uintptr_t>(owner_offset), 0);
-            if (!target || address_in_main_module(target))
-            {
-                continue;
-            }
-            for (int target_offset = 0; target_offset + 16 <= target_scan_bytes; target_offset += 8)
-            {
-                const auto data = safe_read<std::uintptr_t>(target + static_cast<std::uintptr_t>(target_offset), 0);
-                const auto num = safe_read<int>(target + static_cast<std::uintptr_t>(target_offset + 8), 0);
-                const auto max = safe_read<int>(target + static_cast<std::uintptr_t>(target_offset + 12), 0);
-                if (!data || num <= 0 || max < num || max > 4000000)
-                {
-                    continue;
-                }
-                const auto kind = array_candidate_kind(num, max);
-                if (kind == "array")
-                {
-                    continue;
-                }
-                const auto first_qword = safe_read<std::uintptr_t>(data, 0);
-                const auto first_dword = safe_read<std::uint32_t>(data, 0);
-                const auto first_float = safe_read<float>(data, 0.0f);
-                const auto nonzero_bytes = nonzero_preview_bytes(data, 64);
-                const bool pointer_table_suspect = address_in_main_module(first_qword) || live_uobject(first_qword);
-                if (nonzero_bytes == 0)
-                {
-                    continue;
-                }
-                candidates.push_back(Candidate{
-                    array_candidate_score(num, max, first_qword, first_dword, first_float, nonzero_bytes, pointer_table_suspect),
-                    owner_offset,
-                    target_offset,
-                    target,
-                    live_uobject(target),
-                    pointer_table_suspect,
-                    data,
-                    num,
-                    max,
-                    first_qword,
-                    first_dword,
-                    first_float,
-                    nonzero_bytes,
-                    kind});
-            }
-        }
-        std::sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b) {
-            if (a.score != b.score)
-            {
-                return a.score > b.score;
-            }
-            return a.num > b.num;
-        });
-        std::string out = "[";
-        const auto count = std::min<int>(static_cast<int>(candidates.size()), max_candidates);
-        for (int i = 0; i < count; ++i)
-        {
-            const auto& c = candidates[static_cast<std::size_t>(i)];
-            if (i > 0)
-            {
-                out += ",";
-            }
-            out += "{\"rank\":" + std::to_string(i + 1);
-            out += ",\"score\":" + std::to_string(c.score);
-            out += ",\"kind\":\"" + c.kind + "\"";
-            out += ",\"owner_offset\":" + std::to_string(c.owner_offset);
-            out += ",\"owner_property\":\"" + json_escape(property_name_at_or_before_offset(ref, object, c.owner_offset)) + "\"";
-            out += ",\"target\":\"" + early_hex_address(c.target) + "\"";
-            out += ",\"target_name\":\"" + json_escape(c.target_live_uobject ? ref.object_name(c.target) : std::string{}) + "\"";
-            out += ",\"target_class\":\"" + json_escape(c.target_live_uobject ? ref.class_name(c.target) : std::string{}) + "\"";
-            out += ",\"target_live_uobject\":" + std::string(early_json_bool(c.target_live_uobject));
-            out += ",\"target_offset\":" + std::to_string(c.target_offset);
-            out += ",\"data\":\"" + early_hex_address(c.data) + "\"";
-            out += ",\"num\":" + std::to_string(c.num);
-            out += ",\"max\":" + std::to_string(c.max);
-            out += ",\"first_qword\":\"" + early_hex_address(c.first_qword) + "\"";
-            out += ",\"first_dword\":" + std::to_string(c.first_dword);
-            out += ",\"first_float\":" + json_float_or_null(c.first_float);
-            out += ",\"preview_nonzero_bytes\":" + std::to_string(c.nonzero_bytes);
-            out += ",\"pointer_table_suspect\":" + std::string(early_json_bool(c.pointer_table_suspect));
-            out += ",\"first_bytes_hex\":\"" + bytes_preview_hex(c.data, 64) + "\"";
-            out += ",\"first_floats\":" + float_preview_json(c.data, 8);
-            out += ",\"first_u16\":" + u16_preview_json(c.data, 16);
-            out += ",\"first_u32\":" + u32_preview_json(c.data, 12);
-            out += "}";
-        }
-        out += "]";
-        return out;
     }
 
     auto find_object_property(Reflection& ref, std::uintptr_t object, const char* property_name) -> std::uintptr_t
@@ -3250,6 +2839,2712 @@ namespace
         return out;
     }
 
+    auto sdk_candidate_matches_profile(Reflection& ref, const SdkFrontMeshCandidate& candidate) -> bool
+    {
+        const auto text = lower_copy(ref.object_name(candidate.mesh) + " " +
+                                     ref.class_name(candidate.mesh) + " " +
+                                     ref.object_path(candidate.mesh) + " " +
+                                     ref.object_name(candidate.asset) + " " +
+                                     ref.class_name(candidate.asset) + " " +
+                                     ref.object_path(candidate.asset));
+        return contains_text(text, "paintman");
+    }
+
+    auto sdk_select_profile_mesh_candidate(Reflection& ref,
+                                           const std::vector<SdkFrontMeshCandidate>& candidates,
+                                           SdkFrontMeshCandidate& out) -> bool
+    {
+        for (const auto& candidate : candidates)
+        {
+            if (sdk_candidate_matches_profile(ref, candidate))
+            {
+                out = candidate;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    auto sdk_transform_finite(const sdk::FTransform& transform) -> bool
+    {
+        const double values[]{
+            transform.Rotation.X,
+            transform.Rotation.Y,
+            transform.Rotation.Z,
+            transform.Rotation.W,
+            transform.Translation.X,
+            transform.Translation.Y,
+            transform.Translation.Z,
+            transform.Scale3D.X,
+            transform.Scale3D.Y,
+            transform.Scale3D.Z,
+        };
+        for (const auto value : values)
+        {
+            if (!std::isfinite(value) || std::abs(value) > 1.0e8)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    auto sdk_transform_score(const sdk::FTransform& transform) -> int
+    {
+        if (!sdk_transform_finite(transform))
+        {
+            return -1000000;
+        }
+        int score = 0;
+        const double quat_len = std::sqrt(transform.Rotation.X * transform.Rotation.X +
+                                          transform.Rotation.Y * transform.Rotation.Y +
+                                          transform.Rotation.Z * transform.Rotation.Z +
+                                          transform.Rotation.W * transform.Rotation.W);
+        if (quat_len > 0.25 && quat_len < 2.0)
+        {
+            score += 20;
+        }
+        const double scale_len = std::abs(transform.Scale3D.X) + std::abs(transform.Scale3D.Y) + std::abs(transform.Scale3D.Z);
+        if (scale_len > 0.001 && scale_len < 1000.0)
+        {
+            score += 20;
+        }
+        const double translation_len = sdk_vec_len(transform.Translation);
+        if (translation_len < 1000000.0)
+        {
+            score += 10;
+        }
+        if (translation_len > 0.0001)
+        {
+            score += 4;
+        }
+        return score;
+    }
+
+    auto sdk_read_transform_array(std::uintptr_t data,
+                                  int count,
+                                  std::vector<sdk::FTransform>& transforms,
+                                  int& valid_count,
+                                  double& min_translation_len,
+                                  double& max_translation_len) -> bool
+    {
+        transforms.clear();
+        valid_count = 0;
+        min_translation_len = std::numeric_limits<double>::infinity();
+        max_translation_len = 0.0;
+        if (!data || count <= 0 || count > 512)
+        {
+            return false;
+        }
+        transforms.resize(static_cast<std::size_t>(count));
+        for (int i = 0; i < count; ++i)
+        {
+            auto& transform = transforms[static_cast<std::size_t>(i)];
+            if (!safe_copy(&transform, reinterpret_cast<const void*>(data + static_cast<std::uintptr_t>(i) * sizeof(sdk::FTransform)), sizeof(transform)))
+            {
+                transforms.clear();
+                return false;
+            }
+            if (sdk_transform_score(transform) > 0)
+            {
+                ++valid_count;
+                const auto len = sdk_vec_len(transform.Translation);
+                min_translation_len = std::min(min_translation_len, len);
+                max_translation_len = std::max(max_translation_len, len);
+            }
+        }
+        if (!std::isfinite(min_translation_len))
+        {
+            min_translation_len = 0.0;
+        }
+        return valid_count == count;
+    }
+
+    struct SdkPoseResolveResult
+    {
+        bool ok{false};
+        std::string stage{"pose_resolver_unavailable"};
+        std::string message{"pose resolver unavailable"};
+        std::string source{};
+        int expected_bones{0};
+        int reported_bones{-1};
+        int transform_count{0};
+        int valid_transform_count{0};
+        int array_offset{-1};
+        std::uintptr_t array_data{0};
+        double min_translation_len{0.0};
+        double max_translation_len{0.0};
+        std::vector<sdk::FTransform> component_space_transforms{};
+    };
+
+    auto sdk_pose_result_metadata(const SdkPoseResolveResult& pose) -> std::string
+    {
+        return "\"pose_stage\":\"" + json_escape(pose.stage) + "\"" +
+               ",\"pose_ok\":" + json_bool(pose.ok) +
+               ",\"pose_source\":\"" + json_escape(pose.source) + "\"" +
+               ",\"pose_expected_bones\":" + std::to_string(pose.expected_bones) +
+               ",\"pose_reported_bones\":" + std::to_string(pose.reported_bones) +
+               ",\"pose_transform_count\":" + std::to_string(pose.transform_count) +
+               ",\"pose_valid_transform_count\":" + std::to_string(pose.valid_transform_count) +
+               ",\"pose_array_offset\":" + std::to_string(pose.array_offset) +
+               ",\"pose_array_data\":\"" + hex_address(pose.array_data) + "\"" +
+               ",\"pose_min_translation_len\":" + std::to_string(pose.min_translation_len) +
+               ",\"pose_max_translation_len\":" + std::to_string(pose.max_translation_len);
+    }
+
+    auto sdk_read_pose_array_at(Reflection& ref,
+                                std::uintptr_t mesh,
+                                int offset,
+                                const std::string& source,
+                                int expected_bones,
+                                SdkPoseResolveResult& pose) -> bool
+    {
+        if (offset < 0 || offset > 0x20000)
+        {
+            return false;
+        }
+        const auto header = safe_read<sdk::TArray<sdk::FTransform>>(mesh + static_cast<std::uintptr_t>(offset));
+        if (!header.Data || header.Num != expected_bones || header.Max < header.Num || header.Max > 512)
+        {
+            return false;
+        }
+        std::vector<sdk::FTransform> transforms{};
+        int valid_count = 0;
+        double min_translation_len = 0.0;
+        double max_translation_len = 0.0;
+        if (!sdk_read_transform_array(reinterpret_cast<std::uintptr_t>(header.Data),
+                                      header.Num,
+                                      transforms,
+                                      valid_count,
+                                      min_translation_len,
+                                      max_translation_len))
+        {
+            return false;
+        }
+        pose.ok = true;
+        pose.stage = "pose_resolved";
+        pose.message = "current skinned pose resolved";
+        pose.source = source.empty() ? property_name_at_or_before_offset(ref, mesh, offset) : source;
+        pose.transform_count = header.Num;
+        pose.valid_transform_count = valid_count;
+        pose.array_offset = offset;
+        pose.array_data = reinterpret_cast<std::uintptr_t>(header.Data);
+        pose.min_translation_len = min_translation_len;
+        pose.max_translation_len = max_translation_len;
+        pose.component_space_transforms = std::move(transforms);
+        return true;
+    }
+
+    auto sdk_try_pose_property_names(Reflection& ref,
+                                     std::uintptr_t mesh,
+                                     int expected_bones,
+                                     SdkPoseResolveResult& pose) -> bool
+    {
+        const char* names[]{
+            "ComponentSpaceTransforms",
+            "ComponentSpaceTransformsArray",
+            "CachedComponentSpaceTransforms",
+            "SpaceBases",
+            "BoneSpaceTransforms",
+            "CachedBoneSpaceTransforms",
+        };
+        for (const auto* name : names)
+        {
+            if (!name)
+            {
+                continue;
+            }
+            const auto prop = find_object_property(ref, mesh, name);
+            const auto offset = prop ? prop_offset(prop) : -1;
+            if (offset >= 0 && sdk_read_pose_array_at(ref, mesh, offset, name, expected_bones, pose))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    auto sdk_scan_pose_transform_arrays(Reflection& ref,
+                                        std::uintptr_t mesh,
+                                        int expected_bones,
+                                        SdkPoseResolveResult& pose) -> bool
+    {
+        struct Candidate
+        {
+            int score{0};
+            int offset{-1};
+            std::string source{};
+            SdkPoseResolveResult pose{};
+        };
+        std::vector<Candidate> candidates{};
+        for (int offset = 0; mesh && offset + static_cast<int>(sizeof(sdk::TArray<sdk::FTransform>)) <= 0x6000; offset += 8)
+        {
+            SdkPoseResolveResult candidate_pose{};
+            candidate_pose.expected_bones = expected_bones;
+            candidate_pose.reported_bones = pose.reported_bones;
+            const auto source = property_name_at_or_before_offset(ref, mesh, offset);
+            if (!sdk_read_pose_array_at(ref, mesh, offset, source, expected_bones, candidate_pose))
+            {
+                continue;
+            }
+            int score = candidate_pose.valid_transform_count * 10;
+            const auto lower_source = lower_copy(source);
+            if (contains_text(lower_source, "component") || contains_text(lower_source, "spacebase") || contains_text(lower_source, "space"))
+            {
+                score += 1000;
+            }
+            if (contains_text(lower_source, "bone"))
+            {
+                score += 100;
+            }
+            if (contains_text(lower_source, "cached"))
+            {
+                score += 25;
+            }
+            if (candidate_pose.max_translation_len > candidate_pose.min_translation_len + 1.0)
+            {
+                score += 20;
+            }
+            candidates.push_back({score, offset, source, std::move(candidate_pose)});
+        }
+        if (candidates.empty())
+        {
+            return false;
+        }
+        std::sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b) {
+            if (a.score != b.score)
+            {
+                return a.score > b.score;
+            }
+            return a.offset < b.offset;
+        });
+        pose = std::move(candidates.front().pose);
+        if (pose.source.empty())
+        {
+            pose.source = "guarded_component_array_scan";
+        }
+        else
+        {
+            pose.source = "guarded_component_array_scan:" + pose.source;
+        }
+        return true;
+    }
+
+    auto sdk_call_no_params_return_number(Reflection& ref, std::uintptr_t object, const char* function_name, double& value) -> bool;
+    auto sdk_call_no_params_return_transform(Reflection& ref, std::uintptr_t object, const char* function_name, sdk::FTransform& value) -> bool;
+    auto sdk_project_world_to_screen(Reflection& ref, const SdkContext& ctx, const sdk::FVector& world, double& x, double& y) -> bool;
+    auto sdk_deproject_screen_position(Reflection& ref, const SdkContext& ctx, double screen_x, double screen_y) -> SdkDeprojectRay;
+    auto sdk_get_viewport_info(Reflection& ref, const SdkContext& ctx) -> SdkViewportInfo;
+    auto sdk_capture_front_colors(Reflection& ref,
+                                  const SdkContext& ctx,
+                                  const SdkNativeFrontSampleResult& native_front,
+                                  int target_width,
+                                  int target_height) -> SdkFrontCaptureResult;
+    auto sdk_capture_metadata(const SdkFrontCaptureResult& capture) -> std::string;
+    auto sdk_srgb_to_linear_unit(double value) -> double;
+    auto sdk_make_channel(double r,
+                          double g,
+                          double b,
+                          double metallic,
+                          double roughness,
+                          sdk::EPaintChannelApplyMode apply_mode) -> sdk::FPaintChannelData;
+    auto sdk_make_uv_stroke(double u,
+                            double v,
+                            const sdk::FPaintChannelData& channel,
+                            const sdk::FRuntimeBrushSettings& brush,
+                            sdk::EPaintChannel target_channel) -> sdk::FPaintStroke;
+    auto sdk_call_paint_batch_function(std::uintptr_t component,
+                                       std::uintptr_t function,
+                                       const std::vector<sdk::FPaintStroke>& strokes,
+                                       std::size_t offset,
+                                       std::size_t count,
+                                       std::string& failure) -> bool;
+    auto sdk_call_paint_at_uv_with_brush(std::uintptr_t component,
+                                         std::uintptr_t function,
+                                         const sdk::FPaintStroke& stroke,
+                                         std::string& failure) -> bool;
+    auto sdk_call_server_paint_batch(const SdkContext& ctx,
+                                     const std::vector<sdk::FPaintStroke>& strokes,
+                                     std::size_t offset,
+                                     std::size_t count,
+                                     std::string& failure) -> bool;
+
+    auto sdk_resolve_skinned_pose(Reflection& ref,
+                                  std::uintptr_t mesh,
+                                  int expected_bones) -> SdkPoseResolveResult
+    {
+        SdkPoseResolveResult pose{};
+        pose.expected_bones = expected_bones;
+        double reported_bones = -1.0;
+        if (sdk_call_no_params_return_number(ref, mesh, "GetNumBones", reported_bones) && reported_bones >= 0.0)
+        {
+            pose.reported_bones = static_cast<int>(reported_bones + 0.5);
+            if (pose.reported_bones > 0 && pose.reported_bones != expected_bones)
+            {
+                pose.stage = "pose_bone_count_mismatch";
+                pose.message = "live mesh bone count does not match mesh profile";
+                return pose;
+            }
+        }
+
+        if (sdk_try_pose_property_names(ref, mesh, expected_bones, pose))
+        {
+            return pose;
+        }
+        if (sdk_scan_pose_transform_arrays(ref, mesh, expected_bones, pose))
+        {
+            return pose;
+        }
+
+        pose.stage = "pose_transform_array_unavailable";
+        pose.message = "could not find a current FTransform array with the expected bone count";
+        return pose;
+    }
+
+    auto count_occurrences(const std::string& text, const std::string& needle) -> int
+    {
+        if (needle.empty())
+        {
+            return 0;
+        }
+        int count = 0;
+        std::size_t pos = 0;
+        while ((pos = text.find(needle, pos)) != std::string::npos)
+        {
+            ++count;
+            pos += needle.size();
+        }
+        return count;
+    }
+
+    auto json_key_window_contains(const std::string& text,
+                                  const std::string& key,
+                                  const std::string& expected,
+                                  std::size_t window = 512) -> bool
+    {
+        const auto lower = lower_copy(text);
+        const auto lower_key = lower_copy(key);
+        const auto lower_expected = lower_copy(expected);
+        const auto pos = lower.find(std::string("\"") + lower_key + "\"");
+        if (pos == std::string::npos)
+        {
+            return false;
+        }
+        const auto end = std::min(lower.size(), pos + window);
+        return lower.substr(pos, end - pos).find(lower_expected) != std::string::npos;
+    }
+
+    struct MeshFirstProfile
+    {
+        struct Influence
+        {
+            int bone{-1};
+            double weight{0.0};
+        };
+
+        struct Vertex
+        {
+            sdk::FVector position{};
+            double u{0.5};
+            double v{0.5};
+            std::vector<Influence> influences{};
+        };
+
+        struct Bone
+        {
+            int index{-1};
+            int parent_index{-1};
+            sdk::FTransform local_bind{};
+        };
+
+        bool ok{false};
+        std::string stage{"mesh_profile_missing"};
+        std::string message{"mesh profile is missing"};
+        int vertex_count{0};
+        int index_count{0};
+        int bone_count{0};
+        bool expected_export{false};
+        bool has_vertices{false};
+        bool has_indices{false};
+        std::vector<int> indices{};
+        std::vector<Vertex> vertices{};
+        std::vector<Bone> bones{};
+    };
+
+    auto json_matching_bracket(const std::string& text, std::size_t open, char open_ch, char close_ch) -> std::size_t
+    {
+        bool in_string = false;
+        bool escaped = false;
+        int depth = 0;
+        for (std::size_t i = open; i < text.size(); ++i)
+        {
+            const char ch = text[i];
+            if (in_string)
+            {
+                if (escaped)
+                {
+                    escaped = false;
+                }
+                else if (ch == '\\')
+                {
+                    escaped = true;
+                }
+                else if (ch == '"')
+                {
+                    in_string = false;
+                }
+                continue;
+            }
+            if (ch == '"')
+            {
+                in_string = true;
+                continue;
+            }
+            if (ch == open_ch)
+            {
+                ++depth;
+            }
+            else if (ch == close_ch)
+            {
+                --depth;
+                if (depth == 0)
+                {
+                    return i;
+                }
+            }
+        }
+        return std::string::npos;
+    }
+
+    auto json_find_array_span(const std::string& text,
+                              const std::string& key,
+                              std::size_t& begin,
+                              std::size_t& end) -> bool
+    {
+        const std::string needle = std::string("\"") + key + "\"";
+        auto key_pos = text.find(needle);
+        if (key_pos == std::string::npos)
+        {
+            return false;
+        }
+        auto open = text.find('[', key_pos + needle.size());
+        if (open == std::string::npos)
+        {
+            return false;
+        }
+        auto close = json_matching_bracket(text, open, '[', ']');
+        if (close == std::string::npos || close <= open)
+        {
+            return false;
+        }
+        begin = open + 1;
+        end = close;
+        return true;
+    }
+
+    template <typename Fn>
+    auto json_for_each_object_in_array(const std::string& text,
+                                       std::size_t begin,
+                                       std::size_t end,
+                                       Fn&& fn) -> void
+    {
+        for (std::size_t pos = begin; pos < end;)
+        {
+            const auto open = text.find('{', pos);
+            if (open == std::string::npos || open >= end)
+            {
+                break;
+            }
+            const auto close = json_matching_bracket(text, open, '{', '}');
+            if (close == std::string::npos || close >= end)
+            {
+                break;
+            }
+            fn(text.substr(open, close - open + 1));
+            pos = close + 1;
+        }
+    }
+
+    auto mesh_first_parse_indices(const std::string& text, std::vector<int>& indices) -> bool
+    {
+        std::size_t begin = 0;
+        std::size_t end = 0;
+        if (!json_find_array_span(text, "Indices", begin, end))
+        {
+            return false;
+        }
+        indices.clear();
+        indices.reserve(9000);
+        const char* cursor = text.c_str() + begin;
+        const char* limit = text.c_str() + end;
+        while (cursor < limit)
+        {
+            while (cursor < limit && !std::isdigit(static_cast<unsigned char>(*cursor)) && *cursor != '-')
+            {
+                ++cursor;
+            }
+            if (cursor >= limit)
+            {
+                break;
+            }
+            char* parsed_end = nullptr;
+            const long value = std::strtol(cursor, &parsed_end, 10);
+            if (parsed_end == cursor)
+            {
+                break;
+            }
+            indices.push_back(static_cast<int>(value));
+            cursor = parsed_end;
+        }
+        return !indices.empty();
+    }
+
+    auto mesh_first_parse_influences(const std::string& object_text,
+                                     std::vector<MeshFirstProfile::Influence>& influences) -> void
+    {
+        std::size_t begin = 0;
+        std::size_t end = 0;
+        if (!json_find_array_span(object_text, "Influences", begin, end))
+        {
+            return;
+        }
+        json_for_each_object_in_array(object_text, begin, end, [&](const std::string& influence_text) {
+            MeshFirstProfile::Influence influence{};
+            influence.bone = json_int_field(influence_text, "Bone", -1, -1, 4096);
+            influence.weight = clamp_range(json_number_field(influence_text, "Weight", 0.0), 0.0, 1.0);
+            if (influence.bone >= 0 && influence.weight > 0.0)
+            {
+                influences.push_back(influence);
+            }
+        });
+    }
+
+    auto mesh_first_parse_vertices(const std::string& text, std::vector<MeshFirstProfile::Vertex>& vertices) -> bool
+    {
+        std::size_t begin = 0;
+        std::size_t end = 0;
+        if (!json_find_array_span(text, "Vertices", begin, end))
+        {
+            return false;
+        }
+        vertices.clear();
+        vertices.reserve(2000);
+        json_for_each_object_in_array(text, begin, end, [&](const std::string& vertex_text) {
+            MeshFirstProfile::Vertex vertex{};
+            vertex.position.X = json_number_field(vertex_text, "X", 0.0);
+            vertex.position.Y = json_number_field(vertex_text, "Y", 0.0);
+            vertex.position.Z = json_number_field(vertex_text, "Z", 0.0);
+            vertex.u = clamp01(json_number_field(vertex_text, "U", 0.5));
+            vertex.v = clamp01(json_number_field(vertex_text, "V", 0.5));
+            mesh_first_parse_influences(vertex_text, vertex.influences);
+            vertices.push_back(std::move(vertex));
+        });
+        return !vertices.empty();
+    }
+
+    auto mesh_first_parse_bones(const std::string& text,
+                                int expected_bones,
+                                std::vector<MeshFirstProfile::Bone>& bones) -> bool
+    {
+        std::size_t begin = 0;
+        std::size_t end = 0;
+        if (!json_find_array_span(text, "Bones", begin, end) || expected_bones <= 0 || expected_bones > 512)
+        {
+            return false;
+        }
+        bones.assign(static_cast<std::size_t>(expected_bones), {});
+        std::vector<bool> seen(static_cast<std::size_t>(expected_bones), false);
+        json_for_each_object_in_array(text, begin, end, [&](const std::string& bone_text) {
+            const int index = json_int_field(bone_text, "Index", -1, -1, 4096);
+            if (index < 0 || index >= expected_bones)
+            {
+                return;
+            }
+            MeshFirstProfile::Bone bone{};
+            bone.index = index;
+            bone.parent_index = json_int_field(bone_text, "ParentIndex", -1, -1, 4096);
+            bone.local_bind.Translation.X = json_number_field(bone_text, "X", 0.0);
+            bone.local_bind.Translation.Y = json_number_field(bone_text, "Y", 0.0);
+            bone.local_bind.Translation.Z = json_number_field(bone_text, "Z", 0.0);
+            bone.local_bind.Rotation.X = json_number_field(bone_text, "RotationX", 0.0);
+            bone.local_bind.Rotation.Y = json_number_field(bone_text, "RotationY", 0.0);
+            bone.local_bind.Rotation.Z = json_number_field(bone_text, "RotationZ", 0.0);
+            bone.local_bind.Rotation.W = json_number_field(bone_text, "RotationW", 1.0);
+            bone.local_bind.Scale3D = {1.0, 1.0, 1.0};
+            bones[static_cast<std::size_t>(index)] = bone;
+            seen[static_cast<std::size_t>(index)] = true;
+        });
+        return std::all_of(seen.begin(), seen.end(), [](bool value) { return value; });
+    }
+
+    auto load_mesh_first_profile() -> MeshFirstProfile
+    {
+        MeshFirstProfile profile{};
+        std::string text{};
+        if (!read_bridge_sidecar_text(L".mesh-profile.json", text))
+        {
+            profile.stage = "mesh_profile_missing";
+            profile.message = "mesh profile sidecar runtime-bridge.dll.mesh-profile.json is missing";
+            return profile;
+        }
+        profile.vertex_count = json_int_field(text, "VertexCount", 0, 0, 10'000'000);
+        profile.index_count = json_int_field(text, "IndexCount", 0, 0, 30'000'000);
+        profile.bone_count = count_occurrences(text, "\"ParentIndex\"");
+        profile.expected_export = json_key_window_contains(text, "Export", "paintman");
+        profile.has_vertices = text.find("\"Vertices\"") != std::string::npos;
+        profile.has_indices = text.find("\"Indices\"") != std::string::npos;
+
+        if (!profile.expected_export)
+        {
+            profile.stage = "mesh_profile_identity_mismatch";
+            profile.message = "mesh profile export is not paintman";
+            return profile;
+        }
+        if (profile.vertex_count != 1660 || profile.index_count != 8352 || profile.bone_count != 28)
+        {
+            profile.stage = "mesh_profile_shape_mismatch";
+            profile.message = "mesh profile shape does not match expected paintman LOD0";
+            return profile;
+        }
+        if (!profile.has_vertices || !profile.has_indices)
+        {
+            profile.stage = "mesh_profile_invalid";
+            profile.message = "mesh profile is missing vertices or indices";
+            return profile;
+        }
+        if (!mesh_first_parse_indices(text, profile.indices) ||
+            !mesh_first_parse_vertices(text, profile.vertices) ||
+            !mesh_first_parse_bones(text, profile.bone_count, profile.bones))
+        {
+            profile.stage = "mesh_profile_parse_failed";
+            profile.message = "mesh profile parser could not read indices, vertices, or bones";
+            return profile;
+        }
+        if (static_cast<int>(profile.vertices.size()) != profile.vertex_count ||
+            static_cast<int>(profile.indices.size()) != profile.index_count ||
+            static_cast<int>(profile.bones.size()) != profile.bone_count ||
+            profile.index_count % 3 != 0)
+        {
+            profile.stage = "mesh_profile_data_mismatch";
+            profile.message = "mesh profile parsed data does not match exported counts";
+            return profile;
+        }
+
+        profile.ok = true;
+        profile.stage = "mesh_profile_loaded";
+        profile.message = "mesh profile loaded";
+        return profile;
+    }
+
+    auto mesh_first_profile_metadata(const MeshFirstProfile& profile) -> std::string
+    {
+        return "\"mesh_profile_stage\":\"" + json_escape(profile.stage) + "\"" +
+               ",\"mesh_profile_ok\":" + json_bool(profile.ok) +
+               ",\"mesh_profile_vertex_count\":" + std::to_string(profile.vertex_count) +
+               ",\"mesh_profile_index_count\":" + std::to_string(profile.index_count) +
+               ",\"mesh_profile_bone_count\":" + std::to_string(profile.bone_count) +
+               ",\"mesh_profile_expected_export\":" + json_bool(profile.expected_export) +
+               ",\"mesh_profile_has_vertices\":" + json_bool(profile.has_vertices) +
+               ",\"mesh_profile_has_indices\":" + json_bool(profile.has_indices);
+    }
+
+    auto mesh_first_identity_transform() -> sdk::FTransform
+    {
+        sdk::FTransform transform{};
+        transform.Rotation = {0.0, 0.0, 0.0, 1.0};
+        transform.Translation = {};
+        transform.Scale3D = {1.0, 1.0, 1.0};
+        return transform;
+    }
+
+    auto mesh_first_quat_normalize(const sdk::FQuat& quat) -> sdk::FQuat
+    {
+        const double len = std::sqrt(quat.X * quat.X + quat.Y * quat.Y + quat.Z * quat.Z + quat.W * quat.W);
+        if (!std::isfinite(len) || len <= 0.000001)
+        {
+            return {0.0, 0.0, 0.0, 1.0};
+        }
+        return {quat.X / len, quat.Y / len, quat.Z / len, quat.W / len};
+    }
+
+    auto mesh_first_quat_conjugate(const sdk::FQuat& quat) -> sdk::FQuat
+    {
+        return {-quat.X, -quat.Y, -quat.Z, quat.W};
+    }
+
+    auto mesh_first_quat_mul(const sdk::FQuat& a, const sdk::FQuat& b) -> sdk::FQuat
+    {
+        return {
+            a.W * b.X + a.X * b.W + a.Y * b.Z - a.Z * b.Y,
+            a.W * b.Y - a.X * b.Z + a.Y * b.W + a.Z * b.X,
+            a.W * b.Z + a.X * b.Y - a.Y * b.X + a.Z * b.W,
+            a.W * b.W - a.X * b.X - a.Y * b.Y - a.Z * b.Z,
+        };
+    }
+
+    auto mesh_first_quat_rotate(const sdk::FQuat& quat, const sdk::FVector& value) -> sdk::FVector
+    {
+        const auto q = mesh_first_quat_normalize(quat);
+        const sdk::FVector u{q.X, q.Y, q.Z};
+        const double s = q.W;
+        const double uu = sdk_vec_dot(u, u);
+        const double uv = sdk_vec_dot(u, value);
+        const auto term0 = sdk_vec_mul(u, 2.0 * uv);
+        const auto term1 = sdk_vec_mul(value, s * s - uu);
+        const auto term2 = sdk_vec_mul(sdk_vec_cross(u, value), 2.0 * s);
+        return sdk_vec_add(sdk_vec_add(term0, term1), term2);
+    }
+
+    auto mesh_first_component_scale(const sdk::FVector& a, const sdk::FVector& b) -> sdk::FVector
+    {
+        return {a.X * b.X, a.Y * b.Y, a.Z * b.Z};
+    }
+
+    auto mesh_first_transform_apply_point(const sdk::FTransform& transform, const sdk::FVector& point) -> sdk::FVector
+    {
+        const auto scaled = mesh_first_component_scale(point, transform.Scale3D);
+        return sdk_vec_add(mesh_first_quat_rotate(transform.Rotation, scaled), transform.Translation);
+    }
+
+    auto mesh_first_transform_inverse_apply_point(const sdk::FTransform& transform, const sdk::FVector& point) -> sdk::FVector
+    {
+        const auto translated = sdk_vec_sub(point, transform.Translation);
+        const auto unrotated = mesh_first_quat_rotate(mesh_first_quat_conjugate(mesh_first_quat_normalize(transform.Rotation)), translated);
+        sdk::FVector out{};
+        out.X = std::abs(transform.Scale3D.X) <= 0.000001 ? unrotated.X : unrotated.X / transform.Scale3D.X;
+        out.Y = std::abs(transform.Scale3D.Y) <= 0.000001 ? unrotated.Y : unrotated.Y / transform.Scale3D.Y;
+        out.Z = std::abs(transform.Scale3D.Z) <= 0.000001 ? unrotated.Z : unrotated.Z / transform.Scale3D.Z;
+        return out;
+    }
+
+    auto mesh_first_transform_compose(const sdk::FTransform& parent, const sdk::FTransform& child) -> sdk::FTransform
+    {
+        sdk::FTransform out = mesh_first_identity_transform();
+        out.Rotation = mesh_first_quat_normalize(mesh_first_quat_mul(mesh_first_quat_normalize(parent.Rotation),
+                                                                     mesh_first_quat_normalize(child.Rotation)));
+        out.Translation = mesh_first_transform_apply_point(parent, child.Translation);
+        out.Scale3D = mesh_first_component_scale(parent.Scale3D, child.Scale3D);
+        return out;
+    }
+
+    auto mesh_first_build_reference_component_transforms(const MeshFirstProfile& profile,
+                                                         std::vector<sdk::FTransform>& out,
+                                                         std::string& failure) -> bool
+    {
+        if (profile.bone_count <= 0 || static_cast<int>(profile.bones.size()) != profile.bone_count)
+        {
+            failure = "profile_bones_unavailable";
+            return false;
+        }
+        out.assign(static_cast<std::size_t>(profile.bone_count), mesh_first_identity_transform());
+        std::vector<bool> ready(static_cast<std::size_t>(profile.bone_count), false);
+        for (int pass = 0; pass < profile.bone_count; ++pass)
+        {
+            bool progressed = false;
+            for (const auto& bone : profile.bones)
+            {
+                if (bone.index < 0 || bone.index >= profile.bone_count || ready[static_cast<std::size_t>(bone.index)])
+                {
+                    continue;
+                }
+                if (bone.parent_index < 0)
+                {
+                    out[static_cast<std::size_t>(bone.index)] = bone.local_bind;
+                    ready[static_cast<std::size_t>(bone.index)] = true;
+                    progressed = true;
+                    continue;
+                }
+                if (bone.parent_index >= profile.bone_count)
+                {
+                    failure = "profile_bone_parent_invalid";
+                    return false;
+                }
+                if (ready[static_cast<std::size_t>(bone.parent_index)])
+                {
+                    out[static_cast<std::size_t>(bone.index)] =
+                        mesh_first_transform_compose(out[static_cast<std::size_t>(bone.parent_index)], bone.local_bind);
+                    ready[static_cast<std::size_t>(bone.index)] = true;
+                    progressed = true;
+                }
+            }
+            if (!progressed)
+            {
+                break;
+            }
+        }
+        if (!std::all_of(ready.begin(), ready.end(), [](bool value) { return value; }))
+        {
+            failure = "profile_bone_hierarchy_unresolved";
+            return false;
+        }
+        return true;
+    }
+
+    auto mesh_first_resolve_component_to_world(Reflection& ref,
+                                               std::uintptr_t mesh,
+                                               const sdk::FVector& expected_location,
+                                               sdk::FTransform& out,
+                                               std::string& source) -> bool
+    {
+        std::string failure_details{};
+        const char* candidates[]{"K2_GetComponentToWorld", "GetComponentTransform"};
+        for (const auto* function_name : candidates)
+        {
+            sdk::FTransform transform{};
+            if (sdk_call_no_params_return_transform(ref, mesh, function_name, transform) &&
+                sdk_transform_score(transform) > 0)
+            {
+                out = transform;
+                source = std::string("function:") + function_name;
+                return true;
+            }
+            if (!failure_details.empty())
+            {
+                failure_details += ";";
+            }
+            failure_details += std::string(function_name) + "=failed";
+        }
+        const int component_to_world_offset = ref.resolve_property_offset("SceneComponent", "ComponentToWorld");
+        if (component_to_world_offset >= 0)
+        {
+            sdk::FTransform transform{};
+            if (safe_copy(&transform,
+                          reinterpret_cast<const void*>(mesh + static_cast<std::uintptr_t>(component_to_world_offset)),
+                          sizeof(transform)) &&
+                sdk_transform_score(transform) > 0)
+            {
+                out = transform;
+                source = "property:SceneComponent.ComponentToWorld@" + hex_address(static_cast<std::uintptr_t>(component_to_world_offset));
+                return true;
+            }
+            failure_details += ";property_offset=" + hex_address(static_cast<std::uintptr_t>(component_to_world_offset)) + ":invalid";
+        }
+        else
+        {
+            failure_details += ";property_offset=unavailable";
+        }
+
+        sdk::FTransform best_transform{};
+        int best_score = -1000000;
+        int best_offset = -1;
+        for (int offset = 0; mesh && offset + static_cast<int>(sizeof(sdk::FTransform)) <= 0x1200; offset += 8)
+        {
+            sdk::FTransform transform{};
+            if (!safe_copy(&transform,
+                           reinterpret_cast<const void*>(mesh + static_cast<std::uintptr_t>(offset)),
+                           sizeof(transform)))
+            {
+                continue;
+            }
+            int score = sdk_transform_score(transform);
+            if (score <= 0)
+            {
+                continue;
+            }
+            const auto delta = sdk_vec_sub(transform.Translation, expected_location);
+            const double xy_distance = std::sqrt(delta.X * delta.X + delta.Y * delta.Y);
+            const double z_distance = std::abs(delta.Z);
+            const double scale_sum = std::abs(transform.Scale3D.X) + std::abs(transform.Scale3D.Y) + std::abs(transform.Scale3D.Z);
+            if (!std::isfinite(xy_distance) || !std::isfinite(z_distance) || scale_sum <= 0.001 || scale_sum > 1000.0)
+            {
+                continue;
+            }
+            if (xy_distance <= 50.0)
+            {
+                score += 400;
+            }
+            else if (xy_distance <= 250.0)
+            {
+                score += 250;
+            }
+            else if (xy_distance <= 1000.0)
+            {
+                score += 50;
+            }
+            else
+            {
+                score -= 500;
+            }
+            if (z_distance <= 100.0)
+            {
+                score += 150;
+            }
+            else if (z_distance <= 500.0)
+            {
+                score += 25;
+            }
+            else
+            {
+                score -= 250;
+            }
+            if (score > best_score)
+            {
+                best_score = score;
+                best_offset = offset;
+                best_transform = transform;
+            }
+        }
+        if (best_offset >= 0 && best_score >= 150)
+        {
+            out = best_transform;
+            source = "scan:component_ftransform@" + hex_address(static_cast<std::uintptr_t>(best_offset));
+            return true;
+        }
+        source = "unavailable:" + failure_details + ";scan_best_score=" + std::to_string(best_score) +
+                 ";scan_best_offset=" + (best_offset >= 0 ? hex_address(static_cast<std::uintptr_t>(best_offset)) : std::string("none"));
+        return false;
+    }
+
+    auto mesh_first_skin_vertices(const MeshFirstProfile& profile,
+                                  const SdkPoseResolveResult& pose,
+                                  const sdk::FTransform& component_to_world,
+                                  std::vector<sdk::FVector>& component_positions,
+                                  std::vector<sdk::FVector>& world_positions,
+                                  std::string& failure) -> bool
+    {
+        if (static_cast<int>(pose.component_space_transforms.size()) < profile.bone_count)
+        {
+            failure = "pose_transform_count_mismatch";
+            return false;
+        }
+        std::vector<sdk::FTransform> reference_component_transforms{};
+        if (!mesh_first_build_reference_component_transforms(profile, reference_component_transforms, failure))
+        {
+            return false;
+        }
+        component_positions.assign(profile.vertices.size(), {});
+        world_positions.assign(profile.vertices.size(), {});
+        for (std::size_t i = 0; i < profile.vertices.size(); ++i)
+        {
+            const auto& vertex = profile.vertices[i];
+            sdk::FVector skinned{};
+            double weight_sum = 0.0;
+            for (const auto& influence : vertex.influences)
+            {
+                if (influence.bone < 0 || influence.bone >= profile.bone_count)
+                {
+                    failure = "vertex_skin_weight_bone_invalid";
+                    return false;
+                }
+                const auto& ref_bone = reference_component_transforms[static_cast<std::size_t>(influence.bone)];
+                const auto& current_bone = pose.component_space_transforms[static_cast<std::size_t>(influence.bone)];
+                const auto bone_local = mesh_first_transform_inverse_apply_point(ref_bone, vertex.position);
+                const auto current_component = mesh_first_transform_apply_point(current_bone, bone_local);
+                skinned = sdk_vec_add(skinned, sdk_vec_mul(current_component, influence.weight));
+                weight_sum += influence.weight;
+            }
+            if (weight_sum > 0.000001)
+            {
+                skinned = sdk_vec_mul(skinned, 1.0 / weight_sum);
+            }
+            else
+            {
+                skinned = vertex.position;
+            }
+            if (!std::isfinite(skinned.X) || !std::isfinite(skinned.Y) || !std::isfinite(skinned.Z))
+            {
+                failure = "skinned_vertex_invalid";
+                return false;
+            }
+            component_positions[i] = skinned;
+            world_positions[i] = mesh_first_transform_apply_point(component_to_world, skinned);
+        }
+        return true;
+    }
+
+    struct MeshFirstChannelChecksum
+    {
+        bool ok{false};
+        int bytes{0};
+        std::uint64_t hash{1469598103934665603ULL};
+        std::string failure{"not_run"};
+    };
+
+    auto mesh_first_export_channel_checksum(Reflection& ref,
+                                            std::uintptr_t component,
+                                            sdk::EPaintChannel channel) -> MeshFirstChannelChecksum
+    {
+        MeshFirstChannelChecksum out{};
+        if (!live_uobject(component))
+        {
+            out.failure = "paint_component_unavailable";
+            return out;
+        }
+        const auto function = ref.find_function(component, "ExportChannelToBytes");
+        if (!function)
+        {
+            out.failure = "ExportChannelToBytes_unavailable";
+            return out;
+        }
+        const auto params_size = safe_read<int>(function + OffPropertiesSize, 0);
+        if (params_size <= 0 || params_size > 256)
+        {
+            out.failure = "ExportChannelToBytes_params_size_invalid";
+            return out;
+        }
+        std::vector<std::uint8_t> params(static_cast<std::size_t>(params_size), 0);
+        for (auto prop = safe_read<std::uintptr_t>(function + OffChildProperties); prop; prop = safe_read<std::uintptr_t>(prop + OffFFieldNext))
+        {
+            const auto name = lower_copy(ref.names.resolve(safe_read<std::uint32_t>(prop + OffFFieldName)));
+            const auto offset = prop_offset(prop);
+            if (offset < 0 || offset >= params_size)
+            {
+                continue;
+            }
+            if (name == "channel")
+            {
+                params[static_cast<std::size_t>(offset)] = static_cast<std::uint8_t>(channel);
+            }
+        }
+        std::string failure{};
+        if (!process_event(component, function, params.data(), failure))
+        {
+            out.failure = "ExportChannelToBytes_failed:" + failure;
+            return out;
+        }
+
+        bool return_value = true;
+        sdk::TArray<std::uint8_t> bytes{};
+        bool found_array = false;
+        for (auto prop = safe_read<std::uintptr_t>(function + OffChildProperties); prop; prop = safe_read<std::uintptr_t>(prop + OffFFieldNext))
+        {
+            const auto name = lower_copy(ref.names.resolve(safe_read<std::uint32_t>(prop + OffFFieldName)));
+            const auto offset = prop_offset(prop);
+            if (offset < 0 || offset >= params_size)
+            {
+                continue;
+            }
+            if (name == "returnvalue")
+            {
+                return_value = params[static_cast<std::size_t>(offset)] != 0;
+            }
+            else if (name == "outdata" && offset + static_cast<int>(sizeof(sdk::TArray<std::uint8_t>)) <= params_size)
+            {
+                bytes = *reinterpret_cast<sdk::TArray<std::uint8_t>*>(params.data() + offset);
+                found_array = true;
+            }
+        }
+        if (!return_value)
+        {
+            out.failure = "ExportChannelToBytes_return_false";
+            return out;
+        }
+        if (!found_array || !bytes.Data || bytes.Num <= 0 || bytes.Max < bytes.Num || bytes.Num > 64 * 1024 * 1024)
+        {
+            out.failure = "ExportChannelToBytes_no_bytes";
+            return out;
+        }
+        std::uint64_t hash = 1469598103934665603ULL;
+        for (int i = 0; i < bytes.Num; ++i)
+        {
+            const auto value = safe_read<std::uint8_t>(reinterpret_cast<std::uintptr_t>(bytes.Data) + static_cast<std::uintptr_t>(i), 0);
+            hash ^= static_cast<std::uint64_t>(value);
+            hash *= 1099511628211ULL;
+        }
+        out.ok = true;
+        out.failure.clear();
+        out.bytes = bytes.Num;
+        out.hash = hash;
+        return out;
+    }
+
+    enum class MeshFirstRegion
+    {
+        Front,
+        Side,
+        Back,
+    };
+
+    auto mesh_first_region_name(MeshFirstRegion region) -> const char*
+    {
+        switch (region)
+        {
+        case MeshFirstRegion::Front:
+            return "front";
+        case MeshFirstRegion::Side:
+            return "side";
+        case MeshFirstRegion::Back:
+            return "back";
+        }
+        return "unknown";
+    }
+
+    struct MeshFirstPlanSample
+    {
+        int triangle_index{0};
+        MeshFirstRegion region{MeshFirstRegion::Front};
+        double u{0.5};
+        double v{0.5};
+        double barycentric_a{1.0 / 3.0};
+        double barycentric_b{1.0 / 3.0};
+        double barycentric_c{1.0 / 3.0};
+        sdk::FVector local_position{};
+        sdk::FVector world_position{};
+        double facing_dot{0.0};
+        double uv_area{0.0};
+        double r{1.0};
+        double g{1.0};
+        double b{1.0};
+        double roughness{0.65};
+        double metallic{0.0};
+        double source_distance_uv{0.0};
+        bool unsafe{false};
+    };
+
+    struct MeshFirstRuntimeTriangle
+    {
+        sdk::FVector world[3]{};
+        sdk::FVector local[3]{};
+        sdk::FVector2D uv[3]{};
+    };
+
+    struct MeshFirstRuntimeTriangleCache
+    {
+        bool ok{false};
+        std::uintptr_t data{0};
+        int owner_offset{-1};
+        int stride{0};
+        int triangle_count{0};
+        double profile_uv_avg_error{0.0};
+        std::string failure{"not_run"};
+        std::vector<MeshFirstRuntimeTriangle> triangles{};
+    };
+
+    struct MeshFirstPlanStats
+    {
+        int total_triangles{0};
+        int invalid_triangles{0};
+        int degenerate_triangles{0};
+        int front_triangles{0};
+        int side_triangles{0};
+        int back_triangles{0};
+        int total_samples{0};
+        int front_samples{0};
+        int side_samples{0};
+        int back_samples{0};
+        int enabled_samples{0};
+        int unsafe_candidates{0};
+        int unsafe_front{0};
+        int unsafe_side{0};
+        int unsafe_back{0};
+        int unsafe_enabled{0};
+        double source_distance_avg_uv{0.0};
+        double source_distance_p95_uv{0.0};
+        double source_distance_max_uv{0.0};
+    };
+
+    auto mesh_first_sample_region_count(MeshFirstPlanStats& stats, MeshFirstRegion region) -> int&
+    {
+        if (region == MeshFirstRegion::Front)
+        {
+            return stats.front_samples;
+        }
+        if (region == MeshFirstRegion::Side)
+        {
+            return stats.side_samples;
+        }
+        return stats.back_samples;
+    }
+
+    auto mesh_first_triangle_region_count(MeshFirstPlanStats& stats, MeshFirstRegion region) -> int&
+    {
+        if (region == MeshFirstRegion::Front)
+        {
+            return stats.front_triangles;
+        }
+        if (region == MeshFirstRegion::Side)
+        {
+            return stats.side_triangles;
+        }
+        return stats.back_triangles;
+    }
+
+    auto mesh_first_uv_triangle_area(double u0, double v0, double u1, double v1, double u2, double v2) -> double
+    {
+        return std::abs((u1 - u0) * (v2 - v0) - (u2 - u0) * (v1 - v0)) * 0.5;
+    }
+
+    auto mesh_first_finite_vector(const sdk::FVector& value) -> bool
+    {
+        return std::isfinite(value.X) && std::isfinite(value.Y) && std::isfinite(value.Z);
+    }
+
+    auto mesh_first_finite_uv(const sdk::FVector2D& value) -> bool
+    {
+        return std::isfinite(value.X) && std::isfinite(value.Y) &&
+               value.X >= -0.05 && value.X <= 1.05 &&
+               value.Y >= -0.05 && value.Y <= 1.05;
+    }
+
+    auto mesh_first_read_runtime_triangle(std::uintptr_t base, MeshFirstRuntimeTriangle& out) -> bool
+    {
+        for (int i = 0; i < 3; ++i)
+        {
+            const auto world_base = base + static_cast<std::uintptr_t>(i * 24);
+            out.world[i].X = safe_read<double>(world_base + 0, std::numeric_limits<double>::quiet_NaN());
+            out.world[i].Y = safe_read<double>(world_base + 8, std::numeric_limits<double>::quiet_NaN());
+            out.world[i].Z = safe_read<double>(world_base + 16, std::numeric_limits<double>::quiet_NaN());
+
+            const auto local_base = base + 72 + static_cast<std::uintptr_t>(i * 24);
+            out.local[i].X = safe_read<double>(local_base + 0, std::numeric_limits<double>::quiet_NaN());
+            out.local[i].Y = safe_read<double>(local_base + 8, std::numeric_limits<double>::quiet_NaN());
+            out.local[i].Z = safe_read<double>(local_base + 16, std::numeric_limits<double>::quiet_NaN());
+
+            const auto uv_base = base + 144 + static_cast<std::uintptr_t>(i * 16);
+            out.uv[i].X = safe_read<double>(uv_base + 0, std::numeric_limits<double>::quiet_NaN());
+            out.uv[i].Y = safe_read<double>(uv_base + 8, std::numeric_limits<double>::quiet_NaN());
+            if (!mesh_first_finite_vector(out.world[i]) ||
+                !mesh_first_finite_vector(out.local[i]) ||
+                !mesh_first_finite_uv(out.uv[i]))
+            {
+                return false;
+            }
+        }
+        const auto edge0 = sdk_vec_sub(out.world[1], out.world[0]);
+        const auto edge1 = sdk_vec_sub(out.world[2], out.world[0]);
+        return sdk_vec_len(sdk_vec_cross(edge0, edge1)) > 0.000001;
+    }
+
+    auto mesh_first_runtime_triangle_profile_uv_error(const MeshFirstProfile& profile,
+                                                      int triangle_index,
+                                                      const MeshFirstRuntimeTriangle& triangle) -> double
+    {
+        const std::size_t tri = static_cast<std::size_t>(triangle_index) * 3;
+        if (tri + 2 >= profile.indices.size())
+        {
+            return 1000000.0;
+        }
+        double sum = 0.0;
+        for (int i = 0; i < 3; ++i)
+        {
+            const int vertex_index = profile.indices[tri + static_cast<std::size_t>(i)];
+            if (vertex_index < 0 || vertex_index >= profile.vertex_count)
+            {
+                return 1000000.0;
+            }
+            const auto& vertex = profile.vertices[static_cast<std::size_t>(vertex_index)];
+            sum += std::abs(vertex.u - triangle.uv[i].X) + std::abs(vertex.v - triangle.uv[i].Y);
+        }
+        return sum / 6.0;
+    }
+
+    auto mesh_first_resolve_runtime_triangle_cache(std::uintptr_t component,
+                                                   const MeshFirstProfile& profile) -> MeshFirstRuntimeTriangleCache
+    {
+        MeshFirstRuntimeTriangleCache out{};
+        const int expected_triangles = static_cast<int>(profile.indices.size() / 3);
+        if (!component || expected_triangles <= 0)
+        {
+            out.failure = "runtime_triangle_cache_invalid_profile";
+            return out;
+        }
+
+        constexpr int kStride = 208;
+        double best_error = 1000000.0;
+        int best_offset = -1;
+        std::uintptr_t best_data = 0;
+        std::vector<MeshFirstRuntimeTriangle> best_triangles{};
+
+        for (int offset = 0; offset + 16 <= 0x3000; offset += 8)
+        {
+            const auto data = safe_read<std::uintptr_t>(component + static_cast<std::uintptr_t>(offset), 0);
+            const auto num = safe_read<int>(component + static_cast<std::uintptr_t>(offset + 8), 0);
+            const auto max = safe_read<int>(component + static_cast<std::uintptr_t>(offset + 12), 0);
+            if (!data || num != expected_triangles || max < num || max > num + std::max(32, num / 2))
+            {
+                continue;
+            }
+
+            std::vector<MeshFirstRuntimeTriangle> triangles{};
+            triangles.resize(static_cast<std::size_t>(num));
+            double uv_error_sum = 0.0;
+            int checked = 0;
+            bool valid = true;
+            const int check_count = std::min(num, 96);
+            for (int i = 0; i < check_count; ++i)
+            {
+                MeshFirstRuntimeTriangle triangle{};
+                if (!mesh_first_read_runtime_triangle(data + static_cast<std::uintptr_t>(i) * kStride, triangle))
+                {
+                    valid = false;
+                    break;
+                }
+                const double uv_error = mesh_first_runtime_triangle_profile_uv_error(profile, i, triangle);
+                if (!std::isfinite(uv_error) || uv_error > 0.02)
+                {
+                    valid = false;
+                    break;
+                }
+                uv_error_sum += uv_error;
+                triangles[static_cast<std::size_t>(i)] = triangle;
+                ++checked;
+            }
+            if (!valid || checked <= 0)
+            {
+                continue;
+            }
+
+            for (int i = checked; i < num; ++i)
+            {
+                MeshFirstRuntimeTriangle triangle{};
+                if (!mesh_first_read_runtime_triangle(data + static_cast<std::uintptr_t>(i) * kStride, triangle))
+                {
+                    valid = false;
+                    break;
+                }
+                triangles[static_cast<std::size_t>(i)] = triangle;
+            }
+            if (!valid)
+            {
+                continue;
+            }
+
+            const double avg_error = uv_error_sum / static_cast<double>(checked);
+            if (avg_error < best_error)
+            {
+                best_error = avg_error;
+                best_offset = offset;
+                best_data = data;
+                best_triangles = std::move(triangles);
+            }
+        }
+
+        if (best_offset < 0 || best_triangles.empty())
+        {
+            out.failure = "runtime_triangle_cache_unavailable";
+            return out;
+        }
+        out.ok = true;
+        out.failure.clear();
+        out.owner_offset = best_offset;
+        out.data = best_data;
+        out.stride = kStride;
+        out.triangle_count = static_cast<int>(best_triangles.size());
+        out.profile_uv_avg_error = best_error;
+        out.triangles = std::move(best_triangles);
+        return out;
+    }
+
+    auto mesh_first_emit_triangle_sample(std::vector<MeshFirstPlanSample>& samples,
+                                         const MeshFirstProfile& profile,
+                                         const std::vector<sdk::FVector>& component_positions,
+                                         const std::vector<sdk::FVector>& world_positions,
+                                         int triangle_index,
+                                         int i0,
+                                         int i1,
+                                         int i2,
+                                         MeshFirstRegion region,
+                                         double facing,
+                                         double uv_area,
+                                         double a,
+                                         double b,
+                                         double c) -> void
+    {
+        const auto& v0 = profile.vertices[static_cast<std::size_t>(i0)];
+        const auto& v1 = profile.vertices[static_cast<std::size_t>(i1)];
+        const auto& v2 = profile.vertices[static_cast<std::size_t>(i2)];
+        const auto& l0 = component_positions[static_cast<std::size_t>(i0)];
+        const auto& l1 = component_positions[static_cast<std::size_t>(i1)];
+        const auto& l2 = component_positions[static_cast<std::size_t>(i2)];
+        const auto& p0 = world_positions[static_cast<std::size_t>(i0)];
+        const auto& p1 = world_positions[static_cast<std::size_t>(i1)];
+        const auto& p2 = world_positions[static_cast<std::size_t>(i2)];
+        MeshFirstPlanSample sample{};
+        sample.triangle_index = triangle_index;
+        sample.region = region;
+        sample.facing_dot = facing;
+        sample.uv_area = uv_area;
+        sample.u = clamp01(v0.u * a + v1.u * b + v2.u * c);
+        sample.v = clamp01(v0.v * a + v1.v * b + v2.v * c);
+        sample.barycentric_a = a;
+        sample.barycentric_b = b;
+        sample.barycentric_c = c;
+        sample.local_position = sdk_vec_add(sdk_vec_add(sdk_vec_mul(l0, a), sdk_vec_mul(l1, b)), sdk_vec_mul(l2, c));
+        sample.world_position = sdk_vec_add(sdk_vec_add(sdk_vec_mul(p0, a), sdk_vec_mul(p1, b)), sdk_vec_mul(p2, c));
+        samples.push_back(sample);
+    }
+
+    auto mesh_first_emit_runtime_triangle_sample(std::vector<MeshFirstPlanSample>& samples,
+                                                 const MeshFirstRuntimeTriangle& triangle,
+                                                 int triangle_index,
+                                                 MeshFirstRegion region,
+                                                 double facing,
+                                                 double uv_area,
+                                                 double a,
+                                                 double b,
+                                                 double c) -> void
+    {
+        MeshFirstPlanSample sample{};
+        sample.triangle_index = triangle_index;
+        sample.region = region;
+        sample.facing_dot = facing;
+        sample.uv_area = uv_area;
+        sample.u = clamp01(triangle.uv[0].X * a + triangle.uv[1].X * b + triangle.uv[2].X * c);
+        sample.v = clamp01(triangle.uv[0].Y * a + triangle.uv[1].Y * b + triangle.uv[2].Y * c);
+        sample.barycentric_a = a;
+        sample.barycentric_b = b;
+        sample.barycentric_c = c;
+        sample.local_position = sdk_vec_add(sdk_vec_add(sdk_vec_mul(triangle.local[0], a), sdk_vec_mul(triangle.local[1], b)), sdk_vec_mul(triangle.local[2], c));
+        sample.world_position = sdk_vec_add(sdk_vec_add(sdk_vec_mul(triangle.world[0], a), sdk_vec_mul(triangle.world[1], b)), sdk_vec_mul(triangle.world[2], c));
+        samples.push_back(sample);
+    }
+
+    auto mesh_first_generate_plan_samples_from_runtime_cache(const std::vector<MeshFirstRuntimeTriangle>& triangles,
+                                                             const sdk::FVector& camera_direction,
+                                                             std::vector<MeshFirstPlanSample>& samples,
+                                                             MeshFirstPlanStats& stats,
+                                                             std::string& failure) -> bool
+    {
+        constexpr double kFrontThreshold = 0.35;
+        constexpr double kBackThreshold = 0.35;
+        constexpr double kTextureSize = 1024.0;
+        constexpr double kSampleStepTexels = 8.0;
+        constexpr int kMaxSamplesPerTriangle = 64;
+        constexpr int kMaxRuntimeSamples = 20000;
+
+        samples.clear();
+        int desired_total = 0;
+        for (const auto& triangle : triangles)
+        {
+            const double uv_area = mesh_first_uv_triangle_area(triangle.uv[0].X,
+                                                              triangle.uv[0].Y,
+                                                              triangle.uv[1].X,
+                                                              triangle.uv[1].Y,
+                                                              triangle.uv[2].X,
+                                                              triangle.uv[2].Y);
+            const int desired = std::max(1,
+                                         std::min(kMaxSamplesPerTriangle,
+                                                  static_cast<int>(std::ceil((uv_area * kTextureSize * kTextureSize) /
+                                                                            (kSampleStepTexels * kSampleStepTexels)))));
+            desired_total += desired;
+        }
+        if (desired_total > kMaxRuntimeSamples)
+        {
+            failure = "planner_sample_budget_exceeded";
+            return false;
+        }
+        samples.reserve(static_cast<std::size_t>(desired_total));
+
+        for (std::size_t tri = 0; tri < triangles.size(); ++tri)
+        {
+            const auto& triangle = triangles[tri];
+            const auto normal = sdk_vec_normalize(sdk_vec_cross(sdk_vec_sub(triangle.world[1], triangle.world[0]),
+                                                                sdk_vec_sub(triangle.world[2], triangle.world[0])));
+            if (sdk_vec_len(normal) <= 0.000001)
+            {
+                ++stats.degenerate_triangles;
+                continue;
+            }
+            const double facing = sdk_vec_dot(normal, camera_direction);
+            const auto region = facing <= -kFrontThreshold
+                                    ? MeshFirstRegion::Front
+                                    : (facing >= kBackThreshold ? MeshFirstRegion::Back : MeshFirstRegion::Side);
+            ++stats.total_triangles;
+            ++mesh_first_triangle_region_count(stats, region);
+
+            const double uv_area = mesh_first_uv_triangle_area(triangle.uv[0].X,
+                                                              triangle.uv[0].Y,
+                                                              triangle.uv[1].X,
+                                                              triangle.uv[1].Y,
+                                                              triangle.uv[2].X,
+                                                              triangle.uv[2].Y);
+            const int count = std::max(1,
+                                       std::min(kMaxSamplesPerTriangle,
+                                                static_cast<int>(std::ceil((uv_area * kTextureSize * kTextureSize) /
+                                                                          (kSampleStepTexels * kSampleStepTexels)))));
+            if (count <= 1)
+            {
+                mesh_first_emit_runtime_triangle_sample(samples, triangle, static_cast<int>(tri), region, facing, uv_area, 1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0);
+                continue;
+            }
+            int emitted = 0;
+            const int subdiv = std::max(2, static_cast<int>(std::ceil(std::sqrt(static_cast<double>(count) * 2.0))));
+            for (int a_i = 0; a_i < subdiv && emitted < count; ++a_i)
+            {
+                for (int b_i = 0; b_i < subdiv - a_i && emitted < count; ++b_i)
+                {
+                    const double a = (static_cast<double>(a_i) + 0.5) / static_cast<double>(subdiv);
+                    const double b = (static_cast<double>(b_i) + 0.5) / static_cast<double>(subdiv);
+                    if (a + b >= 1.0)
+                    {
+                        continue;
+                    }
+                    const double c = 1.0 - a - b;
+                    mesh_first_emit_runtime_triangle_sample(samples, triangle, static_cast<int>(tri), region, facing, uv_area, a, b, c);
+                    ++emitted;
+                }
+            }
+            while (emitted < count)
+            {
+                mesh_first_emit_runtime_triangle_sample(samples, triangle, static_cast<int>(tri), region, facing, uv_area, 1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0);
+                ++emitted;
+            }
+        }
+
+        stats.total_samples = static_cast<int>(samples.size());
+        stats.front_samples = 0;
+        stats.side_samples = 0;
+        stats.back_samples = 0;
+        for (const auto& sample : samples)
+        {
+            ++mesh_first_sample_region_count(stats, sample.region);
+        }
+        if (stats.invalid_triangles > 0 || stats.degenerate_triangles > 0)
+        {
+            failure = "planner_invalid_runtime_triangles";
+            return false;
+        }
+        if (samples.empty())
+        {
+            failure = "planner_no_runtime_samples";
+            return false;
+        }
+        return true;
+    }
+
+    auto mesh_first_generate_plan_samples(const MeshFirstProfile& profile,
+                                          const std::vector<sdk::FVector>& component_positions,
+                                          const std::vector<sdk::FVector>& world_positions,
+                                          const sdk::FVector& camera_direction,
+                                          std::vector<MeshFirstPlanSample>& samples,
+                                          MeshFirstPlanStats& stats,
+                                          std::string& failure) -> bool
+    {
+        constexpr double kFrontThreshold = 0.35;
+        constexpr double kBackThreshold = 0.35;
+        constexpr double kTextureSize = 1024.0;
+        constexpr double kSampleStepTexels = 8.0;
+        constexpr int kMaxSamplesPerTriangle = 64;
+        constexpr int kMaxRuntimeSamples = 20000;
+
+        samples.clear();
+        if (profile.indices.size() % 3 != 0 ||
+            component_positions.size() != profile.vertices.size() ||
+            world_positions.size() != profile.vertices.size())
+        {
+            failure = "planner_profile_world_data_mismatch";
+            return false;
+        }
+
+        int desired_total = 0;
+        for (std::size_t tri = 0; tri + 2 < profile.indices.size(); tri += 3)
+        {
+            const int i0 = profile.indices[tri + 0];
+            const int i1 = profile.indices[tri + 1];
+            const int i2 = profile.indices[tri + 2];
+            if (i0 < 0 || i1 < 0 || i2 < 0 ||
+                i0 >= profile.vertex_count || i1 >= profile.vertex_count || i2 >= profile.vertex_count)
+            {
+                ++stats.invalid_triangles;
+                continue;
+            }
+            const auto& v0 = profile.vertices[static_cast<std::size_t>(i0)];
+            const auto& v1 = profile.vertices[static_cast<std::size_t>(i1)];
+            const auto& v2 = profile.vertices[static_cast<std::size_t>(i2)];
+            const double uv_area = mesh_first_uv_triangle_area(v0.u, v0.v, v1.u, v1.v, v2.u, v2.v);
+            const int desired = std::max(1,
+                                         std::min(kMaxSamplesPerTriangle,
+                                                  static_cast<int>(std::ceil((uv_area * kTextureSize * kTextureSize) /
+                                                                            (kSampleStepTexels * kSampleStepTexels)))));
+            desired_total += desired;
+        }
+        if (desired_total > kMaxRuntimeSamples)
+        {
+            failure = "planner_sample_budget_exceeded";
+            return false;
+        }
+        samples.reserve(static_cast<std::size_t>(desired_total));
+
+        for (std::size_t tri = 0; tri + 2 < profile.indices.size(); tri += 3)
+        {
+            const int i0 = profile.indices[tri + 0];
+            const int i1 = profile.indices[tri + 1];
+            const int i2 = profile.indices[tri + 2];
+            if (i0 < 0 || i1 < 0 || i2 < 0 ||
+                i0 >= profile.vertex_count || i1 >= profile.vertex_count || i2 >= profile.vertex_count)
+            {
+                continue;
+            }
+            const auto& p0 = world_positions[static_cast<std::size_t>(i0)];
+            const auto& p1 = world_positions[static_cast<std::size_t>(i1)];
+            const auto& p2 = world_positions[static_cast<std::size_t>(i2)];
+            const auto normal = sdk_vec_normalize(sdk_vec_cross(sdk_vec_sub(p1, p0), sdk_vec_sub(p2, p0)));
+            if (sdk_vec_len(normal) <= 0.000001)
+            {
+                ++stats.degenerate_triangles;
+                continue;
+            }
+            const double facing = sdk_vec_dot(normal, camera_direction);
+            const auto region = facing <= -kFrontThreshold
+                                    ? MeshFirstRegion::Front
+                                    : (facing >= kBackThreshold ? MeshFirstRegion::Back : MeshFirstRegion::Side);
+            ++stats.total_triangles;
+            ++mesh_first_triangle_region_count(stats, region);
+
+            const auto& v0 = profile.vertices[static_cast<std::size_t>(i0)];
+            const auto& v1 = profile.vertices[static_cast<std::size_t>(i1)];
+            const auto& v2 = profile.vertices[static_cast<std::size_t>(i2)];
+            const double uv_area = mesh_first_uv_triangle_area(v0.u, v0.v, v1.u, v1.v, v2.u, v2.v);
+            const int count = std::max(1,
+                                       std::min(kMaxSamplesPerTriangle,
+                                                static_cast<int>(std::ceil((uv_area * kTextureSize * kTextureSize) /
+                                                                          (kSampleStepTexels * kSampleStepTexels)))));
+            if (count <= 1)
+            {
+                mesh_first_emit_triangle_sample(samples, profile, component_positions, world_positions, static_cast<int>(tri / 3), i0, i1, i2, region, facing, uv_area, 1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0);
+                continue;
+            }
+            int emitted = 0;
+            const int subdiv = std::max(2, static_cast<int>(std::ceil(std::sqrt(static_cast<double>(count) * 2.0))));
+            for (int a_i = 0; a_i < subdiv && emitted < count; ++a_i)
+            {
+                for (int b_i = 0; b_i < subdiv - a_i && emitted < count; ++b_i)
+                {
+                    const double a = (static_cast<double>(a_i) + 0.5) / static_cast<double>(subdiv);
+                    const double b = (static_cast<double>(b_i) + 0.5) / static_cast<double>(subdiv);
+                    if (a + b >= 1.0)
+                    {
+                        continue;
+                    }
+                    const double c = 1.0 - a - b;
+                    mesh_first_emit_triangle_sample(samples, profile, component_positions, world_positions, static_cast<int>(tri / 3), i0, i1, i2, region, facing, uv_area, a, b, c);
+                    ++emitted;
+                }
+            }
+            while (emitted < count)
+            {
+                mesh_first_emit_triangle_sample(samples, profile, component_positions, world_positions, static_cast<int>(tri / 3), i0, i1, i2, region, facing, uv_area, 1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0);
+                ++emitted;
+            }
+        }
+
+        stats.total_samples = static_cast<int>(samples.size());
+        stats.front_samples = 0;
+        stats.side_samples = 0;
+        stats.back_samples = 0;
+        for (const auto& sample : samples)
+        {
+            ++mesh_first_sample_region_count(stats, sample.region);
+        }
+        if (stats.invalid_triangles > 0 || stats.degenerate_triangles > 0)
+        {
+            failure = "planner_invalid_triangles";
+            return false;
+        }
+        return !samples.empty();
+    }
+
+    auto mesh_first_assign_colors(std::vector<MeshFirstPlanSample>& samples,
+                                  const std::vector<FrontSample>& source_samples,
+                                  bool enable_front,
+                                  bool enable_side,
+                                  bool enable_back,
+                                  MeshFirstPlanStats& stats) -> void
+    {
+        constexpr double kMaxSourceDistanceUv = 0.35;
+        std::vector<double> distances{};
+        distances.reserve(samples.size());
+        for (auto& sample : samples)
+        {
+            if (source_samples.empty())
+            {
+                sample.unsafe = true;
+                sample.source_distance_uv = std::numeric_limits<double>::infinity();
+            }
+            else
+            {
+                const FrontSample* best = nullptr;
+                double best_distance_sq = std::numeric_limits<double>::infinity();
+                for (const auto& source : source_samples)
+                {
+                    const double du = sample.u - source.u;
+                    const double dv = sample.v - source.v;
+                    const double distance_sq = du * du + dv * dv;
+                    if (distance_sq < best_distance_sq)
+                    {
+                        best_distance_sq = distance_sq;
+                        best = &source;
+                    }
+                }
+                sample.source_distance_uv = std::sqrt(best_distance_sq);
+                distances.push_back(sample.source_distance_uv);
+                if (best)
+                {
+                    sample.r = clamp01(best->r);
+                    sample.g = clamp01(best->g);
+                    sample.b = clamp01(best->b);
+                    sample.roughness = clamp01(std::max(0.35, best->roughness));
+                    sample.metallic = clamp01(best->metallic);
+                }
+                sample.unsafe = !std::isfinite(sample.source_distance_uv) || sample.source_distance_uv > kMaxSourceDistanceUv;
+            }
+            if (sample.unsafe)
+            {
+                ++stats.unsafe_candidates;
+                if (sample.region == MeshFirstRegion::Front)
+                {
+                    ++stats.unsafe_front;
+                }
+                else if (sample.region == MeshFirstRegion::Side)
+                {
+                    ++stats.unsafe_side;
+                }
+                else
+                {
+                    ++stats.unsafe_back;
+                }
+            }
+            const bool enabled = (sample.region == MeshFirstRegion::Front && enable_front) ||
+                                 (sample.region == MeshFirstRegion::Side && enable_side) ||
+                                 (sample.region == MeshFirstRegion::Back && enable_back);
+            if (enabled)
+            {
+                ++stats.enabled_samples;
+                if (sample.unsafe)
+                {
+                    ++stats.unsafe_enabled;
+                }
+            }
+        }
+        if (!distances.empty())
+        {
+            double sum = 0.0;
+            for (const auto distance : distances)
+            {
+                sum += distance;
+                stats.source_distance_max_uv = std::max(stats.source_distance_max_uv, distance);
+            }
+            stats.source_distance_avg_uv = sum / static_cast<double>(distances.size());
+            std::sort(distances.begin(), distances.end());
+            const auto index = std::min(distances.size() - 1,
+                                        static_cast<std::size_t>(std::floor(static_cast<double>(distances.size() - 1) * 0.95)));
+            stats.source_distance_p95_uv = distances[index];
+        }
+    }
+
+    auto mesh_first_plan_stats_metadata(const MeshFirstPlanStats& stats) -> std::string
+    {
+        return "\"planner_triangles_total\":" + std::to_string(stats.total_triangles) +
+               ",\"planner_triangles_front\":" + std::to_string(stats.front_triangles) +
+               ",\"planner_triangles_side\":" + std::to_string(stats.side_triangles) +
+               ",\"planner_triangles_back\":" + std::to_string(stats.back_triangles) +
+               ",\"planner_invalid_triangles\":" + std::to_string(stats.invalid_triangles) +
+               ",\"planner_degenerate_triangles\":" + std::to_string(stats.degenerate_triangles) +
+               ",\"planner_samples_total\":" + std::to_string(stats.total_samples) +
+               ",\"planner_samples_front\":" + std::to_string(stats.front_samples) +
+               ",\"planner_samples_side\":" + std::to_string(stats.side_samples) +
+               ",\"planner_samples_back\":" + std::to_string(stats.back_samples) +
+               ",\"planner_samples_enabled\":" + std::to_string(stats.enabled_samples) +
+               ",\"unsafe_candidates\":" + std::to_string(stats.unsafe_candidates) +
+               ",\"unsafe_front\":" + std::to_string(stats.unsafe_front) +
+               ",\"unsafe_side\":" + std::to_string(stats.unsafe_side) +
+               ",\"unsafe_back\":" + std::to_string(stats.unsafe_back) +
+               ",\"unsafe_enabled\":" + std::to_string(stats.unsafe_enabled) +
+               ",\"source_distance_avg_uv\":" + std::to_string(stats.source_distance_avg_uv) +
+               ",\"source_distance_p95_uv\":" + std::to_string(stats.source_distance_p95_uv) +
+               ",\"source_distance_max_uv\":" + std::to_string(stats.source_distance_max_uv);
+    }
+
+    enum class MeshFirstUvTransform
+    {
+        Identity = 0,
+        FlipV = 1,
+        FlipU = 2,
+        FlipUV = 3,
+        Swap = 4,
+        SwapFlipV = 5,
+        SwapFlipU = 6,
+        SwapFlipUV = 7,
+    };
+
+    auto mesh_first_uv_transform_name(MeshFirstUvTransform transform) -> const char*
+    {
+        switch (transform)
+        {
+        case MeshFirstUvTransform::Identity:
+            return "identity";
+        case MeshFirstUvTransform::FlipV:
+            return "flip_v";
+        case MeshFirstUvTransform::FlipU:
+            return "flip_u";
+        case MeshFirstUvTransform::FlipUV:
+            return "flip_uv";
+        case MeshFirstUvTransform::Swap:
+            return "swap";
+        case MeshFirstUvTransform::SwapFlipV:
+            return "swap_flip_v";
+        case MeshFirstUvTransform::SwapFlipU:
+            return "swap_flip_u";
+        case MeshFirstUvTransform::SwapFlipUV:
+            return "swap_flip_uv";
+        }
+        return "unknown";
+    }
+
+    auto mesh_first_apply_uv_transform(MeshFirstUvTransform transform, double u, double v) -> sdk::FVector2D
+    {
+        switch (transform)
+        {
+        case MeshFirstUvTransform::Identity:
+            return {clamp01(u), clamp01(v)};
+        case MeshFirstUvTransform::FlipV:
+            return {clamp01(u), clamp01(1.0 - v)};
+        case MeshFirstUvTransform::FlipU:
+            return {clamp01(1.0 - u), clamp01(v)};
+        case MeshFirstUvTransform::FlipUV:
+            return {clamp01(1.0 - u), clamp01(1.0 - v)};
+        case MeshFirstUvTransform::Swap:
+            return {clamp01(v), clamp01(u)};
+        case MeshFirstUvTransform::SwapFlipV:
+            return {clamp01(v), clamp01(1.0 - u)};
+        case MeshFirstUvTransform::SwapFlipU:
+            return {clamp01(1.0 - v), clamp01(u)};
+        case MeshFirstUvTransform::SwapFlipUV:
+            return {clamp01(1.0 - v), clamp01(1.0 - u)};
+        }
+        return {clamp01(u), clamp01(v)};
+    }
+
+    struct MeshFirstUvCalibration
+    {
+        bool attempted{false};
+        bool applied{false};
+        bool hit_test_available{false};
+        MeshFirstUvTransform transform{MeshFirstUvTransform::Identity};
+        int attempts{0};
+        int success{0};
+        double identity_avg_error{0.0};
+        double best_avg_error{0.0};
+        double best_max_error{0.0};
+    };
+
+    auto mesh_first_calibrate_runtime_uv(Reflection& ref,
+                                         const SdkContext& ctx,
+                                         std::uintptr_t mesh,
+                                         std::vector<MeshFirstPlanSample>& samples) -> MeshFirstUvCalibration
+    {
+        MeshFirstUvCalibration out{};
+        out.attempted = true;
+        const auto hit_test_function = ref.find_function(ctx.component, "HitTestAtScreenPosition");
+        out.hit_test_available = hit_test_function != 0;
+        if (!hit_test_function || samples.empty())
+        {
+            return out;
+        }
+
+        constexpr int kTransformCount = 8;
+        double error_sum[kTransformCount]{};
+        double error_max[kTransformCount]{};
+        int front_count = 0;
+        for (const auto& sample : samples)
+        {
+            if (sample.region == MeshFirstRegion::Front)
+            {
+                ++front_count;
+            }
+        }
+        const int stride = std::max(1, front_count / 512);
+        int front_seen = 0;
+        for (const auto& sample : samples)
+        {
+            if (sample.region != MeshFirstRegion::Front)
+            {
+                continue;
+            }
+            if ((front_seen++ % stride) != 0)
+            {
+                continue;
+            }
+            if (out.attempts >= 512)
+            {
+                break;
+            }
+            ++out.attempts;
+            double screen_x = 0.0;
+            double screen_y = 0.0;
+            if (!sdk_project_world_to_screen(ref, ctx, sample.world_position, screen_x, screen_y))
+            {
+                continue;
+            }
+            sdk::RuntimePaintableComponent_HitTestAtScreenPosition hit{};
+            hit.MeshComponent = reinterpret_cast<void*>(mesh);
+            hit.ScreenPosition = sdk::FVector2D{screen_x, screen_y};
+            hit.PlayerController = reinterpret_cast<void*>(ctx.controller);
+            hit.bUseCachedTriangles = true;
+            std::string failure{};
+            if (!process_event(ctx.component, hit_test_function, reinterpret_cast<std::uint8_t*>(&hit), failure) ||
+                !hit.ReturnValue.bSuccess)
+            {
+                continue;
+            }
+            ++out.success;
+            for (int i = 0; i < kTransformCount; ++i)
+            {
+                const auto transformed = mesh_first_apply_uv_transform(static_cast<MeshFirstUvTransform>(i), sample.u, sample.v);
+                const double du = transformed.X - hit.ReturnValue.HitUV.X;
+                const double dv = transformed.Y - hit.ReturnValue.HitUV.Y;
+                const double error = std::sqrt(du * du + dv * dv);
+                error_sum[i] += error;
+                error_max[i] = std::max(error_max[i], error);
+            }
+        }
+        if (out.success <= 0)
+        {
+            return out;
+        }
+
+        int best_index = 0;
+        double best_avg = error_sum[0] / static_cast<double>(out.success);
+        for (int i = 1; i < kTransformCount; ++i)
+        {
+            const double avg = error_sum[i] / static_cast<double>(out.success);
+            if (avg < best_avg)
+            {
+                best_avg = avg;
+                best_index = i;
+            }
+        }
+        out.identity_avg_error = error_sum[0] / static_cast<double>(out.success);
+        out.best_avg_error = best_avg;
+        out.best_max_error = error_max[best_index];
+        out.transform = static_cast<MeshFirstUvTransform>(best_index);
+        out.applied = out.success >= 16 &&
+                      out.transform != MeshFirstUvTransform::Identity &&
+                      out.best_avg_error < 0.08 &&
+                      out.best_avg_error + 0.005 < out.identity_avg_error;
+        if (out.applied)
+        {
+            for (auto& sample : samples)
+            {
+                const auto transformed = mesh_first_apply_uv_transform(out.transform, sample.u, sample.v);
+                sample.u = transformed.X;
+                sample.v = transformed.Y;
+            }
+        }
+        return out;
+    }
+
+    auto mesh_first_uv_calibration_metadata(const MeshFirstUvCalibration& calibration) -> std::string
+    {
+        return "\"runtime_uv_calibration_attempted\":" + std::string(json_bool(calibration.attempted)) +
+               ",\"runtime_uv_calibration_applied\":" + std::string(json_bool(calibration.applied)) +
+               ",\"runtime_uv_hit_test_available\":" + std::string(json_bool(calibration.hit_test_available)) +
+               ",\"runtime_uv_transform\":\"" + json_escape(mesh_first_uv_transform_name(calibration.transform)) + "\"" +
+               ",\"runtime_uv_attempts\":" + std::to_string(calibration.attempts) +
+               ",\"runtime_uv_success\":" + std::to_string(calibration.success) +
+               ",\"runtime_uv_identity_avg_error\":" + std::to_string(calibration.identity_avg_error) +
+               ",\"runtime_uv_best_avg_error\":" + std::to_string(calibration.best_avg_error) +
+               ",\"runtime_uv_best_max_error\":" + std::to_string(calibration.best_max_error);
+    }
+
+    struct MeshFirstReplicationSnapshot
+    {
+        bool recorded_count_available{false};
+        int recorded_count{-1};
+        bool manager_available{false};
+        std::uintptr_t manager{0};
+        bool manager_queued_count_available{false};
+        int manager_queued_count{-1};
+        bool manager_component_queued_count_available{false};
+        int manager_component_queued_count{-1};
+        std::string failure{};
+    };
+
+    struct MeshFirstRecordedStrokeCountParams
+    {
+        int ReturnValue{0};
+    };
+
+    struct MeshFirstQueuedStrokeCountParams
+    {
+        int ReturnValue{0};
+    };
+
+    struct MeshFirstQueuedStrokeCountForComponentParams
+    {
+        void* PaintComponent{nullptr};
+        int ReturnValue{0};
+        std::uint8_t Pad_C[0x4]{};
+    };
+
+    auto mesh_first_capture_replication_snapshot(Reflection& ref, std::uintptr_t component) -> MeshFirstReplicationSnapshot
+    {
+        MeshFirstReplicationSnapshot snapshot{};
+        if (live_uobject(component))
+        {
+            if (const auto function = ref.find_function(component, "GetRecordedStrokeCount"))
+            {
+                MeshFirstRecordedStrokeCountParams params{};
+                std::string failure{};
+                if (process_event(component, function, reinterpret_cast<std::uint8_t*>(&params), failure))
+                {
+                    snapshot.recorded_count_available = true;
+                    snapshot.recorded_count = params.ReturnValue;
+                }
+                else if (snapshot.failure.empty())
+                {
+                    snapshot.failure = failure;
+                }
+            }
+            else if (snapshot.failure.empty())
+            {
+                snapshot.failure = "GetRecordedStrokeCount_unavailable";
+            }
+        }
+        else if (snapshot.failure.empty())
+        {
+            snapshot.failure = "paint_component_unavailable";
+        }
+
+        const auto manager = ref.find_first_instance("RuntimePaintReplicationManager");
+        snapshot.manager = manager;
+        snapshot.manager_available = live_uobject(manager);
+        if (!snapshot.manager_available)
+        {
+            if (snapshot.failure.empty())
+            {
+                snapshot.failure = "RuntimePaintReplicationManager_unavailable";
+            }
+            return snapshot;
+        }
+
+        if (const auto function = ref.find_function(manager, "GetQueuedStrokeCount"))
+        {
+            MeshFirstQueuedStrokeCountParams params{};
+            std::string failure{};
+            if (process_event(manager, function, reinterpret_cast<std::uint8_t*>(&params), failure))
+            {
+                snapshot.manager_queued_count_available = true;
+                snapshot.manager_queued_count = params.ReturnValue;
+            }
+            else if (snapshot.failure.empty())
+            {
+                snapshot.failure = failure;
+            }
+        }
+        else if (snapshot.failure.empty())
+        {
+            snapshot.failure = "GetQueuedStrokeCount_unavailable";
+        }
+
+        if (const auto function = ref.find_function(manager, "GetQueuedStrokeCountForComponent"))
+        {
+            MeshFirstQueuedStrokeCountForComponentParams params{};
+            params.PaintComponent = reinterpret_cast<void*>(component);
+            std::string failure{};
+            if (process_event(manager, function, reinterpret_cast<std::uint8_t*>(&params), failure))
+            {
+                snapshot.manager_component_queued_count_available = true;
+                snapshot.manager_component_queued_count = params.ReturnValue;
+            }
+            else if (snapshot.failure.empty())
+            {
+                snapshot.failure = failure;
+            }
+        }
+        else if (snapshot.failure.empty())
+        {
+            snapshot.failure = "GetQueuedStrokeCountForComponent_unavailable";
+        }
+
+        return snapshot;
+    }
+
+    auto mesh_first_replication_snapshot_metadata(const char* prefix, const MeshFirstReplicationSnapshot& snapshot) -> std::string
+    {
+        std::string key(prefix ? prefix : "mesh_replication");
+        return ",\"" + key + "_recorded_count_available\":" + json_bool(snapshot.recorded_count_available) +
+               ",\"" + key + "_recorded_count\":" + std::to_string(snapshot.recorded_count) +
+               ",\"" + key + "_manager_available\":" + json_bool(snapshot.manager_available) +
+               ",\"" + key + "_manager\":\"" + hex_address(snapshot.manager) + "\"" +
+               ",\"" + key + "_manager_queued_count_available\":" + json_bool(snapshot.manager_queued_count_available) +
+               ",\"" + key + "_manager_queued_count\":" + std::to_string(snapshot.manager_queued_count) +
+               ",\"" + key + "_manager_component_queued_count_available\":" + json_bool(snapshot.manager_component_queued_count_available) +
+               ",\"" + key + "_manager_component_queued_count\":" + std::to_string(snapshot.manager_component_queued_count) +
+               ",\"" + key + "_failure\":\"" + json_escape(snapshot.failure) + "\"";
+    }
+
+    auto is_mesh_first_paint_request(const std::string& request) -> bool
+    {
+        return request.find("\"native_apply_mode\":\"mesh_first_paint\"") != std::string::npos ||
+               request.find("\"route\":\"f10_mesh_first_paint\"") != std::string::npos;
+    }
+
+    auto paint_mesh_first_on_game_thread(const std::string& request) -> std::string
+    {
+        const bool enable_front = json_bool_field(request, "enable_front_paint", true);
+        const bool enable_side = json_bool_field(request, "enable_side_paint", true);
+        const bool enable_back = json_bool_field(request, "enable_back_paint", false);
+        const double tuning_brush_radius = clamp_range(json_number_field(request, "brush_radius", 0.01), 0.001, 0.05);
+        const double tuning_brush_spacing = clamp_range(json_number_field(request, "brush_spacing", 0.18), 0.01, 0.5);
+        const double tuning_server_brush_spacing = clamp_range(json_number_field(request, "server_brush_spacing", 0.08), 0.01, 0.5);
+        const int tuning_server_batch_limit = json_int_field(request, "server_batch_limit", ServerPaintBatchStrokeLimit, 1, ServerPaintBatchStrokeLimit);
+        const int tuning_server_batch_delay_ms = json_int_field(request, "server_batch_delay_ms", ServerPaintBatchDelayMs, 1, 1000);
+
+        std::string metadata = "\"route\":\"mesh_first_paint\"";
+        metadata += ",\"mesh_first_pipeline\":\"profile_pose_projection_server_batch\"";
+        metadata += ",\"old_dense_hittest_fallback_used\":false";
+        metadata += ",\"runtime_hit_test_used\":false";
+        metadata += ",\"server_paint_batch_required\":true";
+        metadata += ",\"enable_front_paint\":" + std::string(json_bool(enable_front));
+        metadata += ",\"enable_side_paint\":" + std::string(json_bool(enable_side));
+        metadata += ",\"enable_back_paint\":" + std::string(json_bool(enable_back));
+        metadata += ",\"brush_radius\":" + std::to_string(tuning_brush_radius);
+        metadata += ",\"brush_spacing\":" + std::to_string(tuning_brush_spacing);
+        metadata += ",\"server_brush_spacing\":" + std::to_string(tuning_server_brush_spacing);
+        metadata += ",\"server_batch_limit\":" + std::to_string(tuning_server_batch_limit);
+        metadata += ",\"server_batch_delay_ms\":" + std::to_string(tuning_server_batch_delay_ms);
+        metadata += ",\"bridge_events\":[\"mesh_profile_load\",\"pose_resolve\",\"planner_build\",\"bridge.paint_batch.request\",\"bridge.paint_batch.response\"]";
+
+        if (!enable_front && !enable_side && !enable_back)
+        {
+            return response_json(false,
+                                 "mesh_regions_disabled",
+                                 0,
+                                 1,
+                                 "all mesh-first paint regions are disabled",
+                                 metadata);
+        }
+
+        write_bridge_progress("mesh_profile_load",
+                              "Loading mesh profile",
+                              1,
+                              4,
+                              0.0,
+                              "\"pipeline\":\"mesh_first_paint\"");
+        const auto profile = load_mesh_first_profile();
+        metadata += ",";
+        metadata += mesh_first_profile_metadata(profile);
+        if (!profile.ok)
+        {
+            return response_json(false, profile.stage.c_str(), 0, 1, profile.message, metadata);
+        }
+
+        Reflection ref{};
+        std::string failure{};
+        if (!ref.init(failure))
+        {
+            return response_json(false,
+                                 "sdk_update_required",
+                                 0,
+                                 1,
+                                 failure.empty() ? "SDK reflection init failed" : failure,
+                                 metadata + ",\"sdk_resolution_exception\":true");
+        }
+
+        SdkContext ctx{};
+        try
+        {
+            ctx = sdk_resolve_context(ref);
+        }
+        catch (const SdkResolutionException& ex)
+        {
+            return response_json(false,
+                                 ex.stage.c_str(),
+                                 0,
+                                 1,
+                                 ex.what(),
+                                 metadata + ",\"sdk_resolution_exception\":true");
+        }
+
+        metadata += ",";
+        metadata += sdk_context_metadata(ref, ctx);
+        if (!ctx.ok)
+        {
+            return response_json(false, ctx.stage.c_str(), 0, 1, ctx.message, metadata);
+        }
+        if (!ctx.server_paint_batch_function)
+        {
+            return response_json(false,
+                                 "mesh_server_batch_unavailable",
+                                 0,
+                                 1,
+                                 "ServerPaintBatch is unavailable; mesh-first paint cannot replay",
+                                 metadata);
+        }
+
+        const auto mesh_candidates = sdk_collect_front_mesh_candidates(ref, ctx);
+        metadata += ",\"front_mesh_candidate_count\":" + std::to_string(mesh_candidates.size());
+        metadata += ",\"front_mesh_candidates\":" + sdk_front_mesh_candidates_json(ref, mesh_candidates);
+        if (mesh_candidates.empty())
+        {
+            return response_json(false,
+                                 "mesh_component_unavailable",
+                                 0,
+                                 1,
+                                 "no live skeletal mesh component candidate was found",
+                                 metadata);
+        }
+        SdkFrontMeshCandidate selected_mesh{};
+        if (!sdk_select_profile_mesh_candidate(ref, mesh_candidates, selected_mesh))
+        {
+            return response_json(false,
+                                 "mesh_profile_runtime_identity_mismatch",
+                                 0,
+                                 1,
+                                 "no live mesh candidate matched the paintman mesh profile",
+                                 metadata);
+        }
+        metadata += ",\"selected_mesh\":\"" + hex_address(selected_mesh.mesh) + "\"";
+        metadata += ",\"selected_mesh_source\":\"" + json_escape(selected_mesh.source) + "\"";
+        metadata += ",\"selected_mesh_name\":\"" + json_escape(ref.object_name(selected_mesh.mesh)) + "\"";
+        metadata += ",\"selected_mesh_class\":\"" + json_escape(ref.class_name(selected_mesh.mesh)) + "\"";
+        metadata += ",\"selected_mesh_path\":\"" + json_escape(ref.object_path(selected_mesh.mesh)) + "\"";
+        metadata += ",\"selected_mesh_asset\":\"" + hex_address(selected_mesh.asset) + "\"";
+        metadata += ",\"selected_mesh_asset_name\":\"" + json_escape(ref.object_name(selected_mesh.asset)) + "\"";
+        metadata += ",\"selected_mesh_asset_path\":\"" + json_escape(ref.object_path(selected_mesh.asset)) + "\"";
+
+        write_bridge_progress("pose_resolve",
+                              "Resolving current skinned pose",
+                              2,
+                              4,
+                              0.0,
+                              "\"pipeline\":\"mesh_first_paint\",\"mesh_profile_bone_count\":" + std::to_string(profile.bone_count));
+        const auto pose = sdk_resolve_skinned_pose(ref, selected_mesh.mesh, profile.bone_count);
+        metadata += ",";
+        metadata += sdk_pose_result_metadata(pose);
+        if (!pose.ok)
+        {
+            return response_json(false, pose.stage.c_str(), 0, 1, pose.message, metadata + ",\"bind_pose_fallback_used\":false,\"replay_blocked\":true");
+        }
+
+        write_bridge_progress("planner_build",
+                              "Building mesh-first plan",
+                              3,
+                              4,
+                              0.0,
+                              "\"pipeline\":\"mesh_first_paint\",\"pose_transform_count\":" + std::to_string(pose.transform_count));
+        sdk::FTransform component_to_world{};
+        std::string component_transform_source{};
+        if (!mesh_first_resolve_component_to_world(ref, selected_mesh.mesh, ctx.body_world_position, component_to_world, component_transform_source))
+        {
+            return response_json(false,
+                                 "component_world_transform_unavailable",
+                                 0,
+                                 1,
+                                 "live mesh component transform is unavailable",
+                                 metadata + ",\"component_world_transform_source\":\"" + json_escape(component_transform_source) +
+                                     "\",\"pose_required\":true,\"bind_pose_fallback_used\":false,\"replay_blocked\":true");
+        }
+        metadata += ",\"component_world_transform_source\":\"" + json_escape(component_transform_source) + "\"";
+        metadata += ",\"component_world_x\":" + std::to_string(component_to_world.Translation.X);
+        metadata += ",\"component_world_y\":" + std::to_string(component_to_world.Translation.Y);
+        metadata += ",\"component_world_z\":" + std::to_string(component_to_world.Translation.Z);
+
+        std::vector<sdk::FVector> skinned_component_positions{};
+        std::vector<sdk::FVector> skinned_world_positions{};
+        std::string skin_failure{};
+        if (!mesh_first_skin_vertices(profile,
+                                      pose,
+                                      component_to_world,
+                                      skinned_component_positions,
+                                      skinned_world_positions,
+                                      skin_failure))
+        {
+            return response_json(false,
+                                 skin_failure.empty() ? "skinned_pose_build_failed" : skin_failure.c_str(),
+                                 0,
+                                 1,
+                                 "current skinned vertices could not be built from the live pose",
+                                 metadata + ",\"pose_required\":true,\"bind_pose_fallback_used\":false,\"replay_blocked\":true");
+        }
+        metadata += ",\"skinned_vertex_count\":" + std::to_string(skinned_world_positions.size());
+
+        const auto runtime_triangle_cache = mesh_first_resolve_runtime_triangle_cache(ctx.component, profile);
+        metadata += ",\"runtime_triangle_cache_used\":" + std::string(json_bool(runtime_triangle_cache.ok));
+        metadata += ",\"runtime_triangle_cache_offset\":\"" + (runtime_triangle_cache.owner_offset >= 0 ? hex_address(static_cast<std::uintptr_t>(runtime_triangle_cache.owner_offset)) : std::string("none")) + "\"";
+        metadata += ",\"runtime_triangle_cache_stride\":" + std::to_string(runtime_triangle_cache.stride);
+        metadata += ",\"runtime_triangle_cache_triangles\":" + std::to_string(runtime_triangle_cache.triangle_count);
+        metadata += ",\"runtime_triangle_cache_profile_uv_avg_error\":" + std::to_string(runtime_triangle_cache.profile_uv_avg_error);
+        if (!runtime_triangle_cache.ok)
+        {
+            return response_json(false,
+                                 runtime_triangle_cache.failure.empty() ? "runtime_triangle_cache_unavailable" : runtime_triangle_cache.failure.c_str(),
+                                 0,
+                                 1,
+                                 "RuntimePaintable cached triangles are unavailable; mesh-first paint cannot plan safely",
+                                 metadata + ",\"replay_blocked\":true");
+        }
+
+        const auto viewport = sdk_get_viewport_info(ref, ctx);
+        if (viewport.width <= 0 || viewport.height <= 0)
+        {
+            return response_json(false,
+                                 "viewport_unavailable",
+                                 0,
+                                 1,
+                                 "viewport size is unavailable",
+                                 metadata + ",\"replay_blocked\":true");
+        }
+        const auto center_ray = sdk_deproject_screen_position(ref,
+                                                              ctx,
+                                                              static_cast<double>(viewport.width) * 0.5,
+                                                              static_cast<double>(viewport.height) * 0.5);
+        if (!center_ray.ok || sdk_vec_len(center_ray.direction) <= 0.000001)
+        {
+            return response_json(false,
+                                 "camera_transform_unavailable",
+                                 0,
+                                 1,
+                                 "current camera direction is unavailable",
+                                 metadata + ",\"camera_failure\":\"" + json_escape(center_ray.failure) + "\",\"replay_blocked\":true");
+        }
+        const auto camera_direction = sdk_vec_normalize(center_ray.direction);
+        metadata += ",\"viewport_width\":" + std::to_string(viewport.width);
+        metadata += ",\"viewport_height\":" + std::to_string(viewport.height);
+        metadata += ",\"camera_direction_x\":" + std::to_string(camera_direction.X);
+        metadata += ",\"camera_direction_y\":" + std::to_string(camera_direction.Y);
+        metadata += ",\"camera_direction_z\":" + std::to_string(camera_direction.Z);
+
+        MeshFirstPlanStats plan_stats{};
+        std::vector<MeshFirstPlanSample> plan_samples{};
+        std::string planner_failure{};
+        if (!mesh_first_generate_plan_samples_from_runtime_cache(runtime_triangle_cache.triangles,
+                                                                 camera_direction,
+                                                                 plan_samples,
+                                                                 plan_stats,
+                                                                 planner_failure))
+        {
+            metadata += ",";
+            metadata += mesh_first_plan_stats_metadata(plan_stats);
+            return response_json(false,
+                                 planner_failure.empty() ? "planner_build_failed" : planner_failure.c_str(),
+                                 0,
+                                 1,
+                                 "mesh-first planner could not build a safe plan",
+                                 metadata + ",\"replay_blocked\":true");
+        }
+        const auto uv_calibration = mesh_first_calibrate_runtime_uv(ref, ctx, selected_mesh.mesh, plan_samples);
+        metadata += ",";
+        metadata += mesh_first_uv_calibration_metadata(uv_calibration);
+
+        SdkNativeFrontSampleResult native_front{};
+        native_front.mesh = selected_mesh.mesh;
+        native_front.viewport_width = viewport.width;
+        native_front.viewport_height = viewport.height;
+        native_front.sampling_backend = "mesh_first_runtime_paintable_triangle_cache_projection";
+        native_front.min_front_hits = std::max(16, std::min(2048, plan_stats.front_samples));
+        native_front.target_front_hits = plan_stats.front_samples;
+        native_front.hard_attempt_budget = plan_stats.total_samples;
+        native_front.samples.reserve(static_cast<std::size_t>(plan_stats.front_samples));
+        for (const auto& sample : plan_samples)
+        {
+            if (sample.region != MeshFirstRegion::Front)
+            {
+                continue;
+            }
+            FrontSample front{};
+            front.u = sample.u;
+            front.v = sample.v;
+            front.roughness = 0.65;
+            front.metallic = 0.0;
+            front.has_world_position = true;
+            front.world_position = sample.world_position;
+            native_front.samples.push_back(front);
+        }
+        if (native_front.samples.empty())
+        {
+            metadata += ",";
+            metadata += mesh_first_plan_stats_metadata(plan_stats);
+            return response_json(false,
+                                 "planner_front_source_unavailable",
+                                 0,
+                                 1,
+                                 "mesh-first planner produced no visible front source samples",
+                                 metadata + ",\"replay_blocked\":true");
+        }
+
+        int capture_request_width = std::max(1, viewport.width);
+        int capture_request_height = std::max(1, viewport.height);
+        constexpr int kMeshFirstCaptureMaxDimension = 4096;
+        const int request_max_dimension = std::max(capture_request_width, capture_request_height);
+        if (request_max_dimension > kMeshFirstCaptureMaxDimension)
+        {
+            const double scale = static_cast<double>(kMeshFirstCaptureMaxDimension) / static_cast<double>(request_max_dimension);
+            capture_request_width = std::max(1, static_cast<int>(std::round(static_cast<double>(capture_request_width) * scale)));
+            capture_request_height = std::max(1, static_cast<int>(std::round(static_cast<double>(capture_request_height) * scale)));
+        }
+
+        write_bridge_progress("mesh_basecolor_capture",
+                              "Capturing mesh-first front BaseColor",
+                              3,
+                              4,
+                              0.0,
+                              "\"front_source_samples\":" + std::to_string(native_front.samples.size()));
+        const auto capture_started = std::chrono::steady_clock::now();
+        const auto capture = sdk_capture_front_colors(ref, ctx, native_front, capture_request_width, capture_request_height);
+        const auto capture_elapsed_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - capture_started).count();
+        metadata += sdk_capture_metadata(capture);
+        metadata += ",\"mesh_capture_elapsed_ms\":" + std::to_string(capture_elapsed_ms);
+        metadata += ",\"mesh_capture_request_width\":" + std::to_string(capture_request_width);
+        metadata += ",\"mesh_capture_request_height\":" + std::to_string(capture_request_height);
+        if (!capture.bulk_readback_used || !capture.image_bulk_calibration_ok || capture.samples.empty())
+        {
+            metadata += ",";
+            metadata += mesh_first_plan_stats_metadata(plan_stats);
+            return response_json(false,
+                                 "mesh_front_capture_failed",
+                                 0,
+                                 1,
+                                 "SceneCapture BaseColor bulk capture failed: " + capture.failure,
+                                 metadata + ",\"replay_blocked\":true");
+        }
+
+        mesh_first_assign_colors(plan_samples, capture.samples, enable_front, enable_side, enable_back, plan_stats);
+        metadata += ",";
+        metadata += mesh_first_plan_stats_metadata(plan_stats);
+        metadata += ",\"planner_sample_step_texels\":8";
+        metadata += ",\"front_source_samples\":" + std::to_string(capture.samples.size());
+        if (plan_stats.unsafe_enabled > 0)
+        {
+            return response_json(false,
+                                 "planner_blocked",
+                                 0,
+                                 1,
+                                 "mesh-first planner found unsafe color-transfer candidates in enabled regions",
+                                 metadata + ",\"replay_blocked\":true");
+        }
+
+        sdk::FRuntimeBrushSettings brush{};
+        safe_copy(&brush,
+                  reinterpret_cast<const void*>(ctx.component + sdk::FieldOffsets::RuntimePaintable_CurrentBrushSettings),
+                  sizeof(brush));
+        brush.Hardness = 1.0f;
+        brush.Opacity = 1.0f;
+        brush.Radius = static_cast<float>(tuning_brush_radius);
+        brush.Spacing = static_cast<float>(tuning_server_brush_spacing);
+        brush.Falloff = sdk::EBrushFalloff::Spherical;
+        brush.BlendMode = sdk::EPaintBlendMode::Normal;
+
+        std::vector<sdk::FPaintStroke> strokes{};
+        strokes.reserve(static_cast<std::size_t>(plan_stats.enabled_samples));
+        int replay_front = 0;
+        int replay_side = 0;
+        int replay_back = 0;
+        for (const auto& sample : plan_samples)
+        {
+            const bool enabled = (sample.region == MeshFirstRegion::Front && enable_front) ||
+                                 (sample.region == MeshFirstRegion::Side && enable_side) ||
+                                 (sample.region == MeshFirstRegion::Back && enable_back);
+            if (!enabled)
+            {
+                continue;
+            }
+            const auto channel = sdk_make_channel(sdk_srgb_to_linear_unit(sample.r),
+                                                  sdk_srgb_to_linear_unit(sample.g),
+                                                  sdk_srgb_to_linear_unit(sample.b),
+                                                  sample.metallic,
+                                                  sample.roughness,
+                                                  sdk::EPaintChannelApplyMode::Override);
+            auto stroke = sdk_make_uv_stroke(sample.u,
+                                             sample.v,
+                                             channel,
+                                             brush,
+                                             sdk::EPaintChannel::Albedo);
+            strokes.push_back(stroke);
+            if (sample.region == MeshFirstRegion::Front)
+            {
+                ++replay_front;
+            }
+            else if (sample.region == MeshFirstRegion::Side)
+            {
+                ++replay_side;
+            }
+            else
+            {
+                ++replay_back;
+            }
+        }
+        if (strokes.empty())
+        {
+            return response_json(false,
+                                 "mesh_replay_empty",
+                                 0,
+                                 1,
+                                 "mesh-first planner produced no strokes for enabled regions",
+                                 metadata + ",\"replay_blocked\":true");
+        }
+
+        const auto& first_stroke = strokes.front();
+        metadata += ",\"first_stroke_u\":" + std::to_string(first_stroke.Uv.X);
+        metadata += ",\"first_stroke_v\":" + std::to_string(first_stroke.Uv.Y);
+        metadata += ",\"first_stroke_has_world_position\":" + std::string(json_bool(first_stroke.bHasWorldPosition));
+        metadata += ",\"first_stroke_has_local_position\":" + std::string(json_bool(first_stroke.bHasLocalPosition));
+        metadata += ",\"first_stroke_has_skeletal_triangle_anchor\":" + std::string(json_bool(first_stroke.bHasSkeletalTriangleAnchor));
+        metadata += ",\"first_stroke_local_x\":" + std::to_string(first_stroke.LocalPosition.X);
+        metadata += ",\"first_stroke_local_y\":" + std::to_string(first_stroke.LocalPosition.Y);
+        metadata += ",\"first_stroke_local_z\":" + std::to_string(first_stroke.LocalPosition.Z);
+        metadata += ",\"first_stroke_triangle_index\":" + std::to_string(first_stroke.SkeletalTriangleIndex);
+        metadata += ",\"first_stroke_barycentric_x\":" + std::to_string(first_stroke.SkeletalTriangleBarycentric.X);
+        metadata += ",\"first_stroke_barycentric_y\":" + std::to_string(first_stroke.SkeletalTriangleBarycentric.Y);
+        metadata += ",\"first_stroke_barycentric_z\":" + std::to_string(first_stroke.SkeletalTriangleBarycentric.Z);
+        metadata += ",\"first_stroke_albedo_r\":" + std::to_string(first_stroke.ChannelData.AlbedoColor.R);
+        metadata += ",\"first_stroke_albedo_g\":" + std::to_string(first_stroke.ChannelData.AlbedoColor.G);
+        metadata += ",\"first_stroke_albedo_b\":" + std::to_string(first_stroke.ChannelData.AlbedoColor.B);
+        metadata += ",\"replay_strokes_front\":" + std::to_string(replay_front);
+        metadata += ",\"replay_strokes_side\":" + std::to_string(replay_side);
+        metadata += ",\"replay_strokes_back\":" + std::to_string(replay_back);
+        metadata += ",\"replay_strokes_total\":" + std::to_string(strokes.size());
+        metadata += ",\"skeletal_triangle_anchor_used\":false";
+        metadata += ",\"server_batch_rpc\":\"ServerPaintBatch\"";
+        metadata += ",\"server_paint_batch_used\":true";
+        const auto local_paint_at_uv_function = ref.find_function(ctx.component, "PaintAtUVWithBrush");
+        metadata += ",\"local_paint_rpc\":\"PaintAtUVWithBrush\"";
+        metadata += ",\"local_paint_available\":" + std::string(json_bool(local_paint_at_uv_function != 0));
+        metadata += ",\"local_paint_used\":true";
+        if (!local_paint_at_uv_function)
+        {
+            return response_json(false,
+                                 "local_paint_at_uv_unavailable",
+                                 0,
+                                 1,
+                                 "PaintAtUVWithBrush is unavailable; local visible paint cannot be mirrored",
+                                 metadata + ",\"replay_blocked\":true");
+        }
+
+        const auto albedo_before = mesh_first_export_channel_checksum(ref, ctx.component, sdk::EPaintChannel::Albedo);
+        metadata += ",\"albedo_export_before_ok\":" + std::string(json_bool(albedo_before.ok));
+        metadata += ",\"albedo_export_before_bytes\":" + std::to_string(albedo_before.bytes);
+        metadata += ",\"albedo_export_before_hash\":\"" + std::to_string(albedo_before.hash) + "\"";
+        if (!albedo_before.ok)
+        {
+            metadata += ",\"albedo_export_before_failure\":\"" + json_escape(albedo_before.failure) + "\"";
+        }
+
+        write_bridge_progress("mesh_server_batch_begin",
+                              "mesh-first ServerPaintBatch stream prepared",
+                              3,
+                              4,
+                              0.0,
+                              "\"server_strokes_total\":" + std::to_string(strokes.size()) +
+                                  ",\"server_batch_limit\":" + std::to_string(tuning_server_batch_limit) +
+                                  ",\"server_batch_delay_ms\":" + std::to_string(tuning_server_batch_delay_ms));
+        const auto replication_before = mesh_first_capture_replication_snapshot(ref, ctx.component);
+        const auto batch_started = std::chrono::steady_clock::now();
+        int server_batch_calls = 0;
+        int server_batch_success = 0;
+        int server_batch_failures = 0;
+        int server_strokes_sent = 0;
+        int local_stroke_calls = 0;
+        int local_stroke_success = 0;
+        int local_stroke_failures = 0;
+        std::string first_failure{};
+        for (std::size_t offset = 0; offset < strokes.size();)
+        {
+            const std::size_t count = std::min<std::size_t>(static_cast<std::size_t>(tuning_server_batch_limit), strokes.size() - offset);
+            std::string batch_failure{};
+            ++server_batch_calls;
+            if (!sdk_call_server_paint_batch(ctx, strokes, offset, count, batch_failure))
+            {
+                ++server_batch_failures;
+                first_failure = batch_failure.empty() ? "ServerPaintBatch_failed" : batch_failure;
+                metadata += ",\"server_batch_calls\":" + std::to_string(server_batch_calls);
+                metadata += ",\"server_batch_success\":" + std::to_string(server_batch_success);
+                metadata += ",\"server_batch_failures\":" + std::to_string(server_batch_failures);
+                metadata += ",\"server_strokes_sent\":" + std::to_string(server_strokes_sent);
+                metadata += ",\"first_failure\":\"" + json_escape(first_failure) + "\"";
+                metadata += mesh_first_replication_snapshot_metadata("mesh_rep_before", replication_before);
+                metadata += mesh_first_replication_snapshot_metadata("mesh_rep_after_failure", mesh_first_capture_replication_snapshot(ref, ctx.component));
+                return response_json(false,
+                                     "mesh_server_batch_failed",
+                                     server_strokes_sent,
+                                     1,
+                                     "ServerPaintBatch failed: " + first_failure,
+                                     metadata);
+            }
+            ++server_batch_success;
+            server_strokes_sent += static_cast<int>(count);
+
+            for (std::size_t local_index = 0; local_index < count; ++local_index)
+            {
+                std::string local_failure{};
+                ++local_stroke_calls;
+                if (!sdk_call_paint_at_uv_with_brush(ctx.component,
+                                                     local_paint_at_uv_function,
+                                                     strokes[offset + local_index],
+                                                     local_failure))
+                {
+                    ++local_stroke_failures;
+                    first_failure = local_failure.empty() ? "PaintAtUVWithBrush_failed" : local_failure;
+                    metadata += ",\"server_batch_calls\":" + std::to_string(server_batch_calls);
+                    metadata += ",\"server_batch_success\":" + std::to_string(server_batch_success);
+                    metadata += ",\"server_batch_failures\":" + std::to_string(server_batch_failures);
+                    metadata += ",\"server_strokes_sent\":" + std::to_string(server_strokes_sent);
+                    metadata += ",\"local_stroke_calls\":" + std::to_string(local_stroke_calls);
+                    metadata += ",\"local_stroke_success\":" + std::to_string(local_stroke_success);
+                    metadata += ",\"local_stroke_failures\":" + std::to_string(local_stroke_failures);
+                    metadata += ",\"first_failure\":\"" + json_escape(first_failure) + "\"";
+                    metadata += mesh_first_replication_snapshot_metadata("mesh_rep_before", replication_before);
+                    metadata += mesh_first_replication_snapshot_metadata("mesh_rep_after_failure", mesh_first_capture_replication_snapshot(ref, ctx.component));
+                    return response_json(false,
+                                         "mesh_local_paint_failed",
+                                         server_strokes_sent,
+                                         1,
+                                         "PaintAtUVWithBrush failed: " + first_failure,
+                                         metadata);
+                }
+                ++local_stroke_success;
+            }
+            offset += count;
+            const int percent = 80 + static_cast<int>((static_cast<long long>(server_strokes_sent) * 19LL) /
+                                                      std::max<int>(1, static_cast<int>(strokes.size())));
+            write_bridge_progress("mesh_server_batch",
+                                  "mesh-first ServerPaintBatch stream",
+                                  percent,
+                                  100,
+                                  std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - batch_started).count(),
+                                  "\"server_strokes_sent\":" + std::to_string(server_strokes_sent) +
+                                      ",\"server_strokes_total\":" + std::to_string(strokes.size()) +
+                                      ",\"server_batch_calls\":" + std::to_string(server_batch_calls) +
+                                      ",\"server_batch_limit\":" + std::to_string(tuning_server_batch_limit) +
+                                      ",\"server_batch_delay_ms\":" + std::to_string(tuning_server_batch_delay_ms));
+            if (offset < strokes.size())
+            {
+                Sleep(static_cast<DWORD>(std::max(1, tuning_server_batch_delay_ms)));
+            }
+        }
+        const double batch_elapsed_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - batch_started).count();
+        metadata += ",\"server_batch_calls\":" + std::to_string(server_batch_calls);
+        metadata += ",\"server_batch_success\":" + std::to_string(server_batch_success);
+        metadata += ",\"server_batch_failures\":" + std::to_string(server_batch_failures);
+        metadata += ",\"server_strokes_sent\":" + std::to_string(server_strokes_sent);
+        metadata += ",\"local_stroke_calls\":" + std::to_string(local_stroke_calls);
+        metadata += ",\"local_stroke_success\":" + std::to_string(local_stroke_success);
+        metadata += ",\"local_stroke_failures\":" + std::to_string(local_stroke_failures);
+        metadata += ",\"server_batch_elapsed_ms\":" + std::to_string(batch_elapsed_ms);
+        metadata += ",\"first_failure\":\"\"";
+        Sleep(250);
+        const auto albedo_after = mesh_first_export_channel_checksum(ref, ctx.component, sdk::EPaintChannel::Albedo);
+        metadata += ",\"albedo_export_after_ok\":" + std::string(json_bool(albedo_after.ok));
+        metadata += ",\"albedo_export_after_bytes\":" + std::to_string(albedo_after.bytes);
+        metadata += ",\"albedo_export_after_hash\":\"" + std::to_string(albedo_after.hash) + "\"";
+        metadata += ",\"albedo_export_changed\":" + std::string(json_bool(albedo_before.ok && albedo_after.ok && albedo_before.hash != albedo_after.hash));
+        if (!albedo_after.ok)
+        {
+            metadata += ",\"albedo_export_after_failure\":\"" + json_escape(albedo_after.failure) + "\"";
+        }
+        const auto replication_after = mesh_first_capture_replication_snapshot(ref, ctx.component);
+        metadata += mesh_first_replication_snapshot_metadata("mesh_rep_before", replication_before);
+        metadata += mesh_first_replication_snapshot_metadata("mesh_rep_after", replication_after);
+
+        write_bridge_progress("mesh_paint_done",
+                              "mesh-first paint completed",
+                              100,
+                              100,
+                              batch_elapsed_ms,
+                              "\"server_strokes_sent\":" + std::to_string(server_strokes_sent) +
+                                  ",\"server_batch_calls\":" + std::to_string(server_batch_calls) +
+                                  ",\"front_strokes\":" + std::to_string(replay_front) +
+                                  ",\"side_strokes\":" + std::to_string(replay_side) +
+                                  ",\"back_strokes\":" + std::to_string(replay_back));
+        return response_json(true,
+                             "mesh_first_paint_done",
+                             server_strokes_sent,
+                             0,
+                             "mesh-first paint dispatched through ServerPaintBatch",
+                             metadata);
+    }
+
     auto sdk_find_front_mesh(Reflection& ref, const SdkContext& ctx) -> std::uintptr_t
     {
         const auto candidates = sdk_collect_front_mesh_candidates(ref, ctx);
@@ -3704,18 +5999,19 @@ namespace
         return stroke;
     }
 
-    auto sdk_call_server_paint_batch(const SdkContext& ctx,
-                                     const std::vector<sdk::FPaintStroke>& strokes,
-                                     std::size_t offset,
-                                     std::size_t count,
-                                     std::string& failure) -> bool
+    auto sdk_call_paint_batch_function(std::uintptr_t component,
+                                       std::uintptr_t function,
+                                       const std::vector<sdk::FPaintStroke>& strokes,
+                                       std::size_t offset,
+                                       std::size_t count,
+                                       std::string& failure) -> bool
     {
-        if (!ctx.server_paint_batch_function || count == 0)
+        if (!function || count == 0)
         {
             failure = "server_paint_batch_unavailable";
             return false;
         }
-        if (!live_uobject(ctx.component))
+        if (!live_uobject(component))
         {
             failure = "paint_component_unavailable";
             return false;
@@ -3724,11 +6020,48 @@ namespace
         params.Batch.Strokes.Data = const_cast<sdk::FPaintStroke*>(strokes.data() + offset);
         params.Batch.Strokes.Num = static_cast<std::int32_t>(count);
         params.Batch.Strokes.Max = static_cast<std::int32_t>(count);
-        if (!process_event(ctx.component, ctx.server_paint_batch_function, reinterpret_cast<std::uint8_t*>(&params), failure))
+        if (!process_event(component, function, reinterpret_cast<std::uint8_t*>(&params), failure))
         {
             return false;
         }
         return true;
+    }
+
+    auto sdk_call_server_paint_batch(const SdkContext& ctx,
+                                     const std::vector<sdk::FPaintStroke>& strokes,
+                                     std::size_t offset,
+                                     std::size_t count,
+                                     std::string& failure) -> bool
+    {
+        return sdk_call_paint_batch_function(ctx.component,
+                                             ctx.server_paint_batch_function,
+                                             strokes,
+                                             offset,
+                                             count,
+                                             failure);
+    }
+
+    auto sdk_call_paint_at_uv_with_brush(std::uintptr_t component,
+                                         std::uintptr_t function,
+                                         const sdk::FPaintStroke& stroke,
+                                         std::string& failure) -> bool
+    {
+        if (!function)
+        {
+            failure = "PaintAtUVWithBrush_unavailable";
+            return false;
+        }
+        if (!live_uobject(component))
+        {
+            failure = "paint_component_unavailable";
+            return false;
+        }
+        sdk::RuntimePaintableComponent_PaintAtUVWithBrush params{};
+        params.Uv = stroke.Uv;
+        params.ChannelData = stroke.ChannelData;
+        params.BrushSettings = stroke.BrushSettings;
+        params.Channel = stroke.TargetChannel;
+        return process_event(component, function, reinterpret_cast<std::uint8_t*>(&params), failure);
     }
 
     struct SdkFrontColorStats
@@ -3883,6 +6216,75 @@ namespace
         return false;
     }
 
+    auto sdk_read_quat(Reflection& ref, std::uintptr_t prop, std::uint8_t* container, sdk::FQuat& out) -> bool
+    {
+        const auto offset = prop_offset(prop);
+        if (offset < 0)
+        {
+            return false;
+        }
+        auto* base = container + offset;
+        const auto st = struct_type(ref, prop, {"X", "Y", "Z", "W"});
+        if (st)
+        {
+            bool read = false;
+            if (const auto p = find_property_any(ref, st, {"X"})) { out.X = sdk_read_number(ref, p, base); read = true; }
+            if (const auto p = find_property_any(ref, st, {"Y"})) { out.Y = sdk_read_number(ref, p, base); read = true; }
+            if (const auto p = find_property_any(ref, st, {"Z"})) { out.Z = sdk_read_number(ref, p, base); read = true; }
+            if (const auto p = find_property_any(ref, st, {"W"})) { out.W = sdk_read_number(ref, p, base); read = true; }
+            return read && std::isfinite(out.X) && std::isfinite(out.Y) && std::isfinite(out.Z) && std::isfinite(out.W);
+        }
+        const auto size = prop_element_size(prop);
+        if (size >= 32)
+        {
+            const auto* values = reinterpret_cast<double*>(base);
+            out = {values[0], values[1], values[2], values[3]};
+            return true;
+        }
+        if (size >= 16)
+        {
+            const auto* values = reinterpret_cast<float*>(base);
+            out = {values[0], values[1], values[2], values[3]};
+            return true;
+        }
+        return false;
+    }
+
+    auto sdk_read_transform(Reflection& ref, std::uintptr_t prop, std::uint8_t* container, sdk::FTransform& out) -> bool
+    {
+        const auto offset = prop_offset(prop);
+        if (offset < 0)
+        {
+            return false;
+        }
+        auto* base = container + offset;
+        const auto st = struct_type(ref, prop, {"Rotation", "Translation", "Scale3D"});
+        if (st)
+        {
+            out = mesh_first_identity_transform();
+            bool read = false;
+            if (const auto p = find_property_any(ref, st, {"Rotation"}))
+            {
+                read = sdk_read_quat(ref, p, base, out.Rotation) || read;
+            }
+            if (const auto p = find_property_any(ref, st, {"Translation", "Location"}))
+            {
+                read = sdk_read_vector3(ref, p, base, out.Translation) || read;
+            }
+            if (const auto p = find_property_any(ref, st, {"Scale3D", "Scale"}))
+            {
+                read = sdk_read_vector3(ref, p, base, out.Scale3D) || read;
+            }
+            return read && sdk_transform_finite(out);
+        }
+        const auto size = prop_element_size(prop);
+        if (size >= static_cast<int>(sizeof(sdk::FTransform)))
+        {
+            return safe_copy(&out, base, sizeof(out)) && sdk_transform_finite(out);
+        }
+        return false;
+    }
+
     auto sdk_read_return_vector3_param(Reflection& ref, std::uintptr_t function, std::uint8_t* params, sdk::FVector& value) -> bool
     {
         for (auto prop = safe_read<std::uintptr_t>(function + OffChildProperties); prop; prop = safe_read<std::uintptr_t>(prop + OffFFieldNext))
@@ -3890,6 +6292,18 @@ namespace
             if (lower_copy(ref.names.resolve(safe_read<std::uint32_t>(prop + OffFFieldName))) == "returnvalue")
             {
                 return sdk_read_vector3(ref, prop, params, value);
+            }
+        }
+        return false;
+    }
+
+    auto sdk_read_return_transform_param(Reflection& ref, std::uintptr_t function, std::uint8_t* params, sdk::FTransform& value) -> bool
+    {
+        for (auto prop = safe_read<std::uintptr_t>(function + OffChildProperties); prop; prop = safe_read<std::uintptr_t>(prop + OffFFieldNext))
+        {
+            if (lower_copy(ref.names.resolve(safe_read<std::uint32_t>(prop + OffFFieldName))) == "returnvalue")
+            {
+                return sdk_read_transform(ref, prop, params, value);
             }
         }
         return false;
@@ -3982,6 +6396,24 @@ namespace
         std::string failure{};
         return process_event(object, function, params.data(), failure) &&
                sdk_read_return_rotator_param(ref, function, params.data(), value);
+    }
+
+    auto sdk_call_no_params_return_transform(Reflection& ref, std::uintptr_t object, const char* function_name, sdk::FTransform& value) -> bool
+    {
+        const auto function = ref.find_function(object, function_name);
+        if (!function)
+        {
+            return false;
+        }
+        const auto params_size = safe_read<int>(function + OffPropertiesSize, 0);
+        if (params_size < 0 || params_size > 4096)
+        {
+            return false;
+        }
+        std::vector<std::uint8_t> params(static_cast<std::size_t>(std::max(0, params_size)), 0);
+        std::string failure{};
+        return process_event(object, function, params.data(), failure) &&
+               sdk_read_return_transform_param(ref, function, params.data(), value);
     }
 
     auto sdk_write_object_property_by_name(Reflection& ref, std::uintptr_t object, const char* name, std::uintptr_t value) -> bool
@@ -6017,7 +8449,7 @@ namespace
         const double tuning_brush_radius = clamp_range(json_number_field(request, "brush_radius", 0.01), 0.001, 0.05);
         const double tuning_brush_spacing = clamp_range(json_number_field(request, "brush_spacing", 0.18), 0.01, 0.5);
         const double tuning_server_brush_spacing = clamp_range(json_number_field(request, "server_brush_spacing", 0.08), 0.01, 0.5);
-        const int tuning_server_batch_limit = json_int_field(request, "server_batch_limit", ServerPaintBatchStrokeLimit, 1, 500);
+        const int tuning_server_batch_limit = json_int_field(request, "server_batch_limit", ServerPaintBatchStrokeLimit, 1, ServerPaintBatchStrokeLimit);
         const int tuning_server_batch_delay_ms = json_int_field(request, "server_batch_delay_ms", ServerPaintBatchDelayMs, 1, 1000);
         const bool research_artifacts = request.find("\"research_artifacts\":true") != std::string::npos;
 
@@ -6785,7 +9217,7 @@ namespace
                              0,
                              1,
                              "unsupported native command",
-                             "\"supported_native_apply_modes\":[\"template_brush_paint\"]");
+                             "\"supported_native_apply_modes\":[\"mesh_first_paint\"]");
     }
 
     auto drain_paint_jobs_on_game_thread() -> void
@@ -6800,6 +9232,17 @@ namespace
         {
             if (!job)
             {
+                continue;
+            }
+            if (is_mesh_first_paint_request(job->request))
+            {
+                const auto response = paint_mesh_first_on_game_thread(job->request);
+                {
+                    std::lock_guard<std::mutex> lock(g_paint_jobs_mutex);
+                    job->response = response;
+                    job->done = true;
+                }
+                g_paint_jobs_cv.notify_all();
                 continue;
             }
             if (is_template_uv_brush_request(job->request))
@@ -6895,7 +9338,7 @@ namespace
                    "\"message\":\"ok\",\"timing_ms\":{}," +
                    "\"metadata\":{\"commands\":" + commands + "," +
                    "\"sdk\":\"runtime_dynamic_reflection_min\"," +
-                   "\"paint_full_route\":\"template_brush_paint\"," +
+                   "\"paint_full_route\":\"mesh_first_paint\"," +
                    "\"texture_import_used\":false," +
                    "\"local_paint_used\":false," +
                    "\"paint_at_uv_with_brush_used\":false," +

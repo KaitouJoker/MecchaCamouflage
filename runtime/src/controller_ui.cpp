@@ -589,6 +589,8 @@ namespace meccha
                     text_row("Process", runtime.process_name.empty() ? "-" : runtime.process_name);
                     text_row("PID", std::to_string(runtime.pid));
                     status_row("Bridge", runtime.bridge_ready ? "Ready" : runtime.bridge_state);
+                    text_row("Paint route", runtime.paint_route.empty() ? "-" : runtime.paint_route);
+                    text_row("Regions", runtime.paint_regions.empty() ? "-" : runtime.paint_regions);
                     text_row("License", LicenseLabel);
                     repository_row(actions.open_repository_clicked);
                     path_row("Log dir", runtime.log_dir, actions.open_logs_clicked);
@@ -664,8 +666,20 @@ namespace meccha
                     input_double_setting("Brush radius", tuning.brush_radius, 0.001, 0.05, "%.4f", paint_value_changed);
                     input_double_setting("Brush spacing", tuning.brush_spacing, 0.01, 0.5, "%.3f", paint_value_changed);
                     input_double_setting("Server spacing", tuning.server_brush_spacing, 0.01, 0.5, "%.3f", paint_value_changed);
-                    input_int_setting("Batch limit", tuning.server_batch_limit, 1, 500, paint_value_changed);
+                    input_int_setting("Batch limit", tuning.server_batch_limit, 1, 50, paint_value_changed);
                     input_int_setting("Batch delay ms", tuning.server_batch_delay_ms, 1, 1000, paint_value_changed);
+                    ImGui::TableNextRow();
+                    ImGui::TableSetColumnIndex(0);
+                    ImGui::TextUnformatted("Regions");
+                    ImGui::TableSetColumnIndex(1);
+                    if (ImGui::Checkbox("Front", &tuning.enable_front_paint))
+                        paint_value_changed = true;
+                    ImGui::SameLine();
+                    if (ImGui::Checkbox("Side", &tuning.enable_side_paint))
+                        paint_value_changed = true;
+                    ImGui::SameLine();
+                    if (ImGui::Checkbox("Back", &tuning.enable_back_paint))
+                        paint_value_changed = true;
                     ImGui::EndDisabled();
                     if (runtime.paint_editing && paint_value_changed)
                     {

@@ -13,6 +13,8 @@ namespace meccha
         unsigned long pid{0};
         std::string bridge_state{};
         bool bridge_ready{false};
+        std::string paint_route{};
+        std::string paint_regions{};
         bool app_editing{false};
         bool paint_editing{false};
         bool recording_hotkey{false};

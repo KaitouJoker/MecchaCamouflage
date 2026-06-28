@@ -128,6 +128,21 @@ try {
     )
 
     if (-not (Test-Path $BridgeOutput)) { throw "Bridge DLL was not produced: $BridgeOutput" }
+    $MeshProfileOutput = Join-Path $OutDir "runtime-bridge.dll.mesh-profile.json"
+    $ResearchMeshProfile = Join-Path $RuntimeRoot ".build\research\mesh_exports\paintman-Chameleon_Content_3Dmodel_cLeon_charactor_paintman_skeltal_paintman.uasset.lod0.json"
+    if (Test-Path $ResearchMeshProfile -PathType Leaf) {
+        Copy-Item -Force $ResearchMeshProfile $MeshProfileOutput
+    } elseif ($env:LOCALAPPDATA) {
+        $NativeProfileDir = Join-Path $env:LOCALAPPDATA "MecchaCamouflage\runtime\native"
+        if (Test-Path $NativeProfileDir -PathType Container) {
+            $LatestNativeProfile = Get-ChildItem $NativeProfileDir -Filter "*.mesh-profile.json" |
+                Sort-Object LastWriteTime -Descending |
+                Select-Object -First 1
+            if ($LatestNativeProfile) {
+                Copy-Item -Force $LatestNativeProfile.FullName $MeshProfileOutput
+            }
+        }
+    }
 
     $ResourceRc = Join-Path $ObjDir "controller.rc"
     $ResourceRes = Join-Path $ObjDir "controller.res"

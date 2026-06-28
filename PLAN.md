@@ -49,7 +49,20 @@ must fail clearly instead of silently falling back to the old behavior.
     - max around `0.317`
 - Mapping, package load, skeletal mesh conversion, runtime identity, and
   offline colorized UV plan generation are unblocked.
-- Current blocker: filtered mesh/UV transfer and runtime skinned pose resolver.
+- Runtime mesh-first execution is now implemented in the bridge:
+  - selected live mesh: `paintman` `SkeletalMeshComponent`
+  - observed transform count: `28`
+  - pose source: guarded component array scan
+  - component-to-world source: `K2_GetComponentToWorld`
+  - CPU skinning uses exported bind data, weights, and current component-space
+    bone transforms
+  - planner emits front/side/back samples from current skinned triangles
+  - front colors come from SceneCapture BaseColor readback
+  - enabled regions replay through `ServerPaintBatch`
+  - latest live run sent `2238` front+side strokes with back planned but disabled
+- Remaining validation work: UV island/body-region filtering, better unsafe
+  reason detail, old path removal after repeated successful live runs, and
+  checking whether synchronous runtime pacing should move to an async batch job.
 
 ## Target Pipeline
 
@@ -84,8 +97,8 @@ Load the matching mesh data from the research-derived asset profile:
 - bone/body-region labels
 
 The runtime package should not depend on CUE4Parse. Use generated, versioned
-mesh profile data produced by research tooling, committed only if it is small
-and license-safe. Large/generated game assets remain uncommitted.
+mesh profile data produced by research tooling. Generated game-derived profiles
+are local release-prep artifacts and are not ordinary source files.
 
 ### 3. Skinned Pose Resolver
 
@@ -146,8 +159,9 @@ Transfer color from front samples to side/back candidates with constraints:
 - optional normal-angle continuity
 - optional color smoothing only within the same region
 
-Candidates failing constraints are dropped. They are not filled by fallback
-colors.
+Candidates failing constraints are counted and surfaced. In the first
+implementation, enabled regions with unsafe candidates block replay instead of
+silently skipping samples or filling them with fallback colors.
 
 ### 7. Stroke Plan
 
@@ -325,17 +339,22 @@ Acceptance:
 - Stop if filtered transfer still has large cross-region color bleeding.
 - Stop if server batch failures appear during replay.
 
-## Open Questions
+## Implementation Decisions
 
-1. Should generated `paintman` mesh profile data be committed as a compact
-   derived profile, or regenerated locally from research tools after each game
-   update?
-2. What is the maximum acceptable skipped side/back coverage if filters reject
-   unsafe samples?
-3. Should back paint be enabled only after side paint is stable, or should the
-   unified planner output all regions but replay only regions explicitly
-   enabled in settings?
-4. What UI should expose this migration: a simple `Mesh-first paint` status, or
-   a research/debug view with pose, filter, and replay metrics?
-5. Should `MECCHA_RESEARCH_ARTIFACTS` remain as an environment toggle, or move
-   to an in-app research setting while the migration is in progress?
+1. Mesh/profile data is regenerated locally from research tools after each game
+   update. Generated game-derived profiles are release-prep artifacts, not
+   ordinary source files.
+2. Automatic skip/drop policy is not part of the first implementation. Unsafe
+   samples must be counted and surfaced. If unsafe samples affect an enabled
+   replay region, paint is blocked instead of silently hiding the issue.
+3. The unified planner outputs front, side, and back regions. Replay only uses
+   regions explicitly enabled in settings. Defaults are:
+   - front: enabled
+   - side: enabled
+   - back: disabled until side paint is stable
+4. The current desktop UI should remain mostly intact. Add only the mesh-first
+   status, pose/profile validation, region settings, planner counts, and replay
+   metrics required to operate and debug the new path.
+5. `MECCHA_RESEARCH_ARTIFACTS` is migration-only. Formal runtime behavior should
+   not depend on it; large research outputs move to explicit `scripts/research`
+   workflows.

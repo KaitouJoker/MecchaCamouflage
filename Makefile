@@ -1,4 +1,4 @@
-NATIVE_APPLY_MODE ?= template_brush_paint
+NATIVE_APPLY_MODE ?= mesh_first_paint
 RESEARCH_ARTIFACTS ?= $(MECCHA_RESEARCH_ARTIFACTS)
 VERSION ?= 1.0.0
 BUILD_PS := scripts/build.ps1

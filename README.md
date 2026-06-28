@@ -22,6 +22,10 @@ Download the latest `meccha-camouflage.exe` from GitHub Releases:
 Settings are read-only until `Edit` is selected. Use `Save` to apply changes or
 `Cancel` to discard them.
 
+v1.4.0 uses the mesh-first paint route. Game-derived mesh profiles are prepared
+locally from the research tools after game updates; they are not ordinary source
+files.
+
 Logs are written under:
 
 ```text

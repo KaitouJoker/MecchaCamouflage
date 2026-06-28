@@ -32,7 +32,7 @@ Console.WriteLine($"mesh={mesh.Export} source={mesh.SourcePath}");
 Console.WriteLine($"camera_direction={cameraDirection.X:F6},{cameraDirection.Y:F6},{cameraDirection.Z:F6}");
 Console.WriteLine($"triangles total={plan.TriangleStats.Total} front={plan.TriangleStats.Front} side={plan.TriangleStats.Side} back={plan.TriangleStats.Back} degenerate={plan.TriangleStats.Degenerate}");
 Console.WriteLine($"uv_area front={plan.TriangleStats.FrontUvArea:F6} side={plan.TriangleStats.SideUvArea:F6} back={plan.TriangleStats.BackUvArea:F6}");
-Console.WriteLine($"front_samples={frontSamples.Length} target_samples={plan.TargetSamples.Length} out={options.OutPath}");
+Console.WriteLine($"front_samples={frontSamples.Length} target_samples={plan.TargetSamples.Length} unsafe={plan.Diagnostics.UnsafeCandidateCount} out={options.OutPath}");
 return 0;
 
 static JsonSerializerOptions JsonOptions() => new()
@@ -118,23 +118,21 @@ static UvPlan BuildPlan(MeshExport mesh, Options options, Vec3 cameraDirection, 
                 break;
         }
 
-        if (kind is SurfaceKind.Side or SurfaceKind.Back || options.IncludeFrontSamples)
-        {
-            var texelArea = uvArea * options.TextureSize * options.TextureSize;
-            var desired = Math.Max(1, (int)Math.Ceiling(texelArea / Math.Max(1.0, options.SampleStepTexels * options.SampleStepTexels)));
-            plannedTriangles.Add(new PlannedTriangle(
-                tri / 3,
-                kind.ToString().ToLowerInvariant(),
-                facing,
-                uvArea,
-                Math.Min(options.MaxSamplesPerTriangle, desired),
-                uv0,
-                uv1,
-                uv2));
-        }
+        var texelArea = uvArea * options.TextureSize * options.TextureSize;
+        var desired = Math.Max(1, (int)Math.Ceiling(texelArea / Math.Max(1.0, options.SampleStepTexels * options.SampleStepTexels)));
+        plannedTriangles.Add(new PlannedTriangle(
+            tri / 3,
+            kind.ToString().ToLowerInvariant(),
+            facing,
+            uvArea,
+            Math.Min(options.MaxSamplesPerTriangle, desired),
+            uv0,
+            uv1,
+            uv2));
     }
 
-    var targetSamples = ColorizeSamples(GenerateSamples(plannedTriangles, options.MaxSamples), frontSamples);
+    var targetSamples = ColorizeSamples(GenerateSamples(plannedTriangles, options.MaxSamples), frontSamples, options);
+    var diagnostics = BuildDiagnostics(targetSamples, options);
     return new UvPlan(
         1,
         mesh.SourcePath ?? "",
@@ -156,6 +154,7 @@ static UvPlan BuildPlan(MeshExport mesh, Options options, Vec3 cameraDirection, 
         sideBounds.ToSnapshot(),
         backBounds.ToSnapshot(),
         frontSamples.Length,
+        diagnostics,
         targetSamples);
 }
 
@@ -234,10 +233,16 @@ static TargetSample MakeSample(PlannedTriangle tri, double a, double b, double c
     };
 }
 
-static TargetSample[] ColorizeSamples(TargetSample[] targets, FrontSample[] frontSamples)
+static TargetSample[] ColorizeSamples(TargetSample[] targets, FrontSample[] frontSamples, Options options)
 {
     if (frontSamples.Length == 0 || targets.Length == 0)
-        return targets;
+    {
+        return targets.Select(target => target with
+        {
+            Unsafe = true,
+            UnsafeReasons = ["no_front_source"]
+        }).ToArray();
+    }
 
     var outSamples = new TargetSample[targets.Length];
     for (var i = 0; i < targets.Length; i++)
@@ -259,6 +264,10 @@ static TargetSample[] ColorizeSamples(TargetSample[] targets, FrontSample[] fron
         }
 
         var best = frontSamples[bestIndex];
+        var sourceDistanceUv = Math.Sqrt(bestDistance);
+        var reasons = new List<string>();
+        if (sourceDistanceUv > options.MaxSourceDistanceUv)
+            reasons.Add("source_distance_uv");
         outSamples[i] = target with
         {
             R = best.R,
@@ -266,12 +275,57 @@ static TargetSample[] ColorizeSamples(TargetSample[] targets, FrontSample[] fron
             B = best.B,
             Metallic = best.Metallic,
             Roughness = best.Roughness,
-            SourceDistanceUv = Math.Sqrt(bestDistance),
-            SourceSample = bestIndex
+            SourceDistanceUv = sourceDistanceUv,
+            SourceSample = bestIndex,
+            Unsafe = reasons.Count > 0,
+            UnsafeReasons = reasons.ToArray()
         };
     }
 
     return outSamples;
+}
+
+static PlanDiagnostics BuildDiagnostics(TargetSample[] samples, Options options)
+{
+    var unsafeSamples = samples.Where(sample => sample.Unsafe).ToArray();
+    var distanceSamples = samples
+        .Select(sample => sample.SourceDistanceUv)
+        .Where(distance => distance.HasValue)
+        .Select(distance => distance!.Value)
+        .OrderBy(distance => distance)
+        .ToArray();
+    var reasonCounts = unsafeSamples
+        .SelectMany(sample => sample.UnsafeReasons ?? [])
+        .GroupBy(reason => reason)
+        .OrderBy(group => group.Key, StringComparer.Ordinal)
+        .ToDictionary(group => group.Key, group => group.Count());
+    var regionCounts = samples
+        .GroupBy(sample => sample.Kind)
+        .OrderBy(group => group.Key, StringComparer.Ordinal)
+        .ToDictionary(group => group.Key, group => group.Count());
+    var unsafeRegionCounts = unsafeSamples
+        .GroupBy(sample => sample.Kind)
+        .OrderBy(group => group.Key, StringComparer.Ordinal)
+        .ToDictionary(group => group.Key, group => group.Count());
+
+    return new PlanDiagnostics(
+        options.MaxSourceDistanceUv,
+        samples.Length,
+        unsafeSamples.Length,
+        reasonCounts,
+        regionCounts,
+        unsafeRegionCounts,
+        Percentile(distanceSamples, 0.50),
+        Percentile(distanceSamples, 0.95),
+        distanceSamples.Length == 0 ? null : distanceSamples[^1]);
+}
+
+static double? Percentile(double[] sorted, double percentile)
+{
+    if (sorted.Length == 0)
+        return null;
+    var index = Math.Clamp((int)Math.Round((sorted.Length - 1) * percentile), 0, sorted.Length - 1);
+    return sorted[index];
 }
 
 static FrontSample[] LoadFrontSamples(string? path)
@@ -352,7 +406,8 @@ sealed class Options
     public int MaxSamplesPerTriangle { get; private set; } = 64;
     public double FrontThreshold { get; private set; } = 0.35;
     public double BackThreshold { get; private set; } = 0.35;
-    public bool IncludeFrontSamples { get; private set; }
+    public bool IncludeFrontSamples { get; private set; } = true;
+    public double MaxSourceDistanceUv { get; private set; } = 0.05;
 
     public static Options Parse(string[] args)
     {
@@ -398,6 +453,10 @@ sealed class Options
                     break;
                 case "--include-front-samples":
                     options.IncludeFrontSamples = true;
+                    break;
+                case "--max-source-distance-uv" when i + 1 < args.Length && double.TryParse(args[i + 1], out var maxSourceDistanceUv):
+                    options.MaxSourceDistanceUv = Math.Max(0.0, maxSourceDistanceUv);
+                    i++;
                     break;
             }
         }
@@ -550,7 +609,20 @@ sealed record TargetSample
     public double? Roughness { get; init; }
     public double? SourceDistanceUv { get; init; }
     public int? SourceSample { get; init; }
+    public bool Unsafe { get; init; }
+    public string[]? UnsafeReasons { get; init; }
 }
+
+sealed record PlanDiagnostics(
+    double MaxSourceDistanceUv,
+    int CandidateCount,
+    int UnsafeCandidateCount,
+    Dictionary<string, int> UnsafeReasonCounts,
+    Dictionary<string, int> RegionCounts,
+    Dictionary<string, int> UnsafeRegionCounts,
+    double? SourceDistanceP50,
+    double? SourceDistanceP95,
+    double? SourceDistanceMax);
 
 sealed record UvPlan(
     int SchemaVersion,
@@ -573,4 +645,5 @@ sealed record UvPlan(
     UvBoundsSnapshot SideUvBounds,
     UvBoundsSnapshot BackUvBounds,
     int FrontSampleCount,
+    PlanDiagnostics Diagnostics,
     TargetSample[] TargetSamples);

@@ -3,7 +3,7 @@ param(
     [string]$ExeName = "meccha-camouflage.exe",
     [string[]]$RuntimeArgs,
     [string]$RuntimeArgString = "",
-    [string]$NativeApplyMode = "template_brush_paint",
+    [string]$NativeApplyMode = "mesh_first_paint",
     [switch]$EnableResearchArtifacts,
     [switch]$DryRun
 )

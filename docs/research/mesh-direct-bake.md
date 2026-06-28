@@ -26,11 +26,11 @@ Other strong player/body candidates are:
 
 `tools/asset_probe` can now export top SkeletalMesh LOD0 geometry JSON under `.build\research\mesh_exports\`. The JSON includes positions, normals, UVs, indices, bone influences, reference bones, skeleton asset, physics asset, bounds, and material slot names. These files are generated research outputs and should not be committed.
 
-The next blocker is not asset identity anymore. It is deciding how much of v1 direct bake can be approximated from bind-pose geometry versus how much needs current skinned pose.
+Runtime mesh-first paint now reaches the live `paintman` `SkeletalMeshComponent`, reads `28` valid `FTransform` entries through a guarded component array scan, resolves `K2_GetComponentToWorld`, skins the exported vertices in the bridge, and builds front/side/back samples from the current pose. Bind-pose geometry remains useful for offline planner validation, but production paint must use the current pose and fail clearly if pose data cannot be resolved.
 
 `tools/mesh_planner` now provides the first offline approximation. It reads the exported `paintman` LOD0 JSON plus the latest runtime camera direction, classifies triangles as front/side/back using bind-pose normals, and emits side/back UV target samples.
 
-For color transfer, run `MECCHA_RESEARCH_ARTIFACTS=1 make run` and perform one normal paint. The bridge writes a generated front-sample sidecar containing front UV/color samples; the planner can then assign nearest front color to each side/back target sample. This keeps the next validation offline and avoids sending new side/back strokes until the generated plan is reviewed.
+For migration-only color transfer research, `MECCHA_RESEARCH_ARTIFACTS=1 make run` can still produce a generated front-sample sidecar. Formal runtime behavior should not depend on this flag; large sample dumps belong to explicit research workflows.
 
 Latest observed colorized plan:
 
@@ -39,20 +39,29 @@ Latest observed colorized plan:
 - target split: `2383` side, `722` back
 - nearest-source UV distance: p50 `0.017271`, p90 `0.155525`, p95 `0.197603`, p99 `0.280566`, max `0.317105`
 
-This confirms the pipeline works, but it also shows raw nearest-UV color transfer is not good enough as a replay input. Some targets borrow color from far-away UV locations, which can bleed across UV islands or unrelated body regions.
+This confirmed the offline pipeline shape, but it also showed raw nearest-UV color transfer can borrow color from far-away UV locations. Runtime replay currently blocks enabled regions when unsafe transfer candidates exceed the configured guard; UV island/body-region filtering is still the next quality upgrade.
 
-## Sampling Workflow Direction
+Latest live runtime mesh-first check:
 
-The current front-only paint path should remain the authoritative visible-color sampling path. Direct bake should be layered on top of it:
+- skinned vertices: `1660`
+- planned samples: `3785`
+- sample split: `1469` front, `769` side, `1547` back
+- replayed strokes with default regions: `2238` front+side, `0` back
+- `ServerPaintBatch` calls: `15`
+- unsafe enabled candidates: `0`
 
-1. Normal runtime pass gathers visible UV/color samples through hit test plus scene capture.
-2. Optional research artifact writes the front samples to disk.
-3. Offline mesh planner uses confirmed `paintman` geometry and latest camera direction to find candidate side/back UV targets.
-4. Planner transfers color from front samples to side/back targets.
-5. Planner filters candidates by source distance and UV region/island constraints.
-6. Only filtered candidates become eligible for a future conservative replay path.
+## Mesh-First Workflow Direction
 
-This is different from trying to make runtime sampling denser or orbiting the camera. The useful split is: runtime samples visible color, offline mesh reasoning expands coverage candidates.
+The formal v1.4.0 paint path should be mesh-first:
+
+1. Research tools regenerate the local `paintman` mesh profile after game updates.
+2. Runtime resolves the live target, mesh identity, camera state, and current skinned pose.
+3. Planner emits front, side, and back regions from the skinned mesh.
+4. Replay uses only regions enabled in settings. Defaults are front and side enabled, back disabled.
+5. Unsafe candidates are surfaced and block enabled-region replay; they are not silently skipped.
+6. Validated strokes replay only through `ServerPaintBatch`.
+
+This is different from trying to make runtime sampling denser or orbiting the camera. The useful split is: research tools regenerate profile data, while runtime performs pose-aware planning and server replay without falling back to screen hit-test sampling.
 
 ## Intended Data Flow
 
@@ -60,18 +69,17 @@ This is different from trying to make runtime sampling denser or orbiting the ca
 2. Use CUE4Parse to load candidate `USkeletalMesh` / `UStaticMesh` packages.
 3. Locate player/body/cosmetic mesh candidates and verify `USkeletalMesh` conversion.
 4. Confirm LOD vertices, indices, UVs, material slots, skeleton reference data, and bind-pose data.
-5. Compare offline mesh identity with runtime target actors/components using `front_mesh_candidates`.
-6. Prototype UV-space side/back planning against the exported `paintman` LOD0 JSON.
-7. Add front sample color transfer from generated research artifacts.
-8. Add source-distance and UV-region filters.
-9. Only after the filtered offline planner looks sane should runtime pose/skinning or server replay be investigated.
+5. Prepare the release/runtime sidecar with `scripts\research\prepare-mesh-profile.ps1`.
+6. Compare offline mesh identity with runtime target actors/components using `front_mesh_candidates`.
+7. Resolve current skinned pose in the bridge.
+8. Generate one unified front/side/back plan.
+9. Replay only enabled regions through `ServerPaintBatch`.
 
 ## What This Does Not Solve Yet
 
-- Current animation pose / skinned vertices.
 - Occlusion-aware side/back fill.
 - UV island/region aware color transfer.
-- Filtered replay candidate generation.
-- Automatic server-safe paint expansion.
+- Async replay pacing that does not hold the game thread during batch delay.
+- Old dense hit-test route cleanup after repeated successful live runs.
 
-Those are downstream steps and should not be implemented until mapping and mesh extraction are stable.
+These are the active v1.4.0 implementation targets. Failures should be visible in Log, Trace, and `latest_error.json`, not hidden behind fallback behavior.

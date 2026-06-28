@@ -7,7 +7,8 @@ param(
     [string]$CameraDirection = "",
     [int]$TextureSize = 1024,
     [double]$SampleStepTexels = 16,
-    [int]$MaxSamples = 20000
+    [int]$MaxSamples = 20000,
+    [double]$MaxSourceDistanceUv = 0.05
 )
 
 $ErrorActionPreference = "Stop"
@@ -40,7 +41,8 @@ $ArgsList = @(
     "--out", $OutPath,
     "--texture-size", "$TextureSize",
     "--sample-step-texels", "$SampleStepTexels",
-    "--max-samples", "$MaxSamples"
+    "--max-samples", "$MaxSamples",
+    "--max-source-distance-uv", "$MaxSourceDistanceUv"
 )
 if ($FrontSamplesPath -and (Test-Path $FrontSamplesPath -PathType Leaf)) {
     $ArgsList += @("--front-samples", $FrontSamplesPath)

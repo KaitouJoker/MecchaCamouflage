@@ -14,6 +14,9 @@ namespace meccha
         double server_brush_spacing{0.08};
         int server_batch_limit{50};
         int server_batch_delay_ms{300};
+        bool enable_front_paint{true};
+        bool enable_side_paint{true};
+        bool enable_back_paint{false};
     };
 
     struct AppSettings

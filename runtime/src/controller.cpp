@@ -93,7 +93,7 @@ namespace
         double bridge_timeout_seconds{240.0};
         double status_interval_seconds{2.0};
         double frame_delay_ms{16.0};
-        std::string native_apply_mode{"template_brush_paint"};
+        std::string native_apply_mode{"mesh_first_paint"};
         DWORD parent_pid{0};
         PaintTuning tuning{};
     };
@@ -759,6 +759,67 @@ namespace
         return {true, std::string("injected pid=") + std::to_string(pid) + " dll=" + wide_to_utf8(dll)};
     }
 
+    auto latest_native_mesh_profile_sidecar(const std::filesystem::path& log_dir) -> std::filesystem::path
+    {
+        std::error_code ec;
+        const auto native_dir = log_dir / L"native";
+        if (!std::filesystem::exists(native_dir, ec))
+            return {};
+        std::filesystem::path newest{};
+        std::filesystem::file_time_type newest_time{};
+        bool has_newest = false;
+        for (const auto& entry : std::filesystem::directory_iterator(native_dir, ec))
+        {
+            if (ec)
+                break;
+            const auto path = entry.path();
+            if (path.extension() != L".json")
+                continue;
+            const auto filename = path.filename().wstring();
+            if (filename.find(L".mesh-profile.json") == std::wstring::npos)
+                continue;
+            if (!std::filesystem::exists(path, ec) || std::filesystem::file_size(path, ec) <= 0)
+                continue;
+            const auto write_time = std::filesystem::last_write_time(path, ec);
+            if (!has_newest || write_time > newest_time)
+            {
+                newest = path;
+                newest_time = write_time;
+                has_newest = true;
+            }
+        }
+        return newest;
+    }
+
+    auto find_mesh_profile_sidecar(const std::filesystem::path& exe_dir, const std::filesystem::path& log_dir) -> std::filesystem::path
+    {
+        std::error_code ec;
+        const std::filesystem::path candidates[]{
+            exe_dir / L"runtime-bridge.dll.mesh-profile.json",
+            exe_dir.parent_path() / L"research" / L"mesh_exports" / L"paintman-Chameleon_Content_3Dmodel_cLeon_charactor_paintman_skeltal_paintman.uasset.lod0.json",
+            exe_dir.parent_path().parent_path() / L".build" / L"research" / L"mesh_exports" / L"paintman-Chameleon_Content_3Dmodel_cLeon_charactor_paintman_skeltal_paintman.uasset.lod0.json",
+        };
+        for (const auto& candidate : candidates)
+        {
+            if (std::filesystem::exists(candidate, ec) && std::filesystem::file_size(candidate, ec) > 0)
+                return candidate;
+        }
+        return latest_native_mesh_profile_sidecar(log_dir);
+    }
+
+    auto sync_mesh_profile_sidecar(const std::filesystem::path& exe_dir,
+                                   const std::filesystem::path& log_dir,
+                                   const std::filesystem::path& bridge_path) -> bool
+    {
+        const auto source = find_mesh_profile_sidecar(exe_dir, log_dir);
+        if (source.empty())
+            return false;
+        std::error_code ec;
+        const auto bridge_profile = std::filesystem::path(bridge_path.wstring() + L".mesh-profile.json");
+        std::filesystem::copy_file(source, bridge_profile, std::filesystem::copy_options::overwrite_existing, ec);
+        return !ec && std::filesystem::exists(bridge_profile, ec);
+    }
+
     auto extract_embedded_bridge(const std::filesystem::path& log_dir, int port) -> std::filesystem::path
     {
         HMODULE module = GetModuleHandleW(nullptr);
@@ -786,6 +847,12 @@ namespace
             if (!file)
                 throw std::runtime_error("failed to write embedded bridge dll");
             file.write(static_cast<const char*>(data), size);
+        }
+        wchar_t exe_path[MAX_PATH]{};
+        if (GetModuleFileNameW(nullptr, exe_path, MAX_PATH) > 0)
+        {
+            const auto exe_dir = std::filesystem::path(exe_path).parent_path();
+            sync_mesh_profile_sidecar(exe_dir, log_dir, bridge_path);
         }
         return bridge_path;
     }
@@ -961,13 +1028,31 @@ namespace
 
     auto mode_to_route(const std::string& native_apply_mode) -> std::string
     {
+        if (native_apply_mode == "mesh_first_paint") return "f10_mesh_first_paint";
         if (native_apply_mode == "template_brush_paint") return "f10_template_brush_paint";
         return "unsupported_route";
     }
 
     auto is_supported_native_apply_mode(const std::string& native_apply_mode) -> bool
     {
-        return native_apply_mode == "template_brush_paint";
+        return native_apply_mode == "mesh_first_paint";
+    }
+
+    auto paint_regions_text(const PaintTuning& tuning) -> std::string
+    {
+        std::string out;
+        auto append = [&](const char* value) {
+            if (!out.empty())
+                out += ", ";
+            out += value;
+        };
+        if (tuning.enable_front_paint)
+            append("front");
+        if (tuning.enable_side_paint)
+            append("side");
+        if (tuning.enable_back_paint)
+            append("back");
+        return out.empty() ? "none" : out;
     }
 
     auto research_artifacts_enabled() -> bool
@@ -989,7 +1074,10 @@ namespace
                        ",\"brush_spacing\":" + std::to_string(config.tuning.brush_spacing) +
                        ",\"server_brush_spacing\":" + std::to_string(config.tuning.server_brush_spacing) +
                        ",\"server_batch_limit\":" + std::to_string(config.tuning.server_batch_limit) +
-                       ",\"server_batch_delay_ms\":" + std::to_string(config.tuning.server_batch_delay_ms) + "}";
+                       ",\"server_batch_delay_ms\":" + std::to_string(config.tuning.server_batch_delay_ms) +
+                       ",\"enable_front_paint\":" + (config.tuning.enable_front_paint ? "true" : "false") +
+                       ",\"enable_side_paint\":" + (config.tuning.enable_side_paint ? "true" : "false") +
+                       ",\"enable_back_paint\":" + (config.tuning.enable_back_paint ? "true" : "false") + "}";
         if (research_artifacts_enabled())
             payload += ",\"research_artifacts\":true";
         payload += "}";
@@ -1089,7 +1177,7 @@ namespace
         if (!is_supported_native_apply_mode(config.native_apply_mode))
         {
             const std::string details = std::string("{\"native_apply_mode\":") + json_string(config.native_apply_mode) +
-                                        ",\"supported_native_apply_modes\":[\"template_brush_paint\"]}";
+                                        ",\"supported_native_apply_modes\":[\"mesh_first_paint\"]}";
             diagnostics.record_error("unsupported_route", "unsupported native apply mode", details, run_id);
             diagnostics.event("paint_failed", "error", "unsupported_route", "unsupported native apply mode", details, run_id);
             return false;
@@ -1371,7 +1459,10 @@ namespace
                               ",\"brush_spacing\":" + std::to_string(persisted_settings.tuning.brush_spacing) +
                               ",\"server_brush_spacing\":" + std::to_string(persisted_settings.tuning.server_brush_spacing) +
                               ",\"server_batch_limit\":" + std::to_string(persisted_settings.tuning.server_batch_limit) +
-                              ",\"server_batch_delay_ms\":" + std::to_string(persisted_settings.tuning.server_batch_delay_ms) + "}");
+                              ",\"server_batch_delay_ms\":" + std::to_string(persisted_settings.tuning.server_batch_delay_ms) +
+                              ",\"enable_front_paint\":" + (persisted_settings.tuning.enable_front_paint ? "true" : "false") +
+                              ",\"enable_side_paint\":" + (persisted_settings.tuning.enable_side_paint ? "true" : "false") +
+                              ",\"enable_back_paint\":" + (persisted_settings.tuning.enable_back_paint ? "true" : "false") + "}");
             service.paint_running = true;
             service.paint_state = "Running";
             service.last_result = "Painting";
@@ -1558,6 +1649,8 @@ namespace
             ui_runtime.pid = static_cast<unsigned long>(service.process.pid);
             ui_runtime.bridge_state = service.bridge_state;
             ui_runtime.bridge_ready = service.bridge_ready;
+            ui_runtime.paint_route = config.native_apply_mode;
+            ui_runtime.paint_regions = paint_regions_text(persisted_settings.tuning);
             ui_runtime.app_editing = app_editing;
             ui_runtime.paint_editing = paint_editing;
             ui_runtime.recording_hotkey = recording_hotkey;

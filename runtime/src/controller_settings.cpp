@@ -185,8 +185,12 @@ namespace meccha
         settings.tuning.brush_radius = clamp_double(settings.tuning.brush_radius, 0.001, 0.05);
         settings.tuning.brush_spacing = clamp_double(settings.tuning.brush_spacing, 0.01, 0.5);
         settings.tuning.server_brush_spacing = clamp_double(settings.tuning.server_brush_spacing, 0.01, 0.5);
-        settings.tuning.server_batch_limit = std::max(1, std::min(500, settings.tuning.server_batch_limit));
+        settings.tuning.server_batch_limit = std::max(1, std::min(50, settings.tuning.server_batch_limit));
         settings.tuning.server_batch_delay_ms = std::max(1, std::min(1000, settings.tuning.server_batch_delay_ms));
+        if (!settings.tuning.enable_front_paint && !settings.tuning.enable_side_paint && !settings.tuning.enable_back_paint)
+        {
+            settings.tuning.enable_front_paint = true;
+        }
         if (settings.paint_hotkey.empty())
             settings.paint_hotkey = "F10";
     }
@@ -216,6 +220,9 @@ namespace meccha
             settings.tuning.server_brush_spacing = extract_json_number(text, "server_brush_spacing", settings.tuning.server_brush_spacing);
             settings.tuning.server_batch_limit = static_cast<int>(extract_json_number(text, "server_batch_limit", settings.tuning.server_batch_limit));
             settings.tuning.server_batch_delay_ms = static_cast<int>(extract_json_number(text, "server_batch_delay_ms", settings.tuning.server_batch_delay_ms));
+            settings.tuning.enable_front_paint = extract_json_bool(text, "enable_front_paint", settings.tuning.enable_front_paint);
+            settings.tuning.enable_side_paint = extract_json_bool(text, "enable_side_paint", settings.tuning.enable_side_paint);
+            settings.tuning.enable_back_paint = extract_json_bool(text, "enable_back_paint", settings.tuning.enable_back_paint);
         }
         clamp_settings(settings);
         return settings;
@@ -239,7 +246,10 @@ namespace meccha
             "  \"brush_spacing\": " + std::to_string(settings.tuning.brush_spacing) + ",\n" +
             "  \"server_brush_spacing\": " + std::to_string(settings.tuning.server_brush_spacing) + ",\n" +
             "  \"server_batch_limit\": " + std::to_string(settings.tuning.server_batch_limit) + ",\n" +
-            "  \"server_batch_delay_ms\": " + std::to_string(settings.tuning.server_batch_delay_ms) + "\n" +
+            "  \"server_batch_delay_ms\": " + std::to_string(settings.tuning.server_batch_delay_ms) + ",\n" +
+            "  \"enable_front_paint\": " + std::string(settings.tuning.enable_front_paint ? "true" : "false") + ",\n" +
+            "  \"enable_side_paint\": " + std::string(settings.tuning.enable_side_paint ? "true" : "false") + ",\n" +
+            "  \"enable_back_paint\": " + std::string(settings.tuning.enable_back_paint ? "true" : "false") + "\n" +
             "}\n";
         const auto path = config_path();
         const auto tmp = std::filesystem::path(path.wstring() + L".tmp");

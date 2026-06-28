@@ -45,6 +45,14 @@ For direct-bake research, export top SkeletalMesh LOD0 geometry:
 
 This writes generated JSON files to `.build\research\mesh_exports\`. These files include LOD0 positions, normals, UVs, indices, bone influences, reference bones, material slots, skeleton asset, physics asset, and bounds. They are generated research outputs and should not be committed.
 
+Prepare the local runtime mesh profile sidecar after a game update:
+
+```powershell
+.\scripts\research\prepare-mesh-profile.ps1
+```
+
+This validates the expected `paintman` LOD0 shape and writes `.build\bin\runtime-bridge.dll.mesh-profile.json`. `make package` includes that sidecar only when it already exists.
+
 ## Mesh Planner
 
 After exporting `paintman` LOD0 geometry and running one paint with the current bridge, generate an offline UV plan:
@@ -58,7 +66,7 @@ By default this reads:
 - `.build\research\mesh_exports\paintman-Chameleon_Content_3Dmodel_cLeon_charactor_paintman_skeltal_paintman.uasset.lod0.json`
 - `%LOCALAPPDATA%\MecchaCamouflage\runtime\last_status.json`
 
-It writes `.build\research\uv_plans\paintman-uv-plan-latest.json`. The planner uses the latest runtime camera direction, bind-pose triangle normals, and UV triangles to classify front/side/back surfaces and emit side/back target UV samples. This is a research artifact only; it does not call the bridge or send paint to a server.
+It writes `.build\research\uv_plans\paintman-uv-plan-latest.json`. The planner uses the latest runtime camera direction, bind-pose triangle normals, and UV triangles to classify front/side/back surfaces. It emits all regions and marks unsafe candidates instead of dropping them. This is a research artifact only; it does not call the bridge or send paint to a server.
 
 To attach nearest front-capture color to the side/back UV samples, run the app with research artifacts enabled and perform one normal hotkey paint:
 
@@ -66,7 +74,7 @@ To attach nearest front-capture color to the side/back UV samples, run the app w
 MECCHA_RESEARCH_ARTIFACTS=1 make run
 ```
 
-When running `scripts\dev.ps1` directly from PowerShell, pass `-EnableResearchArtifacts` instead.
+When running `scripts\dev.ps1` directly from PowerShell, pass `-EnableResearchArtifacts` instead. This flag is migration-only; formal runtime behavior should not depend on it.
 
 The bridge then writes a generated `*.front_samples.json` sidecar under `%LOCALAPPDATA%\MecchaCamouflage\runtime\native\`. `run-mesh-planner.ps1` automatically picks the newest one and adds nearest front-sample color fields to each target sample. Without that file, the planner still emits UV-only targets.
 
@@ -85,7 +93,8 @@ Interpretation:
 
 - `FrontSampleCount == 0`: UV-only plan. No color replay should be considered.
 - `FrontSampleCount > 0`: colorized plan. Still offline-only.
-- Large `SourceDistanceUv` values indicate unsafe color transfer. Current raw nearest-neighbor transfer has p95 around `0.20`, so filtering is required before replay.
+- `Diagnostics.UnsafeCandidateCount > 0`: enabled-region replay should be blocked until the cause is understood.
+- Large `SourceDistanceUv` values indicate unsafe color transfer. Current raw nearest-neighbor transfer has p95 around `0.20`, so filtering or planner logic must improve before replay.
 
 Generated files under `.build\research\mesh_exports\`, `.build\research\uv_plans\`, and `%LOCALAPPDATA%\MecchaCamouflage\runtime\native\*.front_samples.json` are not source artifacts and should not be committed.
 
