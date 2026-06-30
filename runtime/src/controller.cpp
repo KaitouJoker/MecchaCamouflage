@@ -922,6 +922,7 @@ namespace
         bool not_ready_hotkey_logged{false};
         bool duplicate_paint_hotkey_logged{false};
         double last_bridge_check{0.0};
+        double paint_settle_until{0.0};
     };
 
     struct OverlayD3DState
@@ -1996,6 +1997,18 @@ namespace
         auto start_paint = [&](const char* trigger) {
             if (service.paint_future_active || !service.process.pid || !service.bridge_ready)
                 return;
+            const double start_now = seconds_now();
+            if (service.paint_settle_until > start_now)
+            {
+                const auto wait_seconds = static_cast<int>(std::ceil(service.paint_settle_until - start_now));
+                diagnostics.event("paint_hotkey_ignored",
+                                  "warning",
+                                  "paint",
+                                  "Previous paint is still settling; wait before starting another paint.",
+                                  std::string("{\"remaining_seconds\":") + std::to_string(wait_seconds) +
+                                      ",\"trigger\":" + json_string(trigger ? trigger : "") + "}");
+                return;
+            }
             if (paint_editing)
             {
                 diagnostics.event("paint_hotkey_ignored", "warning", "settings", "Paint settings are being edited; hotkey ignored.");
@@ -2204,8 +2217,18 @@ namespace
                 const bool ok = service.paint_future.get();
                 service.paint_future_active = false;
                 service.paint_running = false;
-                service.paint_state = ok ? "Done" : "Failed";
-                service.last_result = ok ? "Paint dispatched" : "Paint failed";
+                if (ok)
+                {
+                    service.paint_settle_until = seconds_now() + 20.0;
+                    service.paint_state = "Settling";
+                    service.last_result = "Settling";
+                }
+                else
+                {
+                    service.paint_settle_until = 0.0;
+                    service.paint_state = "Failed";
+                    service.last_result = "Paint failed";
+                }
                 service.duplicate_paint_hotkey_logged = false;
             }
 
@@ -2361,12 +2384,14 @@ namespace
             ui_runtime.bridge_ready = service.bridge_ready;
             ui_runtime.game_attached = service.process.pid != 0;
             ui_runtime.paint_running = service.paint_running;
+            const bool paint_settling = service.paint_settle_until > seconds_now();
             ui_runtime.paint_ready = service.state == ControllerServiceState::Running &&
                                      service.process.pid != 0 &&
                                      service.bridge_ready &&
                                      !service.paint_running &&
-                                     !paint_editing;
-            ui_runtime.paint_state = service.paint_running ? "Running" : (ui_runtime.paint_ready ? "Ready" : service.paint_state);
+                                     !paint_editing &&
+                                     !paint_settling;
+            ui_runtime.paint_state = service.paint_running ? "Running" : (paint_settling ? "Settling" : (ui_runtime.paint_ready ? "Ready" : service.paint_state));
             const auto mesh_summary = latest_mesh_ui_summary(events);
             ui_runtime.mesh_status = mesh_summary.mesh;
             ui_runtime.planner_status = mesh_summary.planner;
@@ -2408,6 +2433,12 @@ namespace
             {
                 ui_runtime.status_title = "Painting.";
                 ui_runtime.status_detail = "Paint request is running through ServerPaintBatch.";
+            }
+            else if (paint_settling)
+            {
+                const auto wait_seconds = static_cast<int>(std::ceil(service.paint_settle_until - seconds_now()));
+                ui_runtime.status_title = "Paint settling.";
+                ui_runtime.status_detail = "Wait " + std::to_string(std::max(1, wait_seconds)) + "s before the next run.";
             }
             else if (service.paint_state == "Failed")
             {
