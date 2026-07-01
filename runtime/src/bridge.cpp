@@ -23,6 +23,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -44,6 +45,7 @@ namespace
     constexpr int MeshFirstServerBatchMinDelayMs = 15;
     constexpr int MeshFirstApplySafePendingStrokes = 1000;
     constexpr int MeshFirstApplyTimeoutMs = 240000;
+    constexpr double MeshFirstRuntimeCoordinateMaxAvgErrorCm = 50.0;
 
     constexpr std::uintptr_t OffClass = 0x10;
     constexpr std::uintptr_t OffName = 0x18;
@@ -1488,6 +1490,41 @@ namespace
             return false;
         }
         return read_return_bool(ref, function, params.data());
+    }
+
+    struct SdkBoolCallResult
+    {
+        bool available{false};
+        bool process_ok{false};
+        bool value{false};
+        std::string failure{};
+    };
+
+    auto call_no_params_return_bool_detail(Reflection& ref, std::uintptr_t object, const char* function_name) -> SdkBoolCallResult
+    {
+        SdkBoolCallResult out{};
+        const auto function = ref.find_function(object, function_name);
+        out.available = function != 0;
+        if (!function)
+        {
+            out.failure = std::string(function_name) + "_unavailable";
+            return out;
+        }
+        const auto params_size = safe_read<int>(function + OffPropertiesSize, 0);
+        if (params_size < 0 || params_size > 1024)
+        {
+            out.failure = std::string(function_name) + "_params_size_invalid";
+            return out;
+        }
+        std::vector<std::uint8_t> params(static_cast<std::size_t>(std::max(1, params_size)), 0);
+        if (!process_event(object, function, params.data(), out.failure))
+        {
+            out.failure = std::string(function_name) + "_process_event_failed:" + out.failure;
+            return out;
+        }
+        out.process_ok = true;
+        out.value = read_return_bool(ref, function, params.data());
+        return out;
     }
 
     auto read_object_property_by_names(Reflection& ref, std::uintptr_t object, std::initializer_list<const char*> names) -> std::uintptr_t
@@ -4769,6 +4806,40 @@ namespace
         std::string summary{};
     };
 
+    struct MeshFirstRuntimeTriangleWorldRebuild
+    {
+        bool applied{false};
+        int samples{0};
+        double avg_delta{0.0};
+        double max_delta{0.0};
+        std::string mode{"not_run"};
+    };
+
+    struct MeshFirstRuntimePaintWarmup
+    {
+        bool attempted{false};
+        std::string reason{};
+        bool is_initialized_available{false};
+        bool is_initialized_before_ok{false};
+        bool is_initialized_before{false};
+        bool is_initialized_after_ok{false};
+        bool is_initialized_after{false};
+        bool initialize_available{false};
+        bool initialize_called{false};
+        bool initialize_ok{false};
+        std::string initialize_skip_reason{};
+        std::uintptr_t initialized_mesh_before{0};
+        std::uintptr_t initialized_mesh_after{0};
+        bool hit_test_available{false};
+        bool hit_test_uncached_called{false};
+        bool hit_test_uncached_ok{false};
+        bool hit_test_uncached_hit{false};
+        bool hit_test_cached_called{false};
+        bool hit_test_cached_ok{false};
+        bool hit_test_cached_hit{false};
+        std::string failure{};
+    };
+
     struct MeshFirstPlanStats
     {
         int total_triangles{0};
@@ -5263,7 +5334,8 @@ namespace
                                                                   std::vector<MeshFirstRuntimeTriangle>& triangles,
                                                                   const sdk::FVector& camera_location,
                                                                   const sdk::FVector& camera_direction,
-                                                                  const SdkViewportInfo& viewport) -> MeshFirstRuntimeTriangleProjectionSelection
+                                                                  const SdkViewportInfo& viewport,
+                                                                  const std::string& mode = "stable_runtime_coordinates") -> MeshFirstRuntimeTriangleProjectionSelection
     {
         MeshFirstRuntimeTriangleProjectionSelection out{};
         if (triangles.empty() || viewport.width <= 0 || viewport.height <= 0)
@@ -5280,7 +5352,7 @@ namespace
             int score{0};
         };
         std::vector<Candidate> candidates{
-            {"stable_runtime_coordinates"},
+            {mode},
         };
         const int step = std::max(1, static_cast<int>(triangles.size() / 256));
         const auto view_direction = sdk_vec_normalize(camera_direction);
@@ -5345,6 +5417,115 @@ namespace
                            ",project=" + std::to_string(candidate.project_ok) +
                            ",inside=" + std::to_string(candidate.inside_view) +
                            ",score=" + std::to_string(candidate.score);
+        }
+        return out;
+    }
+
+    auto mesh_first_rebuild_runtime_triangle_world_from_local(std::vector<MeshFirstRuntimeTriangle>& triangles,
+                                                              const sdk::FTransform& component_to_world) -> MeshFirstRuntimeTriangleWorldRebuild
+    {
+        MeshFirstRuntimeTriangleWorldRebuild out{};
+        if (triangles.empty())
+        {
+            out.mode = "empty";
+            return out;
+        }
+
+        double delta_sum = 0.0;
+        double delta_max = 0.0;
+        int samples = 0;
+        for (auto& triangle : triangles)
+        {
+            for (int vertex = 0; vertex < 3; ++vertex)
+            {
+                const auto rebuilt_world = mesh_first_transform_apply_point(component_to_world, triangle.local[vertex]);
+                const double delta = sdk_vec_len(sdk_vec_sub(triangle.world[vertex], rebuilt_world));
+                if (std::isfinite(delta) && mesh_first_finite_vector(rebuilt_world))
+                {
+                    delta_sum += delta;
+                    delta_max = std::max(delta_max, delta);
+                    ++samples;
+                    triangle.world[vertex] = rebuilt_world;
+                }
+            }
+        }
+
+        out.applied = samples > 0;
+        out.samples = samples;
+        out.avg_delta = samples > 0 ? delta_sum / static_cast<double>(samples) : 0.0;
+        out.max_delta = delta_max;
+        out.mode = out.applied ? "local_component_world" : "unavailable";
+        return out;
+    }
+
+    auto mesh_first_warm_runtime_paint_cache(Reflection& ref,
+                                             const SdkContext& ctx,
+                                             std::uintptr_t mesh,
+                                             const SdkViewportInfo& viewport,
+                                             const char* reason) -> MeshFirstRuntimePaintWarmup
+    {
+        MeshFirstRuntimePaintWarmup out{};
+        out.attempted = true;
+        out.reason = reason ? reason : "unknown";
+        out.initialized_mesh_before = call_no_params_return_object(ref, ctx.component, "GetInitializedPaintMesh");
+
+        const auto initialized_before = call_no_params_return_bool_detail(ref, ctx.component, "IsInitialized");
+        out.is_initialized_available = initialized_before.available;
+        out.is_initialized_before_ok = initialized_before.process_ok;
+        out.is_initialized_before = initialized_before.value;
+        if (!initialized_before.failure.empty())
+        {
+            out.failure += "is_initialized_before:" + initialized_before.failure;
+        }
+
+        out.initialize_available = ref.find_function(ctx.component, "InitializePaint") != 0;
+        out.initialize_called = false;
+        out.initialize_ok = false;
+        out.initialize_skip_reason = out.initialize_available
+            ? "skipped_non_destructive_hittest_warmup"
+            : "initialize_paint_unavailable";
+
+        const auto hit_test_function = ref.find_function(ctx.component, "HitTestAtScreenPosition");
+        out.hit_test_available = hit_test_function != 0;
+        auto run_hit_test = [&](bool use_cached, bool& called, bool& ok, bool& hit) {
+            if (!hit_test_function || !live_uobject(mesh) || !live_uobject(ctx.controller) ||
+                viewport.width <= 0 || viewport.height <= 0)
+            {
+                return;
+            }
+            called = true;
+            sdk::RuntimePaintableComponent_HitTestAtScreenPosition params{};
+            params.MeshComponent = reinterpret_cast<void*>(mesh);
+            params.ScreenPosition = sdk::FVector2D{static_cast<double>(viewport.width) * 0.5,
+                                                   static_cast<double>(viewport.height) * 0.5};
+            params.PlayerController = reinterpret_cast<void*>(ctx.controller);
+            params.bUseCachedTriangles = use_cached;
+            std::string failure{};
+            ok = process_event(ctx.component, hit_test_function, reinterpret_cast<std::uint8_t*>(&params), failure);
+            hit = ok && params.ReturnValue.bSuccess;
+            if (!ok && !failure.empty())
+            {
+                if (!out.failure.empty())
+                {
+                    out.failure += ";";
+                }
+                out.failure += std::string(use_cached ? "hit_test_cached:" : "hit_test_uncached:") + failure;
+            }
+        };
+        run_hit_test(false, out.hit_test_uncached_called, out.hit_test_uncached_ok, out.hit_test_uncached_hit);
+        run_hit_test(true, out.hit_test_cached_called, out.hit_test_cached_ok, out.hit_test_cached_hit);
+
+        out.initialized_mesh_after = call_no_params_return_object(ref, ctx.component, "GetInitializedPaintMesh");
+        const auto initialized_after = call_no_params_return_bool_detail(ref, ctx.component, "IsInitialized");
+        out.is_initialized_after_ok = initialized_after.process_ok;
+        out.is_initialized_after = initialized_after.value;
+        if (!initialized_after.failure.empty())
+        {
+            if (!out.failure.empty())
+            {
+                out.failure += ";";
+            }
+            out.failure += "is_initialized_after:" + initialized_after.failure;
         }
         return out;
     }
@@ -6690,20 +6871,91 @@ namespace
 
         MeshFirstRuntimeTriangleCache runtime_triangle_cache{};
         std::string runtime_triangle_cache_mode{};
-        if (profile_available)
-        {
-            runtime_triangle_cache = mesh_first_resolve_runtime_triangle_cache(ctx.component, profile);
-            runtime_triangle_cache_mode = "profile_verified";
-        }
-        if (!runtime_triangle_cache.ok)
-        {
-            const auto profile_cache_failure = runtime_triangle_cache.failure;
-            runtime_triangle_cache = mesh_first_resolve_runtime_triangle_cache_dynamic(ctx.component);
-            runtime_triangle_cache_mode = "dynamic_runtime_scan";
-            if (!profile_cache_failure.empty())
+        std::string runtime_triangle_profile_cache_failure{};
+        auto resolve_runtime_triangle_cache_once = [&]() {
+            MeshFirstRuntimeTriangleCache cache{};
+            std::string mode{};
+            std::string profile_cache_failure{};
+            if (profile_available)
             {
-                metadata += ",\"runtime_triangle_profile_cache_failure\":\"" + json_escape(profile_cache_failure) + "\"";
+                cache = mesh_first_resolve_runtime_triangle_cache(ctx.component, profile);
+                mode = "profile_verified";
             }
+            if (!cache.ok)
+            {
+                profile_cache_failure = cache.failure;
+                cache = mesh_first_resolve_runtime_triangle_cache_dynamic(ctx.component);
+                mode = "dynamic_runtime_scan";
+            }
+            return std::make_tuple(std::move(cache), std::move(mode), std::move(profile_cache_failure));
+        };
+        auto runtime_coordinate_probe = [&](const MeshFirstRuntimeTriangleCache& cache) {
+            MeshFirstRuntimeTriangleCoordinateSelection selection{};
+            if (cache.ok)
+            {
+                auto triangles = cache.triangles;
+                selection = mesh_first_select_runtime_triangle_coordinates(triangles, component_to_world);
+            }
+            return selection;
+        };
+
+        {
+            auto resolved = resolve_runtime_triangle_cache_once();
+            runtime_triangle_cache = std::move(std::get<0>(resolved));
+            runtime_triangle_cache_mode = std::move(std::get<1>(resolved));
+            runtime_triangle_profile_cache_failure = std::move(std::get<2>(resolved));
+        }
+
+        const auto runtime_coordinate_pre_warm = runtime_coordinate_probe(runtime_triangle_cache);
+        MeshFirstRuntimePaintWarmup runtime_cache_warmup{};
+        MeshFirstRuntimeTriangleCoordinateSelection runtime_coordinate_post_warm{};
+        const bool runtime_cache_unstable_before_warmup =
+            runtime_triangle_cache.ok &&
+            (runtime_coordinate_pre_warm.samples <= 0 ||
+             !std::isfinite(runtime_coordinate_pre_warm.selected_avg_error) ||
+             runtime_coordinate_pre_warm.selected_avg_error > MeshFirstRuntimeCoordinateMaxAvgErrorCm);
+        if (runtime_cache_unstable_before_warmup)
+        {
+            const auto warmup_viewport = sdk_get_viewport_info(ref, ctx);
+            runtime_cache_warmup = mesh_first_warm_runtime_paint_cache(ref,
+                                                                       ctx,
+                                                                       selected_mesh.mesh,
+                                                                       warmup_viewport,
+                                                                       "runtime_triangle_coordinate_cache_unstable");
+            auto resolved = resolve_runtime_triangle_cache_once();
+            runtime_triangle_cache = std::move(std::get<0>(resolved));
+            runtime_triangle_cache_mode = std::move(std::get<1>(resolved));
+            runtime_triangle_profile_cache_failure = std::move(std::get<2>(resolved));
+            runtime_coordinate_post_warm = runtime_coordinate_probe(runtime_triangle_cache);
+        }
+        metadata += ",\"runtime_triangle_cache_warmup_attempted\":" + std::string(json_bool(runtime_cache_warmup.attempted));
+        metadata += ",\"runtime_triangle_cache_warmup_reason\":\"" + json_escape(runtime_cache_warmup.reason) + "\"";
+        metadata += ",\"runtime_triangle_cache_warmup_pre_avg_error\":" + std::to_string(runtime_coordinate_pre_warm.selected_avg_error);
+        metadata += ",\"runtime_triangle_cache_warmup_pre_samples\":" + std::to_string(runtime_coordinate_pre_warm.samples);
+        metadata += ",\"runtime_triangle_cache_warmup_post_avg_error\":" + std::to_string(runtime_coordinate_post_warm.selected_avg_error);
+        metadata += ",\"runtime_triangle_cache_warmup_post_samples\":" + std::to_string(runtime_coordinate_post_warm.samples);
+        metadata += ",\"runtime_triangle_cache_warmup_is_initialized_available\":" + std::string(json_bool(runtime_cache_warmup.is_initialized_available));
+        metadata += ",\"runtime_triangle_cache_warmup_is_initialized_before_ok\":" + std::string(json_bool(runtime_cache_warmup.is_initialized_before_ok));
+        metadata += ",\"runtime_triangle_cache_warmup_is_initialized_before\":" + std::string(json_bool(runtime_cache_warmup.is_initialized_before));
+        metadata += ",\"runtime_triangle_cache_warmup_is_initialized_after_ok\":" + std::string(json_bool(runtime_cache_warmup.is_initialized_after_ok));
+        metadata += ",\"runtime_triangle_cache_warmup_is_initialized_after\":" + std::string(json_bool(runtime_cache_warmup.is_initialized_after));
+        metadata += ",\"runtime_triangle_cache_warmup_initialize_available\":" + std::string(json_bool(runtime_cache_warmup.initialize_available));
+        metadata += ",\"runtime_triangle_cache_warmup_initialize_called\":" + std::string(json_bool(runtime_cache_warmup.initialize_called));
+        metadata += ",\"runtime_triangle_cache_warmup_initialize_ok\":" + std::string(json_bool(runtime_cache_warmup.initialize_ok));
+        metadata += ",\"runtime_triangle_cache_warmup_initialize_skip_reason\":\"" + json_escape(runtime_cache_warmup.initialize_skip_reason) + "\"";
+        metadata += ",\"runtime_triangle_cache_warmup_initialized_mesh_before\":\"" + hex_address(runtime_cache_warmup.initialized_mesh_before) + "\"";
+        metadata += ",\"runtime_triangle_cache_warmup_initialized_mesh_after\":\"" + hex_address(runtime_cache_warmup.initialized_mesh_after) + "\"";
+        metadata += ",\"runtime_triangle_cache_warmup_hit_test_available\":" + std::string(json_bool(runtime_cache_warmup.hit_test_available));
+        metadata += ",\"runtime_triangle_cache_warmup_hit_test_uncached_called\":" + std::string(json_bool(runtime_cache_warmup.hit_test_uncached_called));
+        metadata += ",\"runtime_triangle_cache_warmup_hit_test_uncached_ok\":" + std::string(json_bool(runtime_cache_warmup.hit_test_uncached_ok));
+        metadata += ",\"runtime_triangle_cache_warmup_hit_test_uncached_hit\":" + std::string(json_bool(runtime_cache_warmup.hit_test_uncached_hit));
+        metadata += ",\"runtime_triangle_cache_warmup_hit_test_cached_called\":" + std::string(json_bool(runtime_cache_warmup.hit_test_cached_called));
+        metadata += ",\"runtime_triangle_cache_warmup_hit_test_cached_ok\":" + std::string(json_bool(runtime_cache_warmup.hit_test_cached_ok));
+        metadata += ",\"runtime_triangle_cache_warmup_hit_test_cached_hit\":" + std::string(json_bool(runtime_cache_warmup.hit_test_cached_hit));
+        metadata += ",\"runtime_triangle_cache_warmup_failure\":\"" + json_escape(runtime_cache_warmup.failure) + "\"";
+        if (!runtime_triangle_profile_cache_failure.empty())
+        {
+            metadata += ",\"runtime_triangle_profile_cache_failure\":\"" + json_escape(runtime_triangle_profile_cache_failure) + "\"";
         }
         metadata += ",\"runtime_triangle_cache_used\":" + std::string(json_bool(runtime_triangle_cache.ok));
         metadata += ",\"runtime_triangle_cache_mode\":\"" + json_escape(runtime_triangle_cache_mode) + "\"";
@@ -6712,7 +6964,7 @@ namespace
         metadata += ",\"runtime_triangle_cache_triangles\":" + std::to_string(runtime_triangle_cache.triangle_count);
         metadata += ",\"runtime_triangle_cache_profile_uv_avg_error\":" + std::to_string(runtime_triangle_cache.profile_uv_avg_error);
         metadata += ",\"runtime_triangle_cache_failure\":\"" + json_escape(runtime_triangle_cache.failure) + "\"";
-        metadata += ",\"planner_position_source\":\"runtime_paintable_cached_current_triangles\"";
+        metadata += ",\"planner_position_source\":\"runtime_paintable_cached_local_component_world\"";
         metadata += ",\"pose_used_for_projection\":true";
         metadata += ",\"pose_used_for_replay_anchor\":true";
         metadata += ",\"skeletal_pose_used_for_projection\":false";
@@ -6771,13 +7023,40 @@ namespace
         metadata += ",\"camera_direction_x\":" + std::to_string(camera_direction.X);
         metadata += ",\"camera_direction_y\":" + std::to_string(camera_direction.Y);
         metadata += ",\"camera_direction_z\":" + std::to_string(camera_direction.Z);
+
+        auto raw_runtime_triangles = runtime_triangle_cache.triangles;
+        const auto raw_runtime_projection_selection =
+            mesh_first_select_runtime_triangle_projection_coordinates(ref,
+                                                                     ctx,
+                                                                     raw_runtime_triangles,
+                                                                     center_ray.location,
+                                                                     camera_direction,
+                                                                     viewport,
+                                                                     "cached_runtime_world");
+        metadata += ",\"runtime_triangle_raw_projection_mode\":\"" + json_escape(raw_runtime_projection_selection.mode) + "\"";
+        metadata += ",\"runtime_triangle_raw_projection_samples\":" + std::to_string(raw_runtime_projection_selection.samples);
+        metadata += ",\"runtime_triangle_raw_projection_source_candidates\":" + std::to_string(raw_runtime_projection_selection.source_candidates);
+        metadata += ",\"runtime_triangle_raw_projection_project_ok\":" + std::to_string(raw_runtime_projection_selection.project_ok);
+        metadata += ",\"runtime_triangle_raw_projection_inside_view\":" + std::to_string(raw_runtime_projection_selection.inside_view);
+        metadata += ",\"runtime_triangle_raw_projection_best_score\":" + std::to_string(raw_runtime_projection_selection.best_score);
+        metadata += ",\"runtime_triangle_raw_projection_summary\":\"" + json_escape(raw_runtime_projection_selection.summary) + "\"";
+
+        const auto runtime_world_rebuild =
+            mesh_first_rebuild_runtime_triangle_world_from_local(runtime_triangle_cache.triangles, component_to_world);
+        metadata += ",\"runtime_triangle_world_rebuild_mode\":\"" + json_escape(runtime_world_rebuild.mode) + "\"";
+        metadata += ",\"runtime_triangle_world_rebuild_applied\":" + std::string(json_bool(runtime_world_rebuild.applied));
+        metadata += ",\"runtime_triangle_world_rebuild_samples\":" + std::to_string(runtime_world_rebuild.samples);
+        metadata += ",\"runtime_triangle_world_rebuild_avg_delta\":" + std::to_string(runtime_world_rebuild.avg_delta);
+        metadata += ",\"runtime_triangle_world_rebuild_max_delta\":" + std::to_string(runtime_world_rebuild.max_delta);
+
         const auto runtime_projection_selection =
             mesh_first_select_runtime_triangle_projection_coordinates(ref,
                                                                      ctx,
                                                                      runtime_triangle_cache.triangles,
                                                                      center_ray.location,
                                                                      camera_direction,
-                                                                     viewport);
+                                                                     viewport,
+                                                                     "local_component_world");
         metadata += ",\"runtime_triangle_projection_mode\":\"" + json_escape(runtime_projection_selection.mode) + "\"";
         metadata += ",\"runtime_triangle_projection_samples\":" + std::to_string(runtime_projection_selection.samples);
         metadata += ",\"runtime_triangle_projection_source_candidates\":" + std::to_string(runtime_projection_selection.source_candidates);
@@ -6785,13 +7064,25 @@ namespace
         metadata += ",\"runtime_triangle_projection_inside_view\":" + std::to_string(runtime_projection_selection.inside_view);
         metadata += ",\"runtime_triangle_projection_best_score\":" + std::to_string(runtime_projection_selection.best_score);
         metadata += ",\"runtime_triangle_projection_summary\":\"" + json_escape(runtime_projection_selection.summary) + "\"";
+        metadata += ",\"runtime_triangle_coordinate_max_avg_error\":" + std::to_string(MeshFirstRuntimeCoordinateMaxAvgErrorCm);
+        if (runtime_world_rebuild.samples <= 0 ||
+            !std::isfinite(runtime_world_rebuild.avg_delta) ||
+            runtime_world_rebuild.avg_delta > MeshFirstRuntimeCoordinateMaxAvgErrorCm)
+        {
+            return response_json(false,
+                                 "runtime_triangle_coordinate_cache_unstable",
+                                 0,
+                                 1,
+                                 "Runtime triangle cache local/world coordinates are not stable for the current component transform",
+                                 metadata + ",\"replay_blocked\":true");
+        }
         if (runtime_projection_selection.inside_view <= 0)
         {
             return response_json(false,
                                  "runtime_triangle_coordinate_projection_unavailable",
                                  0,
                                  1,
-                                 "no runtime triangle coordinate mode projects camera-facing samples into the current viewport",
+                                 "runtime triangle local-component coordinates do not project camera-facing samples into the current viewport",
                                  metadata + ",\"replay_blocked\":true");
         }
 

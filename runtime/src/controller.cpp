@@ -1518,6 +1518,15 @@ namespace
         out << (response.stage.empty() ? (response.success ? "ok" : "failed") : response.stage);
         append_metric_double(out, "elapsed_ms", elapsed_ms, 0);
         append_metric(out, "triangles", metric_count(raw, "runtime_triangle_cache_triangles"));
+        append_metric(out, "raw_inside", metric_count(raw, "runtime_triangle_raw_projection_inside_view"));
+        append_metric(out, "inside", metric_count(raw, "runtime_triangle_projection_inside_view"));
+        append_metric_double(out, "rebuild_avg", extract_json_number(raw, "runtime_triangle_world_rebuild_avg_delta", -1.0), 1);
+        if (extract_json_bool(raw, "runtime_triangle_cache_warmup_attempted", false))
+        {
+            out << ", warmup=1";
+            append_metric_double(out, "warmup_pre", extract_json_number(raw, "runtime_triangle_cache_warmup_pre_avg_error", -1.0), 1);
+            append_metric_double(out, "warmup_post", extract_json_number(raw, "runtime_triangle_cache_warmup_post_avg_error", -1.0), 1);
+        }
         append_metric(out, "source", metric_count(raw, "planner_samples_source"));
         append_metric(out, "front", metric_count(raw, "planner_samples_front"));
         append_metric(out, "side", metric_count(raw, "planner_samples_side"));
@@ -1554,7 +1563,27 @@ namespace
                ",\"runtime_triangle_cache_mode\":" + json_string(extract_json_string(raw, "runtime_triangle_cache_mode")) +
                ",\"runtime_triangle_cache_triangles\":" + std::to_string(metric_count(raw, "runtime_triangle_cache_triangles")) +
                ",\"runtime_triangle_cache_failure\":" + json_string(extract_json_string(raw, "runtime_triangle_cache_failure")) +
+               ",\"warmup_attempted\":" + json_bool_text(extract_json_bool(raw, "runtime_triangle_cache_warmup_attempted", false)) +
+               ",\"warmup_pre_avg_error\":" + std::to_string(extract_json_number(raw, "runtime_triangle_cache_warmup_pre_avg_error", -1.0)) +
+               ",\"warmup_post_avg_error\":" + std::to_string(extract_json_number(raw, "runtime_triangle_cache_warmup_post_avg_error", -1.0)) +
+               ",\"warmup_initialize_available\":" + json_bool_text(extract_json_bool(raw, "runtime_triangle_cache_warmup_initialize_available", false)) +
+               ",\"warmup_initialize_called\":" + json_bool_text(extract_json_bool(raw, "runtime_triangle_cache_warmup_initialize_called", false)) +
+               ",\"warmup_initialize_ok\":" + json_bool_text(extract_json_bool(raw, "runtime_triangle_cache_warmup_initialize_ok", false)) +
+               ",\"warmup_initialize_skip_reason\":" + json_string(extract_json_string(raw, "runtime_triangle_cache_warmup_initialize_skip_reason")) +
+               ",\"warmup_hit_uncached_ok\":" + json_bool_text(extract_json_bool(raw, "runtime_triangle_cache_warmup_hit_test_uncached_ok", false)) +
+               ",\"warmup_hit_uncached_hit\":" + json_bool_text(extract_json_bool(raw, "runtime_triangle_cache_warmup_hit_test_uncached_hit", false)) +
+               ",\"warmup_hit_cached_ok\":" + json_bool_text(extract_json_bool(raw, "runtime_triangle_cache_warmup_hit_test_cached_ok", false)) +
+               ",\"warmup_hit_cached_hit\":" + json_bool_text(extract_json_bool(raw, "runtime_triangle_cache_warmup_hit_test_cached_hit", false)) +
+               ",\"warmup_failure\":" + json_string(extract_json_string(raw, "runtime_triangle_cache_warmup_failure")) +
+               ",\"raw_projection_mode\":" + json_string(extract_json_string(raw, "runtime_triangle_raw_projection_mode")) +
+               ",\"raw_projection_inside\":" + std::to_string(metric_count(raw, "runtime_triangle_raw_projection_inside_view")) +
+               ",\"raw_projection_summary\":" + json_string(extract_json_string(raw, "runtime_triangle_raw_projection_summary")) +
+               ",\"world_rebuild_mode\":" + json_string(extract_json_string(raw, "runtime_triangle_world_rebuild_mode")) +
+               ",\"world_rebuild_applied\":" + json_bool_text(extract_json_bool(raw, "runtime_triangle_world_rebuild_applied", false)) +
+               ",\"world_rebuild_avg_delta\":" + std::to_string(extract_json_number(raw, "runtime_triangle_world_rebuild_avg_delta", -1.0)) +
+               ",\"world_rebuild_max_delta\":" + std::to_string(extract_json_number(raw, "runtime_triangle_world_rebuild_max_delta", -1.0)) +
                ",\"projection_mode\":" + json_string(extract_json_string(raw, "runtime_triangle_projection_mode")) +
+               ",\"projection_inside\":" + std::to_string(metric_count(raw, "runtime_triangle_projection_inside_view")) +
                ",\"projection_summary\":" + json_string(extract_json_string(raw, "runtime_triangle_projection_summary")) +
                ",\"source_samples\":" + std::to_string(metric_count(raw, "planner_samples_source")) +
                ",\"enabled_samples\":" + std::to_string(metric_count(raw, "planner_samples_enabled")) +
@@ -1596,7 +1625,17 @@ namespace
         }
         if (stage == "runtime_triangle_coordinate_projection_unavailable")
         {
-            return "Runtime triangle coordinates did not project into the current camera view. This points to a coordinate/projection mismatch for this mesh.";
+            return "Runtime triangle local-component coordinates did not project into the current camera view. Compare raw_inside, inside, and rebuild_avg in the paint summary.";
+        }
+        if (stage == "runtime_triangle_coordinate_cache_unstable")
+        {
+            std::ostringstream out;
+            out << "Runtime triangle local/world coordinates diverged from the live component transform, so replay was blocked before painting wrong body parts.";
+            append_metric_double(out, "avg_cm", extract_json_number(raw, "runtime_triangle_world_rebuild_avg_delta", -1.0), 1);
+            append_metric_double(out, "limit_cm", extract_json_number(raw, "runtime_triangle_coordinate_max_avg_error", -1.0), 1);
+            append_metric(out, "raw_inside", metric_count(raw, "runtime_triangle_raw_projection_inside_view"));
+            append_metric(out, "inside", metric_count(raw, "runtime_triangle_projection_inside_view"));
+            return out.str();
         }
         if (stage == "mesh_source_capture_failed")
         {
