@@ -9169,7 +9169,9 @@ namespace
                     begin_texture_sync_observe();
                     return;
                 }
-                finish_done();
+                // Post-import probe may be disabled, but peers still need the
+                // normal server texture sync request after the local preview.
+                begin_server_texture_sync();
                 return;
             }
             begin_server_texture_sync();
