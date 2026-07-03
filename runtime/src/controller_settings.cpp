@@ -12,7 +12,7 @@
 #include <sstream>
 
 #ifndef MECCHA_APP_VERSION
-#define MECCHA_APP_VERSION "dev"
+#error "MECCHA_APP_VERSION must be defined by the build script"
 #endif
 
 namespace meccha
@@ -172,7 +172,7 @@ namespace meccha
                     scope.push_back('_');
             }
             if (scope.empty())
-                scope = "dev";
+                scope = "unversioned";
             return utf8_to_wide(scope);
         }
 

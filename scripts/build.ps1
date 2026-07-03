@@ -2,10 +2,34 @@ param(
     [string]$RuntimeRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
     [string]$OutDir = "",
     [string]$ExeName = "meccha-camouflage",
-    [string]$Version = "dev"
+    [string]$Version = ""
 )
 
 $ErrorActionPreference = "Stop"
+
+function Resolve-ProjectVersion {
+    param(
+        [string]$Requested,
+        [string]$Root
+    )
+    if (-not [string]::IsNullOrWhiteSpace($Requested)) {
+        return $Requested
+    }
+    if (Get-Command git -ErrorAction SilentlyContinue) {
+        $exact = & git -C $Root describe --tags --exact-match 2>$null
+        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($exact)) {
+            return $exact.Trim()
+        }
+        $described = & git -C $Root describe --tags --dirty --always 2>$null
+        if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($described)) {
+            return $described.Trim()
+        }
+    }
+    return "unversioned"
+}
+
+$Version = Resolve-ProjectVersion -Requested $Version -Root $RuntimeRoot
+Write-Host "Build version: $Version"
 
 if (-not $OutDir) {
     $OutDir = Join-Path $RuntimeRoot ".build\bin"
@@ -110,7 +134,6 @@ function Get-ExeBaseName {
 
 function Convert-ToCStringDefineValue {
     param([string]$Value)
-    if ([string]::IsNullOrWhiteSpace($Value)) { $Value = "dev" }
     return (($Value -replace '\\', '\\') -replace '"', '\"')
 }
 
