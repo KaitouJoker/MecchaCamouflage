@@ -39,6 +39,8 @@ public sealed class SettingsStore
         settings.GameProcessName = ReadString(root, "game_process_name", settings.GameProcessName);
         settings.AlwaysOnTop = ReadBool(root, "always_on_top", settings.AlwaysOnTop);
         settings.Opacity = ReadDouble(root, "opacity", settings.Opacity);
+        if (RgbColor.TryParse(ReadString(root, "theme_color", settings.ThemeColor.ToHex()), out var theme))
+            settings.ThemeColor = theme;
         settings.StartHotkey = ReadString(root, "start_hotkey", ReadString(root, "paint_hotkey", settings.StartHotkey));
         settings.StopHotkey = ReadString(root, "stop_hotkey", settings.StopHotkey);
         settings.PreviewHotkey = ReadString(root, "preview_hotkey", settings.PreviewHotkey);
@@ -81,7 +83,7 @@ public sealed class SettingsStore
     public static AppSettings Clamp(AppSettings settings)
     {
         settings.LayoutVersion = AppSettings.CurrentLayoutVersion;
-        settings.PanelWidth = Math.Clamp(settings.PanelWidth, 1040.0, 3200.0);
+        settings.PanelWidth = Math.Clamp(settings.PanelWidth, 960.0, 3200.0);
         settings.PanelHeight = Math.Clamp(settings.PanelHeight, 640.0, 2200.0);
         settings.Opacity = Math.Clamp(settings.Opacity, 0.35, 1.0);
         if (!LocalizationCatalog.IsSupported(settings.Language))
@@ -99,7 +101,7 @@ public sealed class SettingsStore
             settings.StopHotkey = "F4";
 
         settings.Paint.StrokeSizeTexels = Math.Clamp(settings.Paint.StrokeSizeTexels, 1.0, 12.0);
-        settings.Paint.CoverageStepTexels = Math.Clamp(settings.Paint.CoverageStepTexels, 1.0, 12.0);
+        settings.Paint.CoverageStepTexels = settings.Paint.StrokeSizeTexels;
         settings.Paint.SideSourceMaxUv = Math.Clamp(settings.Paint.SideSourceMaxUv, 0.001, 0.50);
         settings.Paint.FrontBackSourceMaxUv = Math.Clamp(settings.Paint.FrontBackSourceMaxUv, 0.001, 2.00);
         settings.Paint.ServerBatchLimit = 1;
@@ -123,6 +125,7 @@ public sealed class SettingsStore
         game_process_name = settings.GameProcessName,
         always_on_top = settings.AlwaysOnTop,
         opacity = settings.Opacity,
+        theme_color = settings.ThemeColor.ToHex(),
         start_hotkey = settings.StartHotkey,
         preview_hotkey = settings.PreviewHotkey,
         unpreview_hotkey = settings.UnPreviewHotkey,

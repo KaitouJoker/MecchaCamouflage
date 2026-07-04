@@ -4,7 +4,7 @@ This project pins OSS game-research tools as git submodules under
 `third_party/`. They are used only when a game update requires asset, mapping,
 or SDK investigation.
 
-The normal runtime build requires the WPF controller, the native bridge and
+The normal runtime build requires the WebView2 controller host, the native bridge and
 injector, and the reviewed mesh profile artifacts under `assets/mesh-profiles/`.
 The tools below are for update recovery and profile regeneration, not normal
 app builds.

@@ -75,7 +75,7 @@ Copy-IfExists -Source (Join-Path $RuntimeRoot "assets\icon.png") -Destination (J
 Set-Content -Encoding ASCII -Path (Join-Path $TmpRoot "runtime-config.json") -Value @'
 {
   "version": "%VERSION%",
-  "runtime": "wpf",
+  "runtime": "webview2",
   "mode": "service",
   "game_process_name": "PenguinHotel-Win64-Shipping.exe",
   "config_dir": "%LOCALAPPDATA%\\MecchaCamouflage\\versions\\%VERSION%\\config",

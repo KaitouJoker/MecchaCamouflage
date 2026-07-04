@@ -9016,6 +9016,22 @@ namespace
         metadata += ",\"stroke_radius_texels\":" + std::to_string(stroke_radius_texels);
         metadata += ",\"stroke_radius_uv\":" + std::to_string(stroke_radius_uv);
 
+        const bool any_fill_region = front_region_mode == MeshFirstRegionMode::Fill ||
+                                     side_region_mode == MeshFirstRegionMode::Fill ||
+                                     back_region_mode == MeshFirstRegionMode::Fill;
+        sdk::FRuntimeBrushSettings fill_brush = brush;
+        const double fill_stroke_radius_texels =
+            any_fill_region ? clamp_range(std::max(tuning_stroke_size_texels * 4.0, 32.0),
+                                          tuning_stroke_size_texels,
+                                          96.0)
+                            : stroke_radius_texels;
+        const double fill_stroke_radius_uv = fill_stroke_radius_texels / static_cast<double>(std::max(1, active_texture_size));
+        const double fill_cell_uv = std::max(fill_stroke_radius_uv * 0.75, stroke_radius_uv);
+        fill_brush.Radius = static_cast<float>(fill_stroke_radius_uv);
+        metadata += ",\"fill_stroke_radius_texels\":" + std::to_string(fill_stroke_radius_texels);
+        metadata += ",\"fill_stroke_radius_uv\":" + std::to_string(fill_stroke_radius_uv);
+        metadata += ",\"fill_stroke_coarse_cell_uv\":" + std::to_string(fill_cell_uv);
+
         std::vector<sdk::FPaintStroke> strokes{};
         strokes.reserve(plan_samples.size());
         const bool use_mesh_anchors = runtime_triangle_cache.ok && runtime_uses_profile_component_world;
@@ -9035,6 +9051,8 @@ namespace
         int replay_front_fill = 0;
         int replay_side_fill = 0;
         int replay_back_fill = 0;
+        int replay_fill_candidates = 0;
+        int replay_fill_coarse_skipped = 0;
         int replay_world_anchors = 0;
         int replay_local_anchors = 0;
         int replay_triangle_anchors = 0;
@@ -9062,8 +9080,19 @@ namespace
         metadata += ",\"material_properties_roughness\":" + std::to_string(material_properties.roughness);
         int material_properties_auto_samples = 0;
         int material_properties_source_sample_fallbacks = 0;
-        const MeshFirstRegion replay_region_order[]{MeshFirstRegion::Front, MeshFirstRegion::Side, MeshFirstRegion::Back};
-        metadata += ",\"replay_region_order\":\"front,side,back\"";
+        std::unordered_set<std::uint64_t> fill_cells{};
+        const auto fill_cell_key = [&](const MeshFirstPlanSample& sample) -> std::uint64_t {
+            const int region = mesh_first_region_code(sample.region) & 0xFF;
+            const int island = (sample.uv_island + 1) & 0xFFFF;
+            const int u_cell = static_cast<int>(std::floor(clamp01(sample.u) / std::max(fill_cell_uv, 0.000001))) & 0xFFFFF;
+            const int v_cell = static_cast<int>(std::floor(clamp01(sample.v) / std::max(fill_cell_uv, 0.000001))) & 0xFFFFF;
+            return (static_cast<std::uint64_t>(region) << 56) |
+                   (static_cast<std::uint64_t>(island) << 40) |
+                   (static_cast<std::uint64_t>(u_cell) << 20) |
+                   static_cast<std::uint64_t>(v_cell);
+        };
+        const MeshFirstRegion replay_region_order[]{MeshFirstRegion::Back, MeshFirstRegion::Side, MeshFirstRegion::Front};
+        metadata += ",\"replay_region_order\":\"back,side,front\"";
         for (const auto target_region : replay_region_order)
         {
             const auto region_mode = mesh_first_region_mode_for_sample(target_region,
@@ -9084,6 +9113,12 @@ namespace
                 const bool fill_mode = region_mode == MeshFirstRegionMode::Fill;
                 if (fill_mode)
                 {
+                    ++replay_fill_candidates;
+                    if (!fill_cells.insert(fill_cell_key(sample)).second)
+                    {
+                        ++replay_fill_coarse_skipped;
+                        continue;
+                    }
                     channel = sdk_make_channel(sdk_srgb_to_linear_unit(fill_color_r),
                                                sdk_srgb_to_linear_unit(fill_color_g),
                                                sdk_srgb_to_linear_unit(fill_color_b),
@@ -9117,11 +9152,12 @@ namespace
                                                stroke_roughness,
                                                sdk::EPaintChannelApplyMode::Override);
                 }
+                const auto& stroke_brush = fill_mode ? fill_brush : brush;
                 auto stroke = use_mesh_anchors
                                   ? sdk_make_mesh_anchor_stroke(sample.u,
                                                                 sample.v,
                                                                 channel,
-                                                                brush,
+                                                                stroke_brush,
                                                                 paint_target_channel,
                                                                 sample.world_position,
                                                                 sample.local_position,
@@ -9132,7 +9168,7 @@ namespace
                                   : sdk_make_uv_stroke(sample.u,
                                                        sample.v,
                                                        channel,
-                                                       brush,
+                                                       stroke_brush,
                                                        paint_target_channel);
                 if (stroke.bHasWorldPosition)
                 {
@@ -9197,6 +9233,8 @@ namespace
         metadata += ",\"material_properties_source_sample_fallbacks\":" + std::to_string(material_properties_source_sample_fallbacks);
         metadata += ",\"replay_strokes_paint\":" + std::to_string(replay_paint);
         metadata += ",\"replay_strokes_fill\":" + std::to_string(replay_fill);
+        metadata += ",\"replay_strokes_fill_candidates\":" + std::to_string(replay_fill_candidates);
+        metadata += ",\"replay_strokes_fill_coarse_skipped\":" + std::to_string(replay_fill_coarse_skipped);
         metadata += ",\"replay_strokes_front_paint\":" + std::to_string(replay_front_paint);
         metadata += ",\"replay_strokes_side_paint\":" + std::to_string(replay_side_paint);
         metadata += ",\"replay_strokes_back_paint\":" + std::to_string(replay_back_paint);

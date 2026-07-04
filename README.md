@@ -22,13 +22,10 @@ Download the latest `meccha-camouflage.exe` from GitHub Releases:
 3. Confirm the target process and bridge state in the app.
 4. Press the saved paint hotkey.
 
-Settings are read-only until `Edit` is selected. Use `Save` to apply changes or
-`Cancel` to discard them.
-
 Logs are written under:
 
 ```text
-%LOCALAPPDATA%\MecchaCamouflage\runtime\
+%LOCALAPPDATA%\MecchaCamouflage\versions\<version>\logs\
 ```
 
 ## Development

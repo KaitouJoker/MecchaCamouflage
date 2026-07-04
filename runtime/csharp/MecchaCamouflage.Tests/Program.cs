@@ -1,4 +1,5 @@
 using System.Text.Json;
+using MecchaCamouflage.Controller;
 using MecchaCamouflage.Core;
 
 var tests = new List<(string Name, Action Run)>
@@ -7,7 +8,20 @@ var tests = new List<(string Name, Action Run)>
     ("payload includes fill material and region modes", PayloadIncludesFillMaterial),
     ("locales have complete keys", LocalesHaveCompleteKeys),
     ("color parser accepts rrggbb", ColorParserAcceptsHex),
-    ("runtime cleanup removes old hash dirs", RuntimeCleanupRemovesOldHashDirs)
+    ("runtime cleanup removes old hash dirs", RuntimeCleanupRemovesOldHashDirs),
+    ("auto material defaults off", AutoMaterialDefaultsOff),
+    ("front region defaults to fill", FrontRegionDefaultsToFill),
+    ("bridge messages are user friendly", BridgeMessagesAreUserFriendly),
+    ("settings clamp syncs coverage step to brush size", SettingsClampSyncsCoverageToBrush),
+    ("hotkey validation rejects duplicates", HotkeyValidationRejectsDuplicates),
+    ("host session reset restores setting default", HostSessionResetRestoresDefault),
+    ("host session brush update syncs coverage step", HostSessionBrushUpdateSyncsCoverageStep),
+    ("host session rolls back invalid hotkey update", HostSessionRollsBackInvalidHotkeyUpdate),
+    ("host session applies multiple setting updates atomically", HostSessionAppliesMultipleSettingUpdatesAtomically),
+    ("host session rolls back duplicate hotkey batch", HostSessionRollsBackDuplicateHotkeyBatch),
+    ("host session rolls back invalid fill color batch", HostSessionRollsBackInvalidFillColorBatch),
+    ("host session rolls back invalid theme color batch", HostSessionRollsBackInvalidThemeColorBatch),
+    ("host session rolls back invalid region mode batch", HostSessionRollsBackInvalidRegionModeBatch)
 };
 
 var failed = 0;
@@ -108,6 +122,174 @@ static void RuntimeCleanupRemovesOldHashDirs()
     Assert(Directory.Exists(keep), "current hash dir should be kept");
     Assert(Directory.Exists(recent), "recent hash dir should be kept");
     Assert(!Directory.Exists(old), "old hash dir should be removed");
+}
+
+static void AutoMaterialDefaultsOff()
+{
+    Assert(!new AppSettings().Paint.AutoMaterial, "auto material should default off");
+}
+
+static void FrontRegionDefaultsToFill()
+{
+    Assert(new AppSettings().Paint.FrontRegionMode == RegionMode.Fill, "front should default to fill");
+}
+
+static void BridgeMessagesAreUserFriendly()
+{
+    var alreadyRunning = HostSession.FriendlyBridgeMessage("mesh-first paint is already running");
+    var completed = HostSession.FriendlyBridgeMessage("mesh-first paint completed");
+    var sent = HostSession.FriendlyBridgeMessage("paint sent through ServerPaintBatch one stroke at a time");
+    var preview = HostSession.FriendlyBridgeMessage("local preview material texture imported");
+
+    Assert(alreadyRunning == "Paint is already running.", "already-running message should be friendly");
+    Assert(completed == "Paint completed.", "completed message should be friendly");
+    Assert(sent == "Paint completed.", "server paint sent message should be friendly");
+    Assert(preview == "Preview applied.", "preview message should be friendly");
+    Assert(!alreadyRunning.Contains("mesh", StringComparison.OrdinalIgnoreCase), "internal mesh wording should be hidden");
+}
+
+static void SettingsClampSyncsCoverageToBrush()
+{
+    var settings = new AppSettings();
+    settings.Paint.StrokeSizeTexels = 7.5;
+    settings.Paint.CoverageStepTexels = 2.0;
+
+    var clamped = SettingsStore.Clamp(settings);
+
+    Assert(Math.Abs(clamped.Paint.StrokeSizeTexels - 7.5) < 0.000001, "brush size should be clamped independently");
+    Assert(Math.Abs(clamped.Paint.CoverageStepTexels - clamped.Paint.StrokeSizeTexels) < 0.000001, "coverage step should follow brush size");
+}
+
+static void HotkeyValidationRejectsDuplicates()
+{
+    var hotkeys = new HotkeySet("F1", "F1", "F3", "F4");
+    Assert(!hotkeys.TryValidate(out var message), "duplicate hotkeys should be rejected");
+    Assert(message.Contains("duplicated", StringComparison.OrdinalIgnoreCase), "duplicate message should explain the problem");
+
+    var invalid = new HotkeySet("A", "F2", "F3", "F4");
+    Assert(!invalid.TryValidate(out _), "non-function hotkeys should be rejected");
+}
+
+static void HostSessionResetRestoresDefault()
+{
+    using var temp = new TempHome();
+    var session = new HostSession("host-reset-test");
+
+    var update = session.UpdateSetting("paint.brushSizeTexels", JsonSerializer.SerializeToElement(12.0));
+    Assert(update.Success, update.Message);
+    Assert(Math.Abs(session.Settings.Paint.StrokeSizeTexels - 12.0) < 0.000001, "setting should update");
+
+    var reset = session.ResetSetting("paint.brushSizeTexels");
+    Assert(reset.Success, reset.Message);
+    Assert(Math.Abs(session.Settings.Paint.StrokeSizeTexels - new AppSettings().Paint.StrokeSizeTexels) < 0.000001, "setting should reset");
+}
+
+static void HostSessionBrushUpdateSyncsCoverageStep()
+{
+    using var temp = new TempHome();
+    var session = new HostSession("host-brush-sync-test");
+
+    var update = session.UpdateSetting("paint.brushSizeTexels", JsonSerializer.SerializeToElement(6.5));
+
+    Assert(update.Success, update.Message);
+    Assert(Math.Abs(session.Settings.Paint.StrokeSizeTexels - 6.5) < 0.000001, "brush size should update");
+    Assert(Math.Abs(session.Settings.Paint.CoverageStepTexels - 6.5) < 0.000001, "coverage step should follow brush size");
+}
+
+static void HostSessionRollsBackInvalidHotkeyUpdate()
+{
+    using var temp = new TempHome();
+    var session = new HostSession("host-hotkey-rollback-test");
+    var original = session.Settings.PreviewHotkey;
+
+    var update = session.UpdateSetting("app.previewHotkey", JsonSerializer.SerializeToElement(session.Settings.StartHotkey));
+    Assert(!update.Success, "duplicate hotkey update should fail");
+    Assert(session.Settings.PreviewHotkey == original, "failed hotkey update should roll back in memory");
+}
+
+static void HostSessionAppliesMultipleSettingUpdatesAtomically()
+{
+    using var temp = new TempHome();
+    var session = new HostSession("host-batch-valid-test");
+
+    var update = session.UpdateSettings([
+        new SettingChange("paint.brushSizeTexels", JsonSerializer.SerializeToElement(12.0)),
+        new SettingChange("paint.fillColor", JsonSerializer.SerializeToElement("#112233")),
+        new SettingChange("app.processName", JsonSerializer.SerializeToElement("Game.exe"))
+    ]);
+
+    Assert(update.Success, update.Message);
+    Assert(Math.Abs(session.Settings.Paint.StrokeSizeTexels - 12.0) < 0.000001, "brush size should update");
+    Assert(session.Settings.Paint.FillColor.ToHex() == "#112233", "fill color should update");
+    Assert(session.Settings.GameProcessName == "Game.exe", "process name should update");
+}
+
+static void HostSessionRollsBackDuplicateHotkeyBatch()
+{
+    using var temp = new TempHome();
+    var session = new HostSession("host-batch-hotkey-rollback-test");
+    var originalBrush = session.Settings.Paint.StrokeSizeTexels;
+    var originalPreview = session.Settings.PreviewHotkey;
+
+    var update = session.UpdateSettings([
+        new SettingChange("paint.brushSizeTexels", JsonSerializer.SerializeToElement(12.0)),
+        new SettingChange("app.previewHotkey", JsonSerializer.SerializeToElement(session.Settings.StartHotkey))
+    ]);
+
+    Assert(!update.Success, "duplicate hotkey batch should fail");
+    Assert(Math.Abs(session.Settings.Paint.StrokeSizeTexels - originalBrush) < 0.000001, "non-hotkey change should roll back");
+    Assert(session.Settings.PreviewHotkey == originalPreview, "hotkey change should roll back");
+}
+
+static void HostSessionRollsBackInvalidFillColorBatch()
+{
+    using var temp = new TempHome();
+    var session = new HostSession("host-batch-color-rollback-test");
+    var originalBrush = session.Settings.Paint.StrokeSizeTexels;
+    var originalColor = session.Settings.Paint.FillColor;
+
+    var update = session.UpdateSettings([
+        new SettingChange("paint.brushSizeTexels", JsonSerializer.SerializeToElement(12.0)),
+        new SettingChange("paint.fillColor", JsonSerializer.SerializeToElement("not-a-color"))
+    ]);
+
+    Assert(!update.Success, "invalid color batch should fail");
+    Assert(Math.Abs(session.Settings.Paint.StrokeSizeTexels - originalBrush) < 0.000001, "brush size should roll back");
+    Assert(session.Settings.Paint.FillColor == originalColor, "fill color should roll back");
+}
+
+static void HostSessionRollsBackInvalidThemeColorBatch()
+{
+    using var temp = new TempHome();
+    var session = new HostSession("host-batch-theme-rollback-test");
+    var originalBrush = session.Settings.Paint.StrokeSizeTexels;
+    var originalTheme = session.Settings.ThemeColor;
+
+    var update = session.UpdateSettings([
+        new SettingChange("paint.brushSizeTexels", JsonSerializer.SerializeToElement(12.0)),
+        new SettingChange("app.themeColor", JsonSerializer.SerializeToElement("not-a-color"))
+    ]);
+
+    Assert(!update.Success, "invalid theme color batch should fail");
+    Assert(Math.Abs(session.Settings.Paint.StrokeSizeTexels - originalBrush) < 0.000001, "brush size should roll back");
+    Assert(session.Settings.ThemeColor == originalTheme, "theme color should roll back");
+}
+
+static void HostSessionRollsBackInvalidRegionModeBatch()
+{
+    using var temp = new TempHome();
+    var session = new HostSession("host-batch-region-rollback-test");
+    var originalBrush = session.Settings.Paint.StrokeSizeTexels;
+    var originalMode = session.Settings.Paint.FrontRegionMode;
+
+    var update = session.UpdateSettings([
+        new SettingChange("paint.brushSizeTexels", JsonSerializer.SerializeToElement(12.0)),
+        new SettingChange("paint.frontRegionMode", JsonSerializer.SerializeToElement("invalid"))
+    ]);
+
+    Assert(!update.Success, "invalid region mode batch should fail");
+    Assert(Math.Abs(session.Settings.Paint.StrokeSizeTexels - originalBrush) < 0.000001, "brush size should roll back");
+    Assert(session.Settings.Paint.FrontRegionMode == originalMode, "region mode should roll back");
 }
 
 static void Assert(bool condition, string message)

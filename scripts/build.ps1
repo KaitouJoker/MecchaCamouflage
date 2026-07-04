@@ -105,11 +105,11 @@ $MeshProfilesOutDir = Join-Path $OutDir "mesh-profiles"
 
 $BridgeSource = Join-Path $RuntimeRoot "runtime\src\bridge.cpp"
 $InjectorSource = Join-Path $RuntimeRoot "runtime\src\injector.cpp"
-$WpfProject = Join-Path $RuntimeRoot "runtime\csharp\MecchaCamouflage.Wpf\MecchaCamouflage.Wpf.csproj"
+$WebHostProject = Join-Path $RuntimeRoot "runtime\csharp\MecchaCamouflage.WebHost\MecchaCamouflage.WebHost.csproj"
 $TestsProject = Join-Path $RuntimeRoot "runtime\csharp\MecchaCamouflage.Tests\MecchaCamouflage.Tests.csproj"
 $MeshProfilesSourceDir = Join-Path $RuntimeRoot "assets\mesh-profiles"
 
-foreach ($path in @($BridgeSource, $InjectorSource, $WpfProject, $TestsProject)) {
+foreach ($path in @($BridgeSource, $InjectorSource, $WebHostProject, $TestsProject)) {
     if (-not (Test-Path $path -PathType Leaf)) {
         throw "Required source not found: $path"
     }
@@ -126,7 +126,7 @@ Push-Location $RuntimeRoot
 try {
     Invoke-DotNet -Arguments @("run", "--project", $TestsProject, "-c", "Release")
     Invoke-DotNet -Arguments @(
-        "publish", $WpfProject,
+        "publish", $WebHostProject,
         "-c", "Release",
         "-r", "win-x64",
         "--self-contained", "true",
@@ -157,7 +157,7 @@ try {
     )
 
     if (-not (Test-Path $ControllerOutput -PathType Leaf)) {
-        throw "WPF controller EXE was not produced: $ControllerOutput"
+        throw "WebView2 controller EXE was not produced: $ControllerOutput"
     }
     if (-not (Test-Path $BridgeOutput -PathType Leaf)) {
         throw "Bridge DLL was not produced: $BridgeOutput"

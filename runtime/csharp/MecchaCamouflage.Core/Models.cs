@@ -41,12 +41,12 @@ public sealed class PaintSettings
     public double CoverageStepTexels { get; set; } = 9.0;
     public double SideSourceMaxUv { get; set; } = 0.08;
     public double FrontBackSourceMaxUv { get; set; } = 0.45;
-    public RegionMode FrontRegionMode { get; set; } = RegionMode.Paint;
+    public RegionMode FrontRegionMode { get; set; } = RegionMode.Fill;
     public RegionMode SideRegionMode { get; set; } = RegionMode.Paint;
     public RegionMode BackRegionMode { get; set; } = RegionMode.Paint;
     public int ServerBatchLimit { get; set; } = 1;
     public int ServerBatchDelayMs { get; set; } = 1;
-    public bool AutoMaterial { get; set; } = true;
+    public bool AutoMaterial { get; set; } = false;
     public double Metallic { get; set; } = 0.0;
     public double Roughness { get; set; } = 1.0;
     public RgbColor FillColor { get; set; } = RgbColor.White;
@@ -61,17 +61,18 @@ public sealed class PaintSettings
 
 public sealed class AppSettings
 {
-    public const int CurrentLayoutVersion = 30;
+    public const int CurrentLayoutVersion = 33;
     public int LayoutVersion { get; set; } = CurrentLayoutVersion;
     public double PanelX { get; set; } = -1.0;
     public double PanelY { get; set; } = -1.0;
-    public double PanelWidth { get; set; } = 1120.0;
+    public double PanelWidth { get; set; } = 1100.0;
     public double PanelHeight { get; set; } = 720.0;
     public string Language { get; set; } = "en";
     public int LogRetentionDays { get; set; } = 14;
     public string GameProcessName { get; set; } = "PenguinHotel-Win64-Shipping.exe";
     public bool AlwaysOnTop { get; set; } = true;
     public double Opacity { get; set; } = 1.0;
+    public RgbColor ThemeColor { get; set; } = RgbColor.White;
     public string StartHotkey { get; set; } = "F1";
     public string PreviewHotkey { get; set; } = "F2";
     public string UnPreviewHotkey { get; set; } = "F3";
