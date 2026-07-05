@@ -7,6 +7,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -38,6 +39,7 @@ namespace
     constexpr int DefaultBridgePort = 47654;
     constexpr std::size_t MaxRequestBytes = 8 * 1024 * 1024;
     constexpr int ProcessEventVtableIndex = 0x4C;
+    constexpr int AutoEventWatchSampleBytes = 8192;
     constexpr UINT PaintDispatchMessage = WM_APP + 0x4D43;
     constexpr int ServerPaintBatchStrokeLimit = 50;
     constexpr int ServerPaintBatchStrokeLimitMax = 50;
@@ -55,6 +57,7 @@ namespace
     constexpr int MeshFirstTextureSyncObserverMaxPolls = 40;
     constexpr bool MeshFirstPostImportTextureSyncEnabled = false;
     constexpr double MeshFirstRuntimeCoordinateMaxAvgErrorCm = 50.0;
+    constexpr std::uintptr_t RuntimePaintableComponentPackedSourceIdOffset = 0x2A8;
 
     constexpr std::uintptr_t OffClass = 0x10;
     constexpr std::uintptr_t OffName = 0x18;
@@ -90,8 +93,61 @@ namespace
     std::atomic<std::int64_t> g_observed_sync_compressed_channel_bytes{0};
     std::atomic<std::int64_t> g_observed_sync_compressed_channel_uncompressed_bytes{0};
     std::mutex g_hook_mutex;
+    std::mutex g_auto_event_watch_sample_mutex;
     std::vector<std::pair<std::uintptr_t, std::uintptr_t>> g_process_event_hook_slots;
     thread_local bool g_inside_process_event_hook = false;
+
+    struct AutoEventWatchEntry
+    {
+        const char* name;
+        std::atomic<std::uintptr_t> function;
+        std::atomic<int> calls;
+        std::atomic<int> last_array0_num;
+        std::atomic<int> last_array8_num;
+        std::atomic<int> total_array0_num;
+        std::atomic<int> total_array8_num;
+        std::atomic<int> last_i32_16;
+        std::atomic<int> last_i32_24;
+        std::atomic<std::int64_t> total_i32_16{0};
+        std::atomic<std::int64_t> total_i32_24{0};
+        int last_array0_sample_len{0};
+        int last_array0_sample_total_len{0};
+        int last_array0_sample_element_size{1};
+        std::array<std::uint8_t, AutoEventWatchSampleBytes> last_array0_sample{};
+        int last_array8_sample_len{0};
+        int last_array8_sample_total_len{0};
+        int last_array8_sample_element_size{1};
+        std::array<std::uint8_t, AutoEventWatchSampleBytes> last_array8_sample{};
+    };
+
+    AutoEventWatchEntry g_auto_event_watch[] = {
+        {"ServerPaintBatch", 0, 0, -1, -1, 0, 0, -1, -1},
+        {"ServerCompactPaintBatch", 0, 0, -1, -1, 0, 0, -1, -1},
+        {"ServerPackedPaintBatch", 0, 0, -1, -1, 0, 0, -1, -1},
+        {"SendStrokeBatchToServer", 0, 0, -1, -1, 0, 0, -1, -1},
+        {"SendCustomStrokeBatchToServer", 0, 0, -1, -1, 0, 0, -1, -1},
+        {"RequestStrokeBatchOnServer", 0, 0, -1, -1, 0, 0, -1, -1},
+        {"ServerSendStrokeBatch", 0, 0, -1, -1, 0, 0, -1, -1},
+        {"FlushRecordedStrokesToServer", 0, 0, -1, -1, 0, 0, -1, -1},
+        {"MulticastPaintBatch", 0, 0, -1, -1, 0, 0, -1, -1},
+        {"MulticastCompactPaintBatch", 0, 0, -1, -1, 0, 0, -1, -1},
+        {"MulticastPackedPaintBatch", 0, 0, -1, -1, 0, 0, -1, -1},
+        {"MulticastPaintBatchToOthers", 0, 0, -1, -1, 0, 0, -1, -1},
+        {"MulticastCompactPaintBatchToOthers", 0, 0, -1, -1, 0, 0, -1, -1},
+        {"MulticastPackedPaintBatchToOthers", 0, 0, -1, -1, 0, 0, -1, -1},
+        {"RelayStrokeBatchToServer", 0, 0, -1, -1, 0, 0, -1, -1},
+        {"ServerRelayStrokeBatch", 0, 0, -1, -1, 0, 0, -1, -1},
+        {"ServerRelayCompactStrokeBatch", 0, 0, -1, -1, 0, 0, -1, -1},
+        {"ServerRelayPackedStrokeBatch", 0, 0, -1, -1, 0, 0, -1, -1},
+        {"ServerRelayCompactPaint", 0, 0, -1, -1, 0, 0, -1, -1},
+        {"MulticastSyncChannelData", 0, 0, -1, -1, 0, 0, -1, -1},
+        {"MulticastSyncCompressedChannelData", 0, 0, -1, -1, 0, 0, -1, -1},
+        {"RelayTextureSyncToServer", 0, 0, -1, -1, 0, 0, -1, -1},
+        {"ServerRelayTextureSync", 0, 0, -1, -1, 0, 0, -1, -1},
+    };
+    std::atomic<bool> g_auto_event_watch_enabled{false};
+    std::atomic<bool> g_auto_event_watch_writer_running{false};
+    std::wstring g_auto_event_watch_path{};
 
     using ProcessEventFn = void(__fastcall*)(void*, void*, void*);
 
@@ -130,6 +186,9 @@ namespace
     auto drain_paint_jobs_on_game_thread() -> void;
     auto is_paint_replication_probe_request(const std::string& request) -> bool;
     auto paint_replication_probe_on_game_thread(const std::string& request) -> std::string;
+    auto is_paint_packed_replay_probe_request(const std::string& request) -> bool;
+    auto paint_packed_replay_probe_on_game_thread(const std::string& request) -> std::string;
+    auto auto_event_watch_record(std::uintptr_t function_address, std::uint8_t* params_bytes) -> void;
     void __fastcall hooked_process_event(void* object, void* function, void* params);
     LRESULT CALLBACK message_hook_proc(int code, WPARAM wparam, LPARAM lparam);
 
@@ -452,8 +511,13 @@ namespace
                  "fill_region_count",
                  "skip_region_count",
                  "server_batch_limit",
+                 "server_batch_limit_effective",
                  "server_batch_delay_ms",
                  "server_batch_rpc",
+                 "server_send_custom_static_pacing",
+                 "server_packed_paint_batch_used",
+                 "server_packed_paint_batch_route",
+                 "server_packed_paint_batch_ignored",
                  "adaptive_batch_enabled",
                  "adaptive_requested_batch_limit",
                  "adaptive_resolved_batch_limit",
@@ -467,6 +531,7 @@ namespace
                  "adaptive_backoff_count",
                  "adaptive_queue_wait_count",
                  "adaptive_queue_gate_limit",
+                 "adaptive_batch_queue_gate_limit",
                  "adaptive_queue_drain_strokes_per_sec",
                  "adaptive_send_strokes_per_sec",
                  "adaptive_model_eta_ms",
@@ -537,6 +602,7 @@ namespace
                  "adaptive_backoff_count",
                  "adaptive_queue_wait_count",
                  "adaptive_queue_gate_limit",
+                 "adaptive_batch_queue_gate_limit",
                  "adaptive_queue_drain_strokes_per_sec",
                  "adaptive_send_strokes_per_sec",
                  "adaptive_model_eta_ms",
@@ -545,8 +611,11 @@ namespace
                  "replication_max_strokes_per_tick",
                  "replication_estimated_ticks_to_drain",
                  "server_batch_rpc",
+                 "server_send_custom_static_pacing",
                  "server_compact_paint_batch_enabled",
                  "server_compact_paint_batch_available",
+                 "server_packed_paint_batch_enabled",
+                 "server_packed_paint_batch_use_relay",
              })
         {
             append_metadata_field(out, metadata, key);
@@ -722,6 +791,13 @@ namespace
         std::string configured{};
         if (!configured_sidecar.empty() && read_small_text_file_w(configured_sidecar, 4096, configured))
         {
+            if (configured.size() >= 3 &&
+                static_cast<unsigned char>(configured[0]) == 0xef &&
+                static_cast<unsigned char>(configured[1]) == 0xbb &&
+                static_cast<unsigned char>(configured[2]) == 0xbf)
+            {
+                configured.erase(0, 3);
+            }
             const auto wide = utf8_to_wstring(trim_ascii_whitespace(configured));
             if (!wide.empty())
             {
@@ -791,6 +867,21 @@ namespace
         const auto ok = WriteFile(file, text.data(), static_cast<DWORD>(text.size()), &written, nullptr);
         CloseHandle(file);
         return ok && written == text.size();
+    }
+
+    auto write_bridge_listener_status(const std::string& stage, int port, int error = 0, const std::string& detail = "") -> void
+    {
+        std::string json = "{\"stage\":\"" + json_escape(stage) +
+                           "\",\"pid\":" + std::to_string(GetCurrentProcessId()) +
+                           ",\"port\":" + std::to_string(port) +
+                           ",\"tick_ms\":" + std::to_string(GetTickCount64()) +
+                           ",\"error\":" + std::to_string(error);
+        if (!detail.empty())
+        {
+            json += ",\"detail\":\"" + json_escape(detail) + "\"";
+        }
+        json += "}\n";
+        write_bridge_sidecar_text(L".listen.json", json);
     }
 
     auto write_binary_file_w(const std::wstring& path, const std::vector<std::uint8_t>& bytes) -> bool
@@ -944,6 +1035,42 @@ namespace
     {
         const auto module = main_module_range();
         return module.base && address >= module.base && address < module.base + module.size;
+    }
+
+    auto address_in_bridge_module(std::uintptr_t address) -> bool
+    {
+        if (!address)
+        {
+            return false;
+        }
+        HMODULE module = nullptr;
+        if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                    GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                reinterpret_cast<LPCWSTR>(address),
+                                &module) ||
+            module == nullptr)
+        {
+            return false;
+        }
+        wchar_t path[MAX_PATH]{};
+        if (GetModuleFileNameW(module, path, MAX_PATH) == 0)
+        {
+            return false;
+        }
+        std::wstring lower_path = path;
+        for (auto& ch : lower_path)
+        {
+            if (ch >= L'A' && ch <= L'Z')
+            {
+                ch = static_cast<wchar_t>(ch - L'A' + L'a');
+            }
+        }
+        return lower_path.find(L"runtime-bridge") != std::wstring::npos;
+    }
+
+    auto trusted_process_event_target(std::uintptr_t address) -> bool
+    {
+        return address_in_main_module(address) || address_in_bridge_module(address);
     }
 
     auto live_uobject(std::uintptr_t object) -> bool
@@ -1659,6 +1786,73 @@ namespace
         return early_hex_address(value);
     }
 
+    auto bytes_to_hex(const std::uint8_t* data, int length) -> std::string
+    {
+        if (!data || length <= 0)
+        {
+            return {};
+        }
+        static constexpr char digits[] = "0123456789abcdef";
+        std::string out{};
+        out.reserve(static_cast<std::size_t>(length) * 2);
+        for (int i = 0; i < length; ++i)
+        {
+            const auto value = data[i];
+            out.push_back(digits[(value >> 4) & 0x0f]);
+            out.push_back(digits[value & 0x0f]);
+        }
+        return out;
+    }
+
+    auto hex_nibble(char ch, std::uint8_t& value) -> bool
+    {
+        if (ch >= '0' && ch <= '9')
+        {
+            value = static_cast<std::uint8_t>(ch - '0');
+            return true;
+        }
+        if (ch >= 'a' && ch <= 'f')
+        {
+            value = static_cast<std::uint8_t>(10 + ch - 'a');
+            return true;
+        }
+        if (ch >= 'A' && ch <= 'F')
+        {
+            value = static_cast<std::uint8_t>(10 + ch - 'A');
+            return true;
+        }
+        return false;
+    }
+
+    auto hex_to_bytes(const std::string& hex, std::vector<std::uint8_t>& bytes, std::string& failure) -> bool
+    {
+        bytes.clear();
+        if (hex.empty() || (hex.size() % 2) != 0)
+        {
+            failure = "packed_hex_invalid_length";
+            return false;
+        }
+        if (hex.size() > 1024 * 1024)
+        {
+            failure = "packed_hex_too_large";
+            return false;
+        }
+        bytes.reserve(hex.size() / 2);
+        for (std::size_t i = 0; i < hex.size(); i += 2)
+        {
+            std::uint8_t high = 0;
+            std::uint8_t low = 0;
+            if (!hex_nibble(hex[i], high) || !hex_nibble(hex[i + 1], low))
+            {
+                failure = "packed_hex_invalid_character offset=" + std::to_string(i);
+                bytes.clear();
+                return false;
+            }
+            bytes.push_back(static_cast<std::uint8_t>((high << 4) | low));
+        }
+        return true;
+    }
+
     auto property_name_at_or_before_offset(Reflection& ref, std::uintptr_t object, int offset) -> std::string
     {
         std::string best_name{};
@@ -2028,11 +2222,12 @@ namespace
                 return false;
             }
         }
-        if (!address_in_main_module(target))
+        if (!trusted_process_event_target(target))
         {
-            failure = "process_event_target_outside_main_module";
+            failure = "process_event_target_untrusted";
             return false;
         }
+        auto_event_watch_record(function, params);
         __try
         {
             reinterpret_cast<ProcessEventFn>(target)(reinterpret_cast<void*>(object), reinterpret_cast<void*>(function), params);
@@ -2740,7 +2935,60 @@ namespace
         return true;
     }
 
-    auto uninstall_process_event_hook() -> void
+    auto install_process_event_vtable_hook_for_object(std::uintptr_t object, std::string& failure) -> bool
+    {
+        if (!live_uobject(object))
+        {
+            failure = "hook_object_unavailable";
+            return false;
+        }
+        const auto vtable = safe_read<std::uintptr_t>(object);
+        if (!vtable)
+        {
+            failure = "hook_vtable_unavailable";
+            return false;
+        }
+        const auto slot_address = vtable + static_cast<std::uintptr_t>(ProcessEventVtableIndex) * sizeof(std::uintptr_t);
+        const auto original = safe_read<std::uintptr_t>(slot_address);
+        if (!trusted_process_event_target(original))
+        {
+            failure = "hook_process_event_target_untrusted";
+            return false;
+        }
+
+        const auto hook = reinterpret_cast<std::uintptr_t>(&hooked_process_event);
+        std::lock_guard<std::mutex> hook_lock(g_hook_mutex);
+        for (const auto& entry : g_process_event_hook_slots)
+        {
+            if (entry.first == slot_address)
+            {
+                return true;
+            }
+        }
+        const auto existing_original = g_original_process_event.load();
+        if (existing_original && existing_original != original)
+        {
+            failure = "hook_process_event_original_mismatch";
+            return false;
+        }
+
+        DWORD old_protect = 0;
+        auto* slot = reinterpret_cast<std::uintptr_t*>(slot_address);
+        if (!VirtualProtect(slot, sizeof(std::uintptr_t), PAGE_EXECUTE_READWRITE, &old_protect))
+        {
+            failure = "hook_virtualprotect_failed win32=" + std::to_string(GetLastError());
+            return false;
+        }
+        *slot = hook;
+        FlushInstructionCache(GetCurrentProcess(), slot, sizeof(std::uintptr_t));
+        DWORD ignored = 0;
+        VirtualProtect(slot, sizeof(std::uintptr_t), old_protect, &ignored);
+        g_original_process_event.store(original);
+        g_process_event_hook_slots.push_back({slot_address, original});
+        return true;
+    }
+
+    auto uninstall_message_hook() -> void
     {
         const auto message_hook = g_message_hook.exchange(nullptr);
         if (message_hook)
@@ -2749,6 +2997,11 @@ namespace
         }
         g_game_thread_id.store(0);
         g_game_window.store(nullptr);
+        g_process_event_hook_installed.store(false);
+    }
+
+    auto uninstall_process_event_vtable_hooks() -> void
+    {
         const auto hook = reinterpret_cast<std::uintptr_t>(&hooked_process_event);
         std::lock_guard<std::mutex> hook_lock(g_hook_mutex);
         for (const auto& entry : g_process_event_hook_slots)
@@ -2770,7 +3023,313 @@ namespace
         }
         g_process_event_hook_slots.clear();
         g_original_process_event.store(0);
+    }
+
+    auto uninstall_process_event_hook() -> void
+    {
+        uninstall_message_hook();
+        uninstall_process_event_vtable_hooks();
         g_process_event_hook_installed.store(false);
+    }
+
+    auto write_text_file_w(const std::wstring& path, const std::string& text) -> bool
+    {
+        if (path.empty())
+        {
+            return false;
+        }
+        HANDLE file = CreateFileW(path.c_str(),
+                                  GENERIC_WRITE,
+                                  FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                  nullptr,
+                                  CREATE_ALWAYS,
+                                  FILE_ATTRIBUTE_NORMAL,
+                                  nullptr);
+        if (file == INVALID_HANDLE_VALUE)
+        {
+            return false;
+        }
+        DWORD written = 0;
+        const BOOL ok = WriteFile(file,
+                                  text.data(),
+                                  static_cast<DWORD>(text.size()),
+                                  &written,
+                                  nullptr);
+        CloseHandle(file);
+        return ok && written == text.size();
+    }
+
+    auto auto_event_watch_output_path() -> std::wstring
+    {
+        const auto configured_sidecar = bridge_sidecar_path(L".eventwatch.path");
+        std::string configured{};
+        if (!configured_sidecar.empty() && read_small_text_file_w(configured_sidecar, 4096, configured))
+        {
+            if (configured.size() >= 3 &&
+                static_cast<unsigned char>(configured[0]) == 0xef &&
+                static_cast<unsigned char>(configured[1]) == 0xbb &&
+                static_cast<unsigned char>(configured[2]) == 0xbf)
+            {
+                configured.erase(0, 3);
+            }
+            const auto wide = utf8_to_wstring(trim_ascii_whitespace(configured));
+            if (!wide.empty())
+            {
+                return wide;
+            }
+        }
+        const auto enable_sidecar = bridge_sidecar_path(L".eventwatch");
+        if (!enable_sidecar.empty() && GetFileAttributesW(enable_sidecar.c_str()) != INVALID_FILE_ATTRIBUTES)
+        {
+            return bridge_sidecar_path(L".eventwatch.json");
+        }
+        return {};
+    }
+
+    auto auto_event_watch_snapshot_json(const char* stage) -> std::string
+    {
+        int available = 0;
+        int observed = 0;
+        std::string out = "{\"stage\":\"";
+        out += stage ? stage : "event_watch";
+        out += "\",\"pid\":";
+        out += std::to_string(GetCurrentProcessId());
+        out += ",\"tick_ms\":";
+        out += std::to_string(GetTickCount64());
+        out += ",\"entries\":{";
+        bool first = true;
+        for (auto& entry : g_auto_event_watch)
+        {
+            if (!first)
+            {
+                out += ",";
+            }
+            first = false;
+            const auto function = entry.function.load();
+            const int calls = entry.calls.load();
+            if (function)
+            {
+                ++available;
+            }
+            if (calls > 0)
+            {
+                ++observed;
+            }
+            out += "\"" + json_escape(entry.name) + "\":{";
+            out += "\"function\":\"" + hex_address(function) + "\"";
+            out += ",\"calls\":" + std::to_string(calls);
+            out += ",\"last_array0_num\":" + std::to_string(entry.last_array0_num.load());
+            out += ",\"last_array8_num\":" + std::to_string(entry.last_array8_num.load());
+            out += ",\"total_array0_num\":" + std::to_string(entry.total_array0_num.load());
+            out += ",\"total_array8_num\":" + std::to_string(entry.total_array8_num.load());
+            out += ",\"last_i32_16\":" + std::to_string(entry.last_i32_16.load());
+            out += ",\"last_i32_24\":" + std::to_string(entry.last_i32_24.load());
+            out += ",\"total_i32_16\":" + std::to_string(entry.total_i32_16.load());
+            out += ",\"total_i32_24\":" + std::to_string(entry.total_i32_24.load());
+            {
+                std::lock_guard<std::mutex> sample_lock(g_auto_event_watch_sample_mutex);
+                out += ",\"last_array0_sample_len\":" + std::to_string(entry.last_array0_sample_len);
+                out += ",\"last_array0_sample_total_len\":" + std::to_string(entry.last_array0_sample_total_len);
+                out += ",\"last_array0_sample_element_size\":" + std::to_string(entry.last_array0_sample_element_size);
+                out += ",\"last_array0_sample_hex\":\"" +
+                       bytes_to_hex(entry.last_array0_sample.data(), entry.last_array0_sample_len) + "\"";
+                out += ",\"last_array8_sample_len\":" + std::to_string(entry.last_array8_sample_len);
+                out += ",\"last_array8_sample_total_len\":" + std::to_string(entry.last_array8_sample_total_len);
+                out += ",\"last_array8_sample_element_size\":" + std::to_string(entry.last_array8_sample_element_size);
+                out += ",\"last_array8_sample_hex\":\"" +
+                       bytes_to_hex(entry.last_array8_sample.data(), entry.last_array8_sample_len) + "\"";
+            }
+            out += "}";
+        }
+        out += "},\"available_count\":" + std::to_string(available);
+        out += ",\"observed_count\":" + std::to_string(observed);
+        out += ",\"hook_slots\":" + std::to_string(g_process_event_hook_slots.size());
+        out += "}\n";
+        return out;
+    }
+
+    auto auto_event_watch_record(std::uintptr_t function_address, std::uint8_t* params_bytes) -> void
+    {
+        if (!g_auto_event_watch_enabled.load() || !params_bytes)
+        {
+            return;
+        }
+        auto read_array_num = [&](std::size_t offset) -> int {
+            const auto* array = reinterpret_cast<const sdk::TArray<std::uint8_t>*>(params_bytes + offset);
+            const int num = array ? array->Num : -1;
+            return (num >= 0 && num <= 1000000) ? num : -1;
+        };
+        auto read_i32 = [&](std::size_t offset) -> int {
+            return *reinterpret_cast<const int*>(params_bytes + offset);
+        };
+        auto array_element_size = [](const char* name, std::size_t offset) -> int {
+            const std::string function_name = name ? name : "";
+            if (contains_text(function_name, "Packed") || contains_text(function_name, "Texture") ||
+                contains_text(function_name, "SyncChannel"))
+            {
+                return 1;
+            }
+            if (contains_text(function_name, "Compact"))
+            {
+                if (contains_text(function_name, "Relay") && offset != 8)
+                {
+                    return 1;
+                }
+                return static_cast<int>(sizeof(sdk::FCompactPaintStroke));
+            }
+            if (contains_text(function_name, "StrokeBatch") || contains_text(function_name, "PaintBatch") ||
+                function_name == "ServerPaintBatch" || function_name == "FlushRecordedStrokesToServer")
+            {
+                if (contains_text(function_name, "Relay") && offset != 8)
+                {
+                    return 1;
+                }
+                return static_cast<int>(sizeof(sdk::FPaintStroke));
+            }
+            return 1;
+        };
+        auto capture_array_sample = [&](std::size_t offset,
+                                        std::array<std::uint8_t, AutoEventWatchSampleBytes>& sample,
+                                        int& sample_len,
+                                        int& total_len,
+                                        int& sample_element_size,
+                                        const char* entry_name) {
+            const auto* array = reinterpret_cast<const sdk::TArray<std::uint8_t>*>(params_bytes + offset);
+            const int num = array ? array->Num : -1;
+            const auto* data = array ? array->Data : nullptr;
+            if (num <= 0 || num > 1000000 || !data)
+            {
+                return;
+            }
+            const int element_size = std::max(1, array_element_size(entry_name, offset));
+            const std::uint64_t total_bytes_u64 =
+                static_cast<std::uint64_t>(num) * static_cast<std::uint64_t>(element_size);
+            const int total_bytes = total_bytes_u64 > static_cast<std::uint64_t>(std::numeric_limits<int>::max())
+                                        ? std::numeric_limits<int>::max()
+                                        : static_cast<int>(total_bytes_u64);
+            std::array<std::uint8_t, AutoEventWatchSampleBytes> local_sample{};
+            const int len = std::min(total_bytes, AutoEventWatchSampleBytes);
+            if (!safe_copy(local_sample.data(), data, static_cast<std::size_t>(len)))
+            {
+                return;
+            }
+            std::lock_guard<std::mutex> sample_lock(g_auto_event_watch_sample_mutex);
+            sample = local_sample;
+            sample_len = len;
+            total_len = total_bytes;
+            sample_element_size = element_size;
+        };
+        for (auto& entry : g_auto_event_watch)
+        {
+            if (function_address != entry.function.load())
+            {
+                continue;
+            }
+            entry.calls.fetch_add(1);
+            const int array0 = read_array_num(0);
+            const int array8 = read_array_num(8);
+            const int i32_16 = read_i32(16);
+            const int i32_24 = read_i32(24);
+            entry.last_array0_num.store(array0);
+            entry.last_array8_num.store(array8);
+            if (array0 > 0)
+            {
+                entry.total_array0_num.fetch_add(array0);
+            }
+            if (array8 > 0)
+            {
+                entry.total_array8_num.fetch_add(array8);
+            }
+            if (i32_16 > 0 && i32_16 <= 1000000)
+            {
+                entry.total_i32_16.fetch_add(i32_16);
+            }
+            if (i32_24 > 0 && i32_24 <= 1000000)
+            {
+                entry.total_i32_24.fetch_add(i32_24);
+            }
+            capture_array_sample(0,
+                                 entry.last_array0_sample,
+                                 entry.last_array0_sample_len,
+                                 entry.last_array0_sample_total_len,
+                                 entry.last_array0_sample_element_size,
+                                 entry.name);
+            capture_array_sample(8,
+                                 entry.last_array8_sample,
+                                 entry.last_array8_sample_len,
+                                 entry.last_array8_sample_total_len,
+                                 entry.last_array8_sample_element_size,
+                                 entry.name);
+            entry.last_i32_16.store(i32_16);
+            entry.last_i32_24.store(i32_24);
+            return;
+        }
+    }
+
+    auto start_auto_event_watch_if_configured() -> void
+    {
+        const auto output_path = auto_event_watch_output_path();
+        if (output_path.empty() || g_auto_event_watch_enabled.load())
+        {
+            return;
+        }
+
+        Reflection ref{};
+        std::string failure{};
+        if (!ref.init(failure))
+        {
+            write_text_file_w(output_path,
+                              "{\"stage\":\"event_watch_init_failed\",\"failure\":\"" +
+                                  json_escape(failure) + "\"}\n");
+            return;
+        }
+
+        int hook_slots = 0;
+        ref.for_each_object([&](std::uintptr_t object) {
+            if (!live_uobject(object))
+            {
+                return false;
+            }
+            const auto class_name_text = lower_copy(ref.class_name(object));
+            if (contains_text(class_name_text, "runtimepaint"))
+            {
+                std::string hook_failure{};
+                if (install_process_event_vtable_hook_for_object(object, hook_failure))
+                {
+                    ++hook_slots;
+                }
+            }
+            const auto name = ref.object_name(object);
+            for (auto& entry : g_auto_event_watch)
+            {
+                if (name != entry.name)
+                {
+                    continue;
+                }
+                const auto path = lower_copy(ref.object_path(object));
+                if (contains_text(path, "runtimepaintablecomponent") ||
+                    contains_text(path, "runtimepaintrelaycomponent"))
+                {
+                    entry.function.store(object);
+                }
+            }
+            return false;
+        });
+
+        g_auto_event_watch_path = output_path;
+        g_auto_event_watch_enabled.store(true);
+        g_auto_event_watch_writer_running.store(true);
+        write_text_file_w(output_path, auto_event_watch_snapshot_json("event_watch_started"));
+        std::thread([]() {
+            while (g_auto_event_watch_enabled.load())
+            {
+                write_text_file_w(g_auto_event_watch_path, auto_event_watch_snapshot_json("event_watch_running"));
+                Sleep(1000);
+            }
+            write_text_file_w(g_auto_event_watch_path, auto_event_watch_snapshot_json("event_watch_stopped"));
+            g_auto_event_watch_writer_running.store(false);
+        }).detach();
+        (void)hook_slots;
     }
 
     auto json_bool(bool value) -> const char*
@@ -2816,6 +3375,8 @@ namespace
         std::uintptr_t relay_component{0};
         std::uintptr_t server_paint_batch_function{0};
         std::uintptr_t server_compact_paint_batch_function{0};
+        std::uintptr_t server_packed_paint_batch_function{0};
+        std::uintptr_t server_relay_packed_stroke_batch_function{0};
         std::uintptr_t send_custom_stroke_batch_function{0};
         std::uintptr_t local_paint_at_uv_function{0};
     };
@@ -3340,6 +3901,10 @@ namespace
                ",\"function_server_paint_batch\":\"" + hex_address(ctx.server_paint_batch_function) + "\"" +
                ",\"function_server_compact_paint_batch_available\":" + std::string(json_bool(ctx.server_compact_paint_batch_function != 0)) +
                ",\"function_server_compact_paint_batch\":\"" + hex_address(ctx.server_compact_paint_batch_function) + "\"" +
+               ",\"function_server_packed_paint_batch_available\":" + std::string(json_bool(ctx.server_packed_paint_batch_function != 0)) +
+               ",\"function_server_packed_paint_batch\":\"" + hex_address(ctx.server_packed_paint_batch_function) + "\"" +
+               ",\"function_server_relay_packed_stroke_batch_available\":" + std::string(json_bool(ctx.server_relay_packed_stroke_batch_function != 0)) +
+               ",\"function_server_relay_packed_stroke_batch\":\"" + hex_address(ctx.server_relay_packed_stroke_batch_function) + "\"" +
                ",\"function_paint_at_uv_with_brush_available\":" + std::string(json_bool(ctx.local_paint_at_uv_function != 0)) +
                ",\"function_paint_at_uv_with_brush\":\"" + hex_address(ctx.local_paint_at_uv_function) + "\"" +
                ",\"param_schema\":\"FPaintStroke{Uv@0,WorldPosition@16,bHasWorldPosition@40,BrushSettings@104,ChannelData@144,TargetChannel@176};ServerPaintBatch{Batch@0}\"" +
@@ -3494,6 +4059,8 @@ namespace
         }
         ctx.server_paint_batch_function = ref.find_function(ctx.component, "ServerPaintBatch");
         ctx.server_compact_paint_batch_function = ref.find_function(ctx.component, "ServerCompactPaintBatch");
+        ctx.server_packed_paint_batch_function = ref.find_function(ctx.component, "ServerPackedPaintBatch");
+        ctx.server_relay_packed_stroke_batch_function = ref.find_function(ctx.relay_component, "ServerRelayPackedStrokeBatch");
         ctx.send_custom_stroke_batch_function = ref.find_function(ctx.component, "SendCustomStrokeBatchToServer");
         ctx.local_paint_at_uv_function = ref.find_function(ctx.component, "PaintAtUVWithBrush");
         ctx.ok = true;
@@ -4309,6 +4876,19 @@ namespace
                                              std::size_t offset,
                                              std::size_t count,
                                              std::string& failure) -> bool;
+    auto sdk_generate_packed_paint_source_id() -> sdk::FGuid;
+    auto sdk_read_component_packed_source_id(std::uintptr_t component) -> sdk::FGuid;
+    auto sdk_call_packed_paint_batch_from_strokes(std::uintptr_t component,
+                                                  std::uintptr_t relay_component,
+                                                  std::uintptr_t component_function,
+                                                  std::uintptr_t relay_function,
+                                                  bool use_relay,
+                                                  const std::vector<sdk::FPaintStroke>& strokes,
+                                                  std::size_t offset,
+                                                  std::size_t count,
+                                                  const sdk::FGuid& source_id,
+                                                  int texture_size,
+                                                  std::string& failure) -> bool;
 
     auto sdk_resolve_skinned_pose(Reflection& ref,
                                   std::uintptr_t mesh,
@@ -8127,9 +8707,15 @@ namespace
         std::uintptr_t relay_component{0};
         std::uintptr_t server_paint_batch_function{0};
         std::uintptr_t server_compact_paint_batch_function{0};
+        std::uintptr_t server_packed_paint_batch_function{0};
+        std::uintptr_t server_relay_packed_stroke_batch_function{0};
         std::uintptr_t local_paint_at_uv_function{0};
         bool server_compact_paint_batch_enabled{false};
         bool server_compact_paint_batch_available{false};
+        bool server_packed_paint_batch_enabled{false};
+        bool server_packed_paint_batch_use_relay{true};
+        sdk::FGuid server_packed_paint_source_id{};
+        bool server_send_custom_stroke_batch_enabled{false};
         std::string server_batch_rpc{"ServerPaintBatch"};
         std::vector<sdk::FPaintStroke> strokes{};
         std::string metadata{};
@@ -8400,6 +8986,10 @@ namespace
         {
             return mesh_first_adaptive_requested_delay(job);
         }
+        if (job->server_send_custom_stroke_batch_enabled)
+        {
+            return mesh_first_adaptive_requested_delay(job);
+        }
         if (job->adaptive_resolved_pacing_ms > 0)
         {
             return std::clamp(job->adaptive_resolved_pacing_ms, 1, MeshFirstAdaptiveMaxDelayMs);
@@ -8543,15 +9133,29 @@ namespace
         return std::max(1, mesh_first_adaptive_resolved_batch(job));
     }
 
+    auto mesh_first_adaptive_batch_queue_gate_limit(const std::shared_ptr<MeshFirstServerBatchAsyncJob>& job) -> int
+    {
+        const int outgoing_batches_per_second =
+            job && job->adaptive_resolved_outgoing_batches_per_second > 0
+                ? job->adaptive_resolved_outgoing_batches_per_second
+                : MeshFirstAdaptiveFallbackOutgoingBatchesPerSecond;
+        return std::max(1, outgoing_batches_per_second * 2);
+    }
+
     auto mesh_first_adaptive_queue_gate_open(const std::shared_ptr<MeshFirstServerBatchAsyncJob>& job,
                                              const MeshFirstReplicationSnapshot& pressure) -> bool
     {
-        const int queue = mesh_first_pressure_queued_stroke_count(pressure);
-        if (queue < 0)
+        const int queued_strokes = mesh_first_pressure_queued_stroke_count(pressure);
+        const int queued_batches = mesh_first_pressure_queued_batch_count(pressure);
+        if (queued_strokes < 0 && queued_batches < 0)
         {
             return true;
         }
-        return queue <= mesh_first_adaptive_queue_gate_limit(job);
+        const bool strokes_ok = queued_strokes < 0 ||
+                                queued_strokes <= mesh_first_adaptive_queue_gate_limit(job);
+        const bool batches_ok = queued_batches < 0 ||
+                                queued_batches <= mesh_first_adaptive_batch_queue_gate_limit(job);
+        return strokes_ok && batches_ok;
     }
 
     auto mesh_first_adaptive_queue_gate_pressure_level(const std::shared_ptr<MeshFirstServerBatchAsyncJob>& job,
@@ -8562,21 +9166,26 @@ namespace
         {
             return MeshFirstAdaptivePressureLevel::Unknown;
         }
-        const int queue = mesh_first_pressure_queued_stroke_count(pressure);
-        if (queue < 0)
+        const int queued_strokes = mesh_first_pressure_queued_stroke_count(pressure);
+        const int queued_batches = mesh_first_pressure_queued_batch_count(pressure);
+        if (queued_strokes < 0 && queued_batches < 0)
         {
             return MeshFirstAdaptivePressureLevel::Unknown;
         }
-        const int gate = mesh_first_adaptive_queue_gate_limit(job);
-        if (queue <= gate)
+        const int stroke_gate = mesh_first_adaptive_queue_gate_limit(job);
+        const int batch_gate = mesh_first_adaptive_batch_queue_gate_limit(job);
+        const int stroke_pressure = queued_strokes < 0 ? 0 : (queued_strokes + stroke_gate - 1) / stroke_gate;
+        const int batch_pressure = queued_batches < 0 ? 0 : (queued_batches + batch_gate - 1) / batch_gate;
+        const int pressure_ratio = std::max(stroke_pressure, batch_pressure);
+        if (pressure_ratio <= 1)
         {
             return MeshFirstAdaptivePressureLevel::Low;
         }
-        if (queue <= gate * 2)
+        if (pressure_ratio <= 2)
         {
             return MeshFirstAdaptivePressureLevel::Moderate;
         }
-        if (queue <= gate * 4)
+        if (pressure_ratio <= 4)
         {
             return MeshFirstAdaptivePressureLevel::High;
         }
@@ -8601,7 +9210,11 @@ namespace
         out += ",\"adaptive_pressure_level\":\"" + json_escape(job ? job->adaptive_pressure_level : "unknown") + "\"";
         out += ",\"adaptive_backoff_count\":" + std::to_string(job ? job->adaptive_backoff_count : 0);
         out += ",\"adaptive_queue_wait_count\":" + std::to_string(job ? job->adaptive_backoff_count : 0);
+        out += ",\"server_send_custom_static_pacing\":" +
+               std::string(json_bool(job && job->server_send_custom_stroke_batch_enabled));
         out += ",\"adaptive_queue_gate_limit\":" + std::to_string(mesh_first_adaptive_queue_gate_limit(job));
+        out += ",\"adaptive_batch_queue_gate_limit\":" +
+               std::to_string(mesh_first_adaptive_batch_queue_gate_limit(job));
         out += ",\"adaptive_max_outgoing_strokes_per_batch\":" +
                std::to_string(job ? job->adaptive_resolved_outgoing_strokes_per_batch : -1);
         out += ",\"adaptive_max_outgoing_network_batches_per_second\":" +
@@ -9042,10 +9655,16 @@ namespace
         out += ",\"server_batch_delay_ms\":" + std::to_string(server_batch_delay_ms);
         out += mesh_first_adaptive_metadata(job);
         out += ",\"server_batch_rpc\":\"" + json_escape(job ? job->server_batch_rpc : "ServerPaintBatch") + "\"";
+        out += ",\"server_send_custom_static_pacing\":" +
+               std::string(json_bool(job && job->server_send_custom_stroke_batch_enabled));
         out += ",\"server_compact_paint_batch_enabled\":" +
                std::string(json_bool(job && job->server_compact_paint_batch_enabled));
         out += ",\"server_compact_paint_batch_available\":" +
                std::string(json_bool(job && job->server_compact_paint_batch_available));
+        out += ",\"server_packed_paint_batch_enabled\":" +
+               std::string(json_bool(job && job->server_packed_paint_batch_enabled));
+        out += ",\"server_packed_paint_batch_use_relay\":" +
+               std::string(json_bool(job && job->server_packed_paint_batch_use_relay));
         out += ",\"server_batches_total\":" + std::to_string(server_batches_total);
         out += ",\"server_batches_done\":" + std::to_string(server_batches_done);
         out += ",\"server_batch_calls\":" + std::to_string(job ? job->server_batch_calls : 0);
@@ -9152,6 +9771,26 @@ namespace
         const bool tuning_adaptive_batch_enabled = json_bool_field(request, "adaptive_batch_enabled", true);
         const int tuning_server_batch_limit = json_int_field(request, "server_batch_limit", ServerPaintBatchStrokeLimit, 1, ServerPaintBatchStrokeLimitMax);
         const int tuning_server_batch_delay_ms = json_int_field(request, "server_batch_delay_ms", ServerPaintBatchDelayMs, 150, 500);
+        const std::string requested_server_batch_rpc = json_string_field(request, "server_batch_rpc", "");
+        const std::string requested_server_batch_rpc_normalized = lower_copy(requested_server_batch_rpc);
+        const std::string requested_packed_route = lower_copy(json_string_field(request, "packed_route", "component"));
+        const bool experimental_packed_requested =
+            json_bool_field(request, "experimental_packed", false) ||
+            requested_server_batch_rpc_normalized == "packed" ||
+            requested_server_batch_rpc_normalized == "serverpackedpaintbatch" ||
+            requested_server_batch_rpc_normalized == "server_packed_paint_batch" ||
+            requested_server_batch_rpc_normalized == "serverrelaypackedstrokebatch" ||
+            requested_server_batch_rpc_normalized == "server_relay_packed_stroke_batch" ||
+            requested_server_batch_rpc_normalized == "relay_packed";
+        const bool requested_packed_component_route =
+            requested_packed_route == "component" ||
+            requested_server_batch_rpc_normalized == "serverpackedpaintbatch" ||
+            requested_server_batch_rpc_normalized == "server_packed_paint_batch";
+        const bool experimental_send_custom_requested =
+            json_bool_field(request, "experimental_send_custom", false) ||
+            requested_server_batch_rpc_normalized == "sendcustomstrokebatchtoserver" ||
+            requested_server_batch_rpc_normalized == "send_custom_stroke_batch_to_server" ||
+            requested_server_batch_rpc_normalized == "send_custom";
 
         std::string metadata = "\"route\":\"mesh_first_paint\"";
         const std::string mesh_first_pipeline =
@@ -9184,6 +9823,10 @@ namespace
         metadata += ",\"skip_region_count\":" + std::to_string((front_region_mode == MeshFirstRegionMode::Skip ? 1 : 0) +
                                                                (side_region_mode == MeshFirstRegionMode::Skip ? 1 : 0) +
                                                                (back_region_mode == MeshFirstRegionMode::Skip ? 1 : 0));
+        metadata += ",\"server_batch_rpc_requested\":\"" + json_escape(requested_server_batch_rpc) + "\"";
+        metadata += ",\"experimental_send_custom_requested\":" + std::string(json_bool(experimental_send_custom_requested));
+        metadata += ",\"experimental_packed_requested\":" + std::string(json_bool(experimental_packed_requested));
+        metadata += ",\"packed_route_requested\":\"" + json_escape(requested_packed_route) + "\"";
         metadata += ",\"stroke_size_texels\":" + std::to_string(tuning_stroke_size_texels);
         metadata += ",\"coverage_step_texels\":" + std::to_string(tuning_coverage_step_texels);
         metadata += ",\"side_source_max_uv\":" + std::to_string(tuning_side_source_max_uv);
@@ -10209,28 +10852,104 @@ namespace
         const bool compact_batch_replication_enabled =
             read_object_u8_property(ref, ctx.component, "bUseCompactPaintReplication", 0) != 0;
         const bool send_custom_batch_available = ctx.send_custom_stroke_batch_function != 0;
-        const bool use_send_custom_server_batch = !preview_only && send_custom_batch_available;
+        const bool packed_component_available = ctx.server_packed_paint_batch_function != 0;
+        const bool packed_relay_available = ctx.server_relay_packed_stroke_batch_function != 0 && live_uobject(ctx.relay_component);
+        const bool use_packed_relay_route = !requested_packed_component_route;
+        const bool packed_selected_route_available = use_packed_relay_route ? packed_relay_available : packed_component_available;
+        const bool use_packed_server_batch =
+            !preview_only && experimental_packed_requested && compact_batch_compatible && packed_selected_route_available;
+        const bool use_send_custom_server_batch =
+            !preview_only && !use_packed_server_batch && send_custom_batch_available && experimental_send_custom_requested;
         const bool use_compact_server_batch =
-            !preview_only && !use_send_custom_server_batch && compact_batch_available &&
+            !preview_only && !use_packed_server_batch && !use_send_custom_server_batch && compact_batch_available &&
             compact_batch_compatible && compact_batch_replication_enabled;
+        const int effective_replay_server_batch_limit =
+            use_packed_server_batch
+                ? std::min(tuning_server_batch_limit, MeshFirstAdaptiveFallbackMaxOutgoingStrokesPerBatch)
+                : tuning_server_batch_limit;
+        std::string packed_ignored_reason = "none";
+        if (!use_packed_server_batch)
+        {
+            if (!experimental_packed_requested)
+            {
+                packed_ignored_reason = "not_requested";
+            }
+            else if (preview_only)
+            {
+                packed_ignored_reason = "preview_only";
+            }
+            else if (!compact_batch_compatible)
+            {
+                packed_ignored_reason = "incompatible_strokes";
+            }
+            else if (!packed_selected_route_available)
+            {
+                packed_ignored_reason = use_packed_relay_route ? "relay_route_unavailable" : "component_route_unavailable";
+            }
+            else
+            {
+                packed_ignored_reason = "not_selected";
+            }
+        }
+        std::string send_custom_ignored_reason = "none";
+        if (!use_send_custom_server_batch)
+        {
+            if (!experimental_send_custom_requested)
+            {
+                send_custom_ignored_reason = "not_requested";
+            }
+            else if (preview_only)
+            {
+                send_custom_ignored_reason = "preview_only";
+            }
+            else if (!send_custom_batch_available)
+            {
+                send_custom_ignored_reason = "unavailable";
+            }
+            else
+            {
+                send_custom_ignored_reason = "not_selected";
+            }
+        }
         metadata += ",\"server_batch_rpc\":\"" +
-                    std::string(use_send_custom_server_batch
-                                    ? "SendCustomStrokeBatchToServer"
-                                    : (use_compact_server_batch ? "ServerCompactPaintBatch" : "none")) + "\"";
+                    std::string(use_packed_server_batch
+                                    ? (use_packed_relay_route ? "ServerRelayPackedStrokeBatch" : "ServerPackedPaintBatch")
+                                    : (use_send_custom_server_batch
+                                           ? "SendCustomStrokeBatchToServer"
+                                           : (use_compact_server_batch ? "ServerCompactPaintBatch" : "none"))) + "\"";
         metadata += ",\"server_paint_batch_used\":" + std::string(json_bool(!preview_only));
         metadata += ",\"server_paint_batch_single_stroke_mode\":" +
                     std::string(json_bool(!preview_only && tuning_server_batch_limit <= 1));
         metadata += ",\"server_send_custom_stroke_batch_available\":" + std::string(json_bool(send_custom_batch_available));
+        metadata += ",\"server_send_custom_stroke_batch_requested\":" + std::string(json_bool(experimental_send_custom_requested));
         metadata += ",\"server_send_custom_stroke_batch_used\":" + std::string(json_bool(use_send_custom_server_batch));
+        metadata += ",\"server_send_custom_stroke_batch_ignored\":\"" + json_escape(send_custom_ignored_reason) + "\"";
         metadata += ",\"server_send_custom_stroke_batch_function\":\"" + hex_address(ctx.send_custom_stroke_batch_function) + "\"";
         metadata += ",\"server_compact_paint_batch_available\":" + std::string(json_bool(compact_batch_available));
         metadata += ",\"server_compact_paint_batch_compatible\":" + std::string(json_bool(compact_batch_compatible));
         metadata += ",\"server_compact_paint_replication_enabled\":" + std::string(json_bool(compact_batch_replication_enabled));
         metadata += ",\"server_compact_paint_batch_used\":" + std::string(json_bool(use_compact_server_batch));
         metadata += ",\"server_compact_paint_batch_ignored\":" + std::string(json_bool(!use_compact_server_batch));
-        metadata += ",\"server_packed_paint_batch_used\":false";
-        metadata += ",\"server_packed_paint_batch_ignored\":\"packed_format_unverified\"";
-        if (!preview_only && !use_send_custom_server_batch && !compact_batch_available)
+        metadata += ",\"server_packed_paint_batch_available\":" + std::string(json_bool(packed_component_available));
+        metadata += ",\"server_relay_packed_stroke_batch_available\":" + std::string(json_bool(packed_relay_available));
+        metadata += ",\"server_packed_paint_batch_function\":\"" + hex_address(ctx.server_packed_paint_batch_function) + "\"";
+        metadata += ",\"server_relay_packed_stroke_batch_function\":\"" + hex_address(ctx.server_relay_packed_stroke_batch_function) + "\"";
+        metadata += ",\"server_packed_paint_batch_used\":" + std::string(json_bool(use_packed_server_batch));
+        metadata += ",\"server_packed_paint_batch_route\":\"" + std::string(use_packed_relay_route ? "relay" : "component") + "\"";
+        metadata += ",\"server_packed_source_id_offset\":\"" + hex_address(RuntimePaintableComponentPackedSourceIdOffset) + "\"";
+        metadata += ",\"server_packed_batch_limit_cap\":" + std::to_string(MeshFirstAdaptiveFallbackMaxOutgoingStrokesPerBatch);
+        metadata += ",\"server_batch_limit_effective\":" + std::to_string(effective_replay_server_batch_limit);
+        metadata += ",\"server_packed_paint_batch_ignored\":\"" + json_escape(packed_ignored_reason) + "\"";
+        if (!preview_only && experimental_packed_requested && !use_packed_server_batch)
+        {
+            return response_json(false,
+                                 "mesh_server_packed_batch_unavailable",
+                                 0,
+                                 1,
+                                 "Packed paint batch route is unavailable or incompatible: " + packed_ignored_reason,
+                                 metadata + ",\"replay_blocked\":true");
+        }
+        if (!preview_only && !use_packed_server_batch && !use_send_custom_server_batch && !compact_batch_available)
         {
             return response_json(false,
                                  "mesh_server_compact_batch_unavailable",
@@ -10239,7 +10958,7 @@ namespace
                                  "ServerCompactPaintBatch is unavailable; paint cannot replay through the compact route",
                                  metadata + ",\"replay_blocked\":true");
         }
-        if (!preview_only && !use_send_custom_server_batch && !compact_batch_compatible)
+        if (!preview_only && !use_packed_server_batch && !use_send_custom_server_batch && !compact_batch_compatible)
         {
             return response_json(false,
                                  "mesh_server_compact_batch_incompatible",
@@ -10248,7 +10967,7 @@ namespace
                                  "ServerCompactPaintBatch requires skeletal triangle anchors for every stroke",
                                  metadata + ",\"replay_blocked\":true");
         }
-        if (!preview_only && !use_send_custom_server_batch && !compact_batch_replication_enabled)
+        if (!preview_only && !use_packed_server_batch && !use_send_custom_server_batch && !compact_batch_replication_enabled)
         {
             return response_json(false,
                                  "mesh_server_compact_replication_disabled",
@@ -10288,9 +11007,13 @@ namespace
             metadata += ",\"local_visual_sync_lockstep_with_server_batch\":true";
             metadata += ",\"local_texture_import_required\":false";
             metadata += ",\"authoritative_replay\":\"" +
-                        std::string(use_send_custom_server_batch
-                                        ? "send_custom_multicast_replay_with_local_lockstep"
-                                        : "compact_server_replay_with_local_lockstep") + "\"";
+                        std::string(use_packed_server_batch
+                                        ? (use_packed_relay_route
+                                               ? "server_relay_packed_replay_with_local_lockstep"
+                                               : "server_packed_replay_with_local_lockstep")
+                                        : (use_send_custom_server_batch
+                                               ? "send_custom_multicast_replay_with_local_lockstep"
+                                               : "compact_server_replay_with_local_lockstep")) + "\"";
             if (!ctx.local_paint_at_uv_function)
             {
                 return response_json(false,
@@ -10525,6 +11248,8 @@ namespace
             async_job->server_paint_batch_function =
                 use_send_custom_server_batch ? ctx.send_custom_stroke_batch_function : ctx.server_paint_batch_function;
             async_job->server_compact_paint_batch_function = ctx.server_compact_paint_batch_function;
+            async_job->server_packed_paint_batch_function = ctx.server_packed_paint_batch_function;
+            async_job->server_relay_packed_stroke_batch_function = ctx.server_relay_packed_stroke_batch_function;
             async_job->local_paint_at_uv_function = ctx.local_paint_at_uv_function;
             async_job->replication_manager = replication_manager;
             async_job->replication_recorded_count_function = ref.find_function(ctx.component, "GetRecordedStrokeCount");
@@ -10539,8 +11264,14 @@ namespace
                                                            : 0;
             async_job->server_compact_paint_batch_available = ctx.server_compact_paint_batch_function != 0;
             async_job->server_compact_paint_batch_enabled = use_compact_server_batch;
+            async_job->server_packed_paint_batch_enabled = use_packed_server_batch;
+            async_job->server_packed_paint_batch_use_relay = use_packed_relay_route;
+            async_job->server_packed_paint_source_id = sdk_read_component_packed_source_id(ctx.component);
+            async_job->server_send_custom_stroke_batch_enabled = use_send_custom_server_batch;
             async_job->server_batch_rpc =
-                use_send_custom_server_batch ? "SendCustomStrokeBatchToServer" : "ServerCompactPaintBatch";
+                use_packed_server_batch
+                    ? (use_packed_relay_route ? "ServerRelayPackedStrokeBatch" : "ServerPackedPaintBatch")
+                    : (use_send_custom_server_batch ? "SendCustomStrokeBatchToServer" : "ServerCompactPaintBatch");
             async_job->local_visual_sync_enabled = true;
             async_job->strokes = std::move(strokes);
             async_job->metadata = metadata + ",\"server_batch_schedule\":\"timer_drained\"";
@@ -10563,7 +11294,7 @@ namespace
             async_job->replication_manager_coalesce_outgoing_strokes =
                 replication_before.manager_coalesce_outgoing_strokes;
             async_job->adaptive_batch_enabled = tuning_adaptive_batch_enabled;
-            async_job->adaptive_requested_batch_limit = tuning_server_batch_limit;
+            async_job->adaptive_requested_batch_limit = effective_replay_server_batch_limit;
             async_job->adaptive_requested_delay_ms = effective_server_batch_delay_ms;
             mesh_first_update_adaptive_model(async_job, replication_before);
             if (async_job->adaptive_batch_enabled)
@@ -10578,8 +11309,8 @@ namespace
             }
             else
             {
-                async_job->adaptive_resolved_batch_limit = tuning_server_batch_limit;
-                mesh_first_set_adaptive_effective(async_job, tuning_server_batch_limit, effective_server_batch_delay_ms);
+                async_job->adaptive_resolved_batch_limit = effective_replay_server_batch_limit;
+                mesh_first_set_adaptive_effective(async_job, effective_replay_server_batch_limit, effective_server_batch_delay_ms);
                 async_job->adaptive_pressure_level = "disabled";
             }
             async_job->server_texture_sync_poll_ms = MeshFirstServerTextureSyncPollMs;
@@ -11413,14 +12144,29 @@ namespace
                                                         job->strokes.size() - chunk_offset);
         SdkContext ctx{};
         ctx.component = job->component;
+        ctx.relay_component = job->relay_component;
         ctx.server_paint_batch_function = job->server_paint_batch_function;
         ctx.server_compact_paint_batch_function = job->server_compact_paint_batch_function;
+        ctx.server_packed_paint_batch_function = job->server_packed_paint_batch_function;
+        ctx.server_relay_packed_stroke_batch_function = job->server_relay_packed_stroke_batch_function;
         std::string batch_failure{};
         ++job->server_batch_calls;
         const auto rpc_started = std::chrono::steady_clock::now();
-        const bool batch_ok = job->server_compact_paint_batch_enabled
-                                  ? sdk_call_server_compact_paint_batch(ctx, job->strokes, chunk_offset, count, batch_failure)
-                                  : sdk_call_server_paint_batch(ctx, job->strokes, chunk_offset, count, batch_failure);
+        const bool batch_ok = job->server_packed_paint_batch_enabled
+                                  ? sdk_call_packed_paint_batch_from_strokes(ctx.component,
+                                                                             ctx.relay_component,
+                                                                             ctx.server_packed_paint_batch_function,
+                                                                             ctx.server_relay_packed_stroke_batch_function,
+                                                                             job->server_packed_paint_batch_use_relay,
+                                                                             job->strokes,
+                                                                             chunk_offset,
+                                                                             count,
+                                                                             job->server_packed_paint_source_id,
+                                                                             job->texture_size,
+                                                                             batch_failure)
+                                  : (job->server_compact_paint_batch_enabled
+                                         ? sdk_call_server_compact_paint_batch(ctx, job->strokes, chunk_offset, count, batch_failure)
+                                         : sdk_call_server_paint_batch(ctx, job->strokes, chunk_offset, count, batch_failure));
         job->adaptive_last_rpc_ms =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - rpc_started).count();
         if (!batch_ok)
@@ -12072,6 +12818,55 @@ namespace
         return static_cast<std::uint16_t>(std::clamp<int>(static_cast<int>(std::lround(clamp01(value) * 65535.0)), 0, 65535));
     }
 
+    auto sdk_append_u16_le(std::vector<std::uint8_t>& bytes, std::uint16_t value) -> void
+    {
+        bytes.push_back(static_cast<std::uint8_t>(value & 0xff));
+        bytes.push_back(static_cast<std::uint8_t>((value >> 8) & 0xff));
+    }
+
+    auto sdk_append_i32_le(std::vector<std::uint8_t>& bytes, std::int32_t value) -> void
+    {
+        const auto* raw = reinterpret_cast<const std::uint8_t*>(&value);
+        bytes.insert(bytes.end(), raw, raw + sizeof(value));
+    }
+
+    auto sdk_append_f32_le(std::vector<std::uint8_t>& bytes, float value) -> void
+    {
+        const auto* raw = reinterpret_cast<const std::uint8_t*>(&value);
+        bytes.insert(bytes.end(), raw, raw + sizeof(value));
+    }
+
+    auto sdk_generate_packed_paint_source_id() -> sdk::FGuid
+    {
+        static std::atomic<std::uint32_t> sequence{1};
+        LARGE_INTEGER counter{};
+        QueryPerformanceCounter(&counter);
+        const auto tick = GetTickCount64();
+        sdk::FGuid id{};
+        id.A = static_cast<std::uint32_t>(counter.LowPart ^ GetCurrentProcessId());
+        id.B = static_cast<std::uint32_t>(counter.HighPart ^ (tick & 0xffffffffu));
+        id.C = static_cast<std::uint32_t>((tick >> 32) ^ sequence.fetch_add(1));
+        id.D = static_cast<std::uint32_t>((reinterpret_cast<std::uintptr_t>(&sequence) >> 4) ^ counter.LowPart);
+        return id;
+    }
+
+    auto sdk_guid_is_zero(const sdk::FGuid& id) -> bool
+    {
+        return id.A == 0 && id.B == 0 && id.C == 0 && id.D == 0;
+    }
+
+    auto sdk_read_component_packed_source_id(std::uintptr_t component) -> sdk::FGuid
+    {
+        sdk::FGuid id{};
+        if (live_uobject(component))
+        {
+            safe_copy(&id,
+                      reinterpret_cast<const void*>(component + RuntimePaintableComponentPackedSourceIdOffset),
+                      sizeof(id));
+        }
+        return sdk_guid_is_zero(id) ? sdk_generate_packed_paint_source_id() : id;
+    }
+
     auto sdk_write_compact_barycentric(double value, std::uint8_t& high, std::uint8_t& low) -> void
     {
         const auto packed = sdk_unit_to_u16(value);
@@ -12112,6 +12907,70 @@ namespace
         compact.EffectiveSubdivisionPixelSize = stroke.EffectiveSubdivisionPixelSize;
         compact.EffectiveTemplateResolution = stroke.EffectiveTemplateResolution;
         compact.ReplicationSourceId = stroke.ReplicationSourceId;
+        return true;
+    }
+
+    auto sdk_make_packed_paint_data(const std::vector<sdk::FPaintStroke>& strokes,
+                                    std::size_t offset,
+                                    std::size_t count,
+                                    const sdk::FGuid& source_id,
+                                    int texture_size,
+                                    std::vector<std::uint8_t>& packed,
+                                    std::string& failure) -> bool
+    {
+        if (offset > strokes.size() || count > strokes.size() - offset || count <= 0)
+        {
+            failure = "packed_paint_range_invalid";
+            return false;
+        }
+        if (count > static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max()))
+        {
+            failure = "packed_paint_count_too_large";
+            return false;
+        }
+        const int effective_texture_size = std::max(1, texture_size);
+        packed.clear();
+        packed.reserve(21 + count * 27);
+        packed.push_back(1);
+        const auto* source_bytes = reinterpret_cast<const std::uint8_t*>(&source_id);
+        packed.insert(packed.end(), source_bytes, source_bytes + sizeof(source_id));
+        sdk_append_i32_le(packed, static_cast<std::int32_t>(count));
+
+        for (std::size_t i = 0; i < count; ++i)
+        {
+            const auto& stroke = strokes[offset + i];
+            if (!stroke.bHasSkeletalTriangleAnchor || stroke.SkeletalTriangleIndex < 0)
+            {
+                failure = "packed_paint_requires_skeletal_triangle_anchor index=" + std::to_string(offset + i);
+                packed.clear();
+                return false;
+            }
+            sdk_append_i32_le(packed, stroke.SkeletalTriangleIndex);
+            sdk_append_u16_le(packed, sdk_unit_to_u16(stroke.SkeletalTriangleBarycentric.X));
+            sdk_append_u16_le(packed, sdk_unit_to_u16(stroke.SkeletalTriangleBarycentric.Y));
+            sdk_append_f32_le(packed, stroke.BrushSettings.Radius);
+            packed.push_back(sdk_unit_to_byte(stroke.ChannelData.AlbedoColor.R));
+            packed.push_back(sdk_unit_to_byte(stroke.ChannelData.AlbedoColor.G));
+            packed.push_back(sdk_unit_to_byte(stroke.ChannelData.AlbedoColor.B));
+            packed.push_back(sdk_unit_to_byte(stroke.ChannelData.AlbedoColor.A));
+            packed.push_back(sdk_unit_to_byte(stroke.ChannelData.Metallic));
+            packed.push_back(sdk_unit_to_byte(stroke.ChannelData.Roughness));
+            packed.push_back(static_cast<std::uint8_t>(static_cast<std::uint8_t>(stroke.TargetChannel) + 1));
+            sdk_append_f32_le(packed, stroke.EffectiveBrushWorldRadius);
+            const int diameter_texels = std::clamp(static_cast<int>(std::lround(
+                                                       static_cast<double>(stroke.BrushSettings.Radius) *
+                                                       static_cast<double>(effective_texture_size) * 2.0)),
+                                                   0,
+                                                   255);
+            const int subdivision_pixel_size = std::clamp(static_cast<int>(std::lround(stroke.EffectiveSubdivisionPixelSize)),
+                                                          0,
+                                                          255);
+            const int subdivision_level = std::clamp(stroke.EffectiveSubdivisionLevel, 0, 255);
+            packed.push_back(static_cast<std::uint8_t>(diameter_texels));
+            packed.push_back(static_cast<std::uint8_t>(subdivision_pixel_size));
+            packed.push_back(static_cast<std::uint8_t>(subdivision_level));
+            packed.push_back(static_cast<std::uint8_t>(stroke.TargetChannel));
+        }
         return true;
     }
 
@@ -12238,6 +13097,114 @@ namespace
                                                      offset,
                                                      count,
                                                      failure);
+    }
+
+    struct RuntimePaintableComponent_ServerPackedPaintBatchParams
+    {
+        sdk::TArray<std::uint8_t> PackedData{};
+        std::int32_t StrokeCount{0};
+        std::uint8_t Pad_14[0x4]{};
+    };
+
+    struct RuntimePaintRelayComponent_ServerRelayPackedStrokeBatchParams
+    {
+        void* PaintComponent{nullptr};
+        sdk::TArray<std::uint8_t> PackedData{};
+        std::int32_t StrokeCount{0};
+        std::uint8_t Pad_1C[0x4]{};
+    };
+
+    static_assert(sizeof(RuntimePaintableComponent_ServerPackedPaintBatchParams) == 0x18,
+                  "ServerPackedPaintBatch params layout mismatch");
+    static_assert(sizeof(RuntimePaintRelayComponent_ServerRelayPackedStrokeBatchParams) == 0x20,
+                  "ServerRelayPackedStrokeBatch params layout mismatch");
+
+    auto sdk_call_server_packed_paint_batch(std::uintptr_t component,
+                                            std::uintptr_t function,
+                                            const std::vector<std::uint8_t>& packed_data,
+                                            int stroke_count,
+                                            std::string& failure) -> bool
+    {
+        if (!function || packed_data.empty() || stroke_count <= 0)
+        {
+            failure = "server_packed_paint_batch_unavailable_or_empty";
+            return false;
+        }
+        if (!live_uobject(component))
+        {
+            failure = "paint_component_unavailable";
+            return false;
+        }
+        RuntimePaintableComponent_ServerPackedPaintBatchParams params{};
+        params.PackedData.Data = const_cast<std::uint8_t*>(packed_data.data());
+        params.PackedData.Num = static_cast<std::int32_t>(packed_data.size());
+        params.PackedData.Max = static_cast<std::int32_t>(packed_data.size());
+        params.StrokeCount = stroke_count;
+        return process_event(component, function, reinterpret_cast<std::uint8_t*>(&params), failure);
+    }
+
+    auto sdk_call_server_relay_packed_stroke_batch(std::uintptr_t relay_component,
+                                                   std::uintptr_t paint_component,
+                                                   std::uintptr_t function,
+                                                   const std::vector<std::uint8_t>& packed_data,
+                                                   int stroke_count,
+                                                   std::string& failure) -> bool
+    {
+        if (!function || packed_data.empty() || stroke_count <= 0)
+        {
+            failure = "server_relay_packed_stroke_batch_unavailable_or_empty";
+            return false;
+        }
+        if (!live_uobject(relay_component))
+        {
+            failure = "relay_component_unavailable";
+            return false;
+        }
+        if (!live_uobject(paint_component))
+        {
+            failure = "paint_component_unavailable";
+            return false;
+        }
+        RuntimePaintRelayComponent_ServerRelayPackedStrokeBatchParams params{};
+        params.PaintComponent = reinterpret_cast<void*>(paint_component);
+        params.PackedData.Data = const_cast<std::uint8_t*>(packed_data.data());
+        params.PackedData.Num = static_cast<std::int32_t>(packed_data.size());
+        params.PackedData.Max = static_cast<std::int32_t>(packed_data.size());
+        params.StrokeCount = stroke_count;
+        return process_event(relay_component, function, reinterpret_cast<std::uint8_t*>(&params), failure);
+    }
+
+    auto sdk_call_packed_paint_batch_from_strokes(std::uintptr_t component,
+                                                  std::uintptr_t relay_component,
+                                                  std::uintptr_t component_function,
+                                                  std::uintptr_t relay_function,
+                                                  bool use_relay,
+                                                  const std::vector<sdk::FPaintStroke>& strokes,
+                                                  std::size_t offset,
+                                                  std::size_t count,
+                                                  const sdk::FGuid& source_id,
+                                                  int texture_size,
+                                                  std::string& failure) -> bool
+    {
+        std::vector<std::uint8_t> packed_data{};
+        if (!sdk_make_packed_paint_data(strokes, offset, count, source_id, texture_size, packed_data, failure))
+        {
+            return false;
+        }
+        if (use_relay)
+        {
+            return sdk_call_server_relay_packed_stroke_batch(relay_component,
+                                                             component,
+                                                             relay_function,
+                                                             packed_data,
+                                                             static_cast<int>(count),
+                                                             failure);
+        }
+        return sdk_call_server_packed_paint_batch(component,
+                                                  component_function,
+                                                  packed_data,
+                                                  static_cast<int>(count),
+                                                  failure);
     }
 
     auto sdk_call_paint_at_uv_with_brush(std::uintptr_t component,
@@ -14274,6 +15241,101 @@ namespace
         return response_json(true, "paint_replication_probe", 0, 0, "paint replication probe complete", metadata);
     }
 
+    auto is_paint_packed_replay_probe_request(const std::string& request) -> bool
+    {
+        return request.find("\"type\":\"paint_packed_replay_probe\"") != std::string::npos;
+    }
+
+    auto paint_packed_replay_probe_on_game_thread(const std::string& request) -> std::string
+    {
+        Reflection ref{};
+        std::string failure{};
+        if (!ref.init(failure))
+        {
+            return response_json(false,
+                                 "sdk_update_required",
+                                 0,
+                                 1,
+                                 failure.empty() ? "SDK reflection init failed" : failure,
+                                 "\"route\":\"paint_packed_replay_probe\",\"sdk_resolution_exception\":true");
+        }
+
+        SdkContext ctx{};
+        try
+        {
+            ctx = sdk_resolve_context(ref);
+        }
+        catch (const SdkResolutionException& ex)
+        {
+            return response_json(false,
+                                 ex.stage.c_str(),
+                                 0,
+                                 1,
+                                 ex.what(),
+                                 "\"route\":\"paint_packed_replay_probe\",\"sdk_resolution_exception\":true");
+        }
+        if (!ctx.ok)
+        {
+            return response_json(false, ctx.stage.c_str(), 0, 1, ctx.message, "\"route\":\"paint_packed_replay_probe\"");
+        }
+
+        std::vector<std::uint8_t> packed_data{};
+        const std::string packed_hex = json_string_field(request, "packed_hex", "");
+        if (!hex_to_bytes(packed_hex, packed_data, failure))
+        {
+            return response_json(false,
+                                 failure.c_str(),
+                                 0,
+                                 1,
+                                 "packed replay probe requires valid packed_hex",
+                                 "\"route\":\"paint_packed_replay_probe\"");
+        }
+        const int stroke_count = json_int_field(request, "stroke_count", 0, 1, 10000);
+        const std::string requested_route = lower_copy(json_string_field(request, "packed_route", "component"));
+        const bool use_relay = requested_route == "relay" || json_bool_field(request, "use_relay", false);
+        const auto function = use_relay
+                                  ? ref.find_function(ctx.relay_component, "ServerRelayPackedStrokeBatch")
+                                  : ref.find_function(ctx.component, "ServerPackedPaintBatch");
+
+        const auto before = sdk_capture_replication_snapshot(ref, ctx.component);
+        const auto started = std::chrono::steady_clock::now();
+        const bool ok = use_relay
+                            ? sdk_call_server_relay_packed_stroke_batch(ctx.relay_component,
+                                                                        ctx.component,
+                                                                        function,
+                                                                        packed_data,
+                                                                        stroke_count,
+                                                                        failure)
+                            : sdk_call_server_packed_paint_batch(ctx.component,
+                                                                 function,
+                                                                 packed_data,
+                                                                 stroke_count,
+                                                                 failure);
+        const double elapsed_ms =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+        const auto after = sdk_capture_replication_snapshot(ref, ctx.component);
+        std::string metadata = "\"route\":\"paint_packed_replay_probe\"";
+        metadata += ",\"packed_route\":\"" + std::string(use_relay ? "relay" : "component") + "\"";
+        metadata += ",\"packed_function\":\"" + hex_address(function) + "\"";
+        metadata += ",\"packed_bytes\":" + std::to_string(packed_data.size());
+        metadata += ",\"stroke_count\":" + std::to_string(stroke_count);
+        metadata += ",\"packed_call_elapsed_ms\":" + std::to_string(elapsed_ms);
+        metadata += ",\"component\":\"" + hex_address(ctx.component) + "\"";
+        metadata += ",\"relay_component\":\"" + hex_address(ctx.relay_component) + "\"";
+        metadata += sdk_replication_snapshot_metadata("packed_probe_before", before);
+        metadata += sdk_replication_snapshot_metadata("packed_probe_after", after);
+        if (!failure.empty())
+        {
+            metadata += ",\"failure\":\"" + json_escape(failure) + "\"";
+        }
+        return response_json(ok,
+                             ok ? "paint_packed_replay_probe_done" : "paint_packed_replay_probe_failed",
+                             ok ? stroke_count : 0,
+                             ok ? 0 : 1,
+                             ok ? "packed replay probe submitted" : "packed replay probe failed: " + failure,
+                             metadata);
+    }
+
     auto paint_full_route_native_direct(const std::string& request) -> std::string
     {
         (void)request;
@@ -14298,6 +15360,13 @@ namespace
         {
             if (!job)
             {
+                continue;
+            }
+            if (is_paint_packed_replay_probe_request(job->request))
+            {
+                mark_queued_paint_job_dispatched(job);
+                const auto response = paint_packed_replay_probe_on_game_thread(job->request);
+                complete_queued_paint_job(job, response);
                 continue;
             }
             if (is_paint_replication_probe_request(job->request))
@@ -14329,6 +15398,7 @@ namespace
             {
                 const auto function_address = reinterpret_cast<std::uintptr_t>(function);
                 const auto params_bytes = reinterpret_cast<std::uint8_t*>(params);
+                auto_event_watch_record(function_address, params_bytes);
                 if (function_address == g_observed_sync_channel_function.load())
                 {
                     const auto channel = *reinterpret_cast<std::uint8_t*>(params_bytes);
@@ -14414,7 +15484,7 @@ namespace
             {
                 lock.unlock();
             }
-            uninstall_process_event_hook();
+            uninstall_message_hook();
             return response;
         };
         bool completed = job->done;
@@ -14478,7 +15548,7 @@ namespace
         }
         if (line.find("\"type\":\"capabilities\"") != std::string::npos)
         {
-            std::string commands = "[\"ping\",\"capabilities\",\"paint_full_route\",\"paint_replication_probe\",\"paint_replication_pressure_probe\",\"cancel_paint\",\"shutdown\"]";
+            std::string commands = "[\"ping\",\"capabilities\",\"paint_full_route\",\"paint_replication_probe\",\"paint_replication_pressure_probe\",\"paint_packed_replay_probe\",\"cancel_paint\",\"shutdown\"]";
             return std::string("{\"success\":true,\"stage\":\"capabilities\",\"applied\":0,\"failures\":0,") +
                    "\"message\":\"ok\",\"timing_ms\":{}," +
                    "\"metadata\":{\"commands\":" + commands + "," +
@@ -14524,6 +15594,10 @@ namespace
         }
         if (line.find("\"type\":\"paint_replication_probe\"") != std::string::npos ||
             line.find("\"type\":\"paint_replication_pressure_probe\"") != std::string::npos)
+        {
+            return paint_full_route_native(line);
+        }
+        if (line.find("\"type\":\"paint_packed_replay_probe\"") != std::string::npos)
         {
             return paint_full_route_native(line);
         }
@@ -14576,29 +15650,45 @@ namespace
 
     auto bridge_thread() -> void
     {
+        start_auto_event_watch_if_configured();
+
+        const int bridge_port = resolve_bridge_port();
+        write_bridge_listener_status("starting", bridge_port);
+
         WSADATA data{};
         if (WSAStartup(MAKEWORD(2, 2), &data) != 0)
         {
+            write_bridge_listener_status("wsa_startup_failed", bridge_port, WSAGetLastError());
             return;
         }
         SOCKET listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
         if (listener == INVALID_SOCKET)
         {
+            write_bridge_listener_status("socket_failed", bridge_port, WSAGetLastError());
             WSACleanup();
             return;
         }
         sockaddr_in addr{};
         addr.sin_family = AF_INET;
         addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        addr.sin_port = htons(static_cast<u_short>(resolve_bridge_port()));
+        addr.sin_port = htons(static_cast<u_short>(bridge_port));
         const int yes = 1;
         setsockopt(listener, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&yes), sizeof(yes));
-        if (bind(listener, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR || listen(listener, 4) == SOCKET_ERROR)
+        if (bind(listener, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR)
         {
+            write_bridge_listener_status("bind_failed", bridge_port, WSAGetLastError());
             closesocket(listener);
             WSACleanup();
             return;
         }
+        if (listen(listener, 4) == SOCKET_ERROR)
+        {
+            write_bridge_listener_status("listen_failed", bridge_port, WSAGetLastError());
+            closesocket(listener);
+            WSACleanup();
+            return;
+        }
+        write_bridge_listener_status("listening", bridge_port);
         while (g_running.load())
         {
             fd_set read_set{};
@@ -14610,6 +15700,7 @@ namespace
             const int selected = select(0, &read_set, nullptr, nullptr, &timeout);
             if (selected == SOCKET_ERROR)
             {
+                write_bridge_listener_status("select_failed", bridge_port, WSAGetLastError());
                 break;
             }
             if (selected == 0)
@@ -14624,12 +15715,14 @@ namespace
             g_active_client_handlers.fetch_add(1);
             std::thread(handle_bridge_client, client).detach();
         }
+        write_bridge_listener_status("stopping", bridge_port);
         closesocket(listener);
         while (g_active_client_handlers.load() > 0)
         {
             Sleep(50);
         }
         WSACleanup();
+        write_bridge_listener_status("stopped", bridge_port);
         uninstall_process_event_hook();
         HMODULE module = g_module;
         g_module = nullptr;
