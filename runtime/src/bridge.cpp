@@ -474,10 +474,26 @@ namespace
                  "replication_queued_stroke_count",
                  "replication_max_strokes_per_tick",
                  "replication_estimated_ticks_to_drain",
+                 "replication_component_max_replicated_strokes_per_tick",
+                 "replication_manager_max_replicated_strokes_per_tick",
+                 "replication_manager_max_outgoing_strokes_per_batch",
+                 "replication_manager_max_outgoing_network_batches_per_second",
                  "total_strokes",
                  "server_batch_calls",
+                 "server_batch_success",
                  "server_batch_failures",
                  "server_strokes_sent",
+                 "server_batch_elapsed_ms",
+                 "server_elapsed_ms",
+                 "local_visual_sync_used",
+                 "local_visual_sync_elapsed_ms",
+                 "local_elapsed_ms",
+                 "local_batch_calls",
+                 "local_stroke_success",
+                 "local_stroke_failures",
+                 "local_strokes_synced",
+                 "local_strokes_total",
+                 "total_replay_elapsed_ms",
                  "paint_elapsed_ms",
                  "paint_eta_ms",
                  "first_failure",
@@ -8147,6 +8163,14 @@ namespace
         std::uintptr_t replication_queued_count_function{0};
         std::uintptr_t replication_component_queued_count_function{0};
         std::uintptr_t replication_pressure_function{0};
+        int replication_component_max_replicated_strokes_per_tick{-1};
+        std::uint8_t replication_component_use_compact_replication{0};
+        std::uint8_t replication_component_use_packed_replication{0};
+        int replication_manager_max_replicated_strokes_per_tick{-1};
+        int replication_manager_max_render_target_writes_per_frame{-1};
+        int replication_manager_max_outgoing_strokes_per_batch{-1};
+        int replication_manager_max_outgoing_network_batches_per_second{-1};
+        std::uint8_t replication_manager_coalesce_outgoing_strokes{0};
         int replay_front{0};
         int replay_side{0};
         int replay_back{0};
@@ -8226,6 +8250,10 @@ namespace
             snapshot.failure = "paint_component_unavailable";
             return snapshot;
         }
+        snapshot.component_max_replicated_strokes_per_tick =
+            job->replication_component_max_replicated_strokes_per_tick;
+        snapshot.component_use_compact_replication = job->replication_component_use_compact_replication;
+        snapshot.component_use_packed_replication = job->replication_component_use_packed_replication;
 
         if (job->replication_recorded_count_function)
         {
@@ -8259,6 +8287,15 @@ namespace
             }
             return snapshot;
         }
+        snapshot.manager_max_replicated_strokes_per_tick =
+            job->replication_manager_max_replicated_strokes_per_tick;
+        snapshot.manager_max_render_target_writes_per_frame =
+            job->replication_manager_max_render_target_writes_per_frame;
+        snapshot.manager_max_outgoing_strokes_per_batch =
+            job->replication_manager_max_outgoing_strokes_per_batch;
+        snapshot.manager_max_outgoing_network_batches_per_second =
+            job->replication_manager_max_outgoing_network_batches_per_second;
+        snapshot.manager_coalesce_outgoing_strokes = job->replication_manager_coalesce_outgoing_strokes;
 
         if (job->replication_queued_count_function)
         {
@@ -10492,6 +10529,22 @@ namespace
             async_job->metadata = metadata + ",\"server_batch_schedule\":\"timer_drained\"";
             async_job->albedo_before = albedo_before;
             async_job->replication_before = replication_before;
+            async_job->replication_component_max_replicated_strokes_per_tick =
+                replication_before.component_max_replicated_strokes_per_tick;
+            async_job->replication_component_use_compact_replication =
+                replication_before.component_use_compact_replication;
+            async_job->replication_component_use_packed_replication =
+                replication_before.component_use_packed_replication;
+            async_job->replication_manager_max_replicated_strokes_per_tick =
+                replication_before.manager_max_replicated_strokes_per_tick;
+            async_job->replication_manager_max_render_target_writes_per_frame =
+                replication_before.manager_max_render_target_writes_per_frame;
+            async_job->replication_manager_max_outgoing_strokes_per_batch =
+                replication_before.manager_max_outgoing_strokes_per_batch;
+            async_job->replication_manager_max_outgoing_network_batches_per_second =
+                replication_before.manager_max_outgoing_network_batches_per_second;
+            async_job->replication_manager_coalesce_outgoing_strokes =
+                replication_before.manager_coalesce_outgoing_strokes;
             async_job->adaptive_batch_enabled = tuning_adaptive_batch_enabled;
             async_job->adaptive_requested_batch_limit = tuning_server_batch_limit;
             async_job->adaptive_requested_delay_ms = effective_server_batch_delay_ms;
@@ -11869,6 +11922,11 @@ namespace
             "bCoalesceOutgoingStrokes",
             "MaxReplicatedPaintStrokesPerTick",
             "MaxReplicatedPaintRenderTargetWritesPerFrame",
+            "MinRemotePaintFramesAfterLocalPaint",
+            "MaxAdaptiveRemotePaintFrameInterval",
+            "bEnableAdaptiveRemotePaintInterval",
+            "AdaptiveTargetFPS",
+            "AdaptiveFpsDropRatio",
             "MaxStrokesPerTick",
             "ReplicationInterval",
             "ReplicationTickInterval",
