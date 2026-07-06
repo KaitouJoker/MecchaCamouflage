@@ -303,15 +303,49 @@ public sealed class MainForm : Form
                 PersistWindowSnapshot();
                 return new { success = true };
             case "paint":
-                return ApplyResult(await session.RunPaintAsync(previewOnly: false, unpreviewOnly: false));
+                return ApplyResult(await RunPaintCommandAsync(previewOnly: false, unpreviewOnly: false));
             case "preview":
-                return ApplyResult(await session.RunPaintAsync(previewOnly: true, unpreviewOnly: false));
+                return ApplyResult(await RunPaintCommandAsync(previewOnly: true, unpreviewOnly: false));
             case "unpreview":
-                return ApplyResult(await session.RunPaintAsync(previewOnly: false, unpreviewOnly: true));
+                return ApplyResult(await RunPaintCommandAsync(previewOnly: false, unpreviewOnly: true));
             case "stop":
                 return ApplyResult(await session.StopPaintAsync());
             default:
                 return new { success = false, message = "Unknown command: " + command.Command };
+        }
+    }
+
+    private async Task<HostCommandResult> RunPaintCommandAsync(bool previewOnly, bool unpreviewOnly)
+    {
+        var previousInterval = statusTimer.Interval;
+        statusTimer.Interval = 250;
+        using var refresh = new CancellationTokenSource();
+        var refreshTask = RefreshSnapshotsUntilCancelledAsync(refresh.Token);
+        try
+        {
+            return await session.RunPaintAsync(previewOnly, unpreviewOnly);
+        }
+        finally
+        {
+            refresh.Cancel();
+            try
+            {
+                await refreshTask;
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            statusTimer.Interval = session.PaintRunning ? 500 : previousInterval;
+            await PushSnapshotAsync();
+        }
+    }
+
+    private async Task RefreshSnapshotsUntilCancelledAsync(CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            await Task.Delay(250, cancellationToken);
+            await PushSnapshotAsync();
         }
     }
 
@@ -395,13 +429,13 @@ public sealed class MainForm : Form
         switch (id)
         {
             case HotkeyStart:
-                _ = await session.RunPaintAsync(previewOnly: false, unpreviewOnly: false);
+                _ = await RunPaintCommandAsync(previewOnly: false, unpreviewOnly: false);
                 break;
             case HotkeyPreview:
-                _ = await session.RunPaintAsync(previewOnly: true, unpreviewOnly: false);
+                _ = await RunPaintCommandAsync(previewOnly: true, unpreviewOnly: false);
                 break;
             case HotkeyUnPreview:
-                _ = await session.RunPaintAsync(previewOnly: false, unpreviewOnly: true);
+                _ = await RunPaintCommandAsync(previewOnly: false, unpreviewOnly: true);
                 break;
             case HotkeyStop:
                 _ = await session.StopPaintAsync();

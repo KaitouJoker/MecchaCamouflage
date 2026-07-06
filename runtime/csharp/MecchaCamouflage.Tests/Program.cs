@@ -29,7 +29,8 @@ var tests = new List<(string Name, Action Run)>
     ("host session rolls back invalid theme color batch", HostSessionRollsBackInvalidThemeColorBatch),
     ("host session rolls back invalid region mode batch", HostSessionRollsBackInvalidRegionModeBatch),
     ("host session snapshot ignores pre-paint progress", HostSessionSnapshotIgnoresPrePaintProgress),
-    ("host session warns when cancel has no active paint", HostSessionWarnsWhenCancelHasNoActivePaint)
+    ("host session warns when cancel has no active paint", HostSessionWarnsWhenCancelHasNoActivePaint),
+    ("host session counts native cancel jobs", HostSessionCountsNativeCancelJobs)
 };
 
 var failed = 0;
@@ -469,6 +470,25 @@ static void HostSessionWarnsWhenCancelHasNoActivePaint()
     Assert(result.Message == "Paint: no active paint to cancel.", "cancel guard message should be explicit");
     Assert(session.Log.Text.Contains("[WARN] Paint: no active paint to cancel.", StringComparison.OrdinalIgnoreCase), "cancel guard should be logged as warn");
     Assert(!session.Log.Text.Contains("cancel failed", StringComparison.OrdinalIgnoreCase), "cancel guard should not be logged as a failure");
+}
+
+static void HostSessionCountsNativeCancelJobs()
+{
+    var none = new BridgeReply(
+        true,
+        true,
+        "paint_cancel_requested",
+        "paint cancel requested",
+        """{"success":true,"metadata":{"cancelled_active_paint_jobs":0,"cancelled_queued_paint_jobs":0}}""");
+    var active = new BridgeReply(
+        true,
+        true,
+        "paint_cancel_requested",
+        "paint cancel requested",
+        """{"success":true,"metadata":{"cancelled_active_paint_jobs":1,"cancelled_queued_paint_jobs":2}}""");
+
+    Assert(HostSession.CancelledPaintJobCount(none) == 0, "zero cancel counts should remain zero");
+    Assert(HostSession.CancelledPaintJobCount(active) == 3, "active and queued cancel counts should be summed");
 }
 
 static void Assert(bool condition, string message)

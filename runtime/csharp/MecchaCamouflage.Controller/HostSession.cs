@@ -55,6 +55,7 @@ public sealed class HostSession
     private DateTimeOffset currentPaintStartedAt = DateTimeOffset.MinValue;
     private bool finalProgressLogged;
     private bool currentProgressIsServerPaint;
+    private bool nativePaintMayBeRunning;
 
     public async Task<UiSnapshot> GetSnapshotAsync(CancellationToken cancellationToken = default)
     {
@@ -231,8 +232,12 @@ public sealed class HostSession
 
     public async Task<HostCommandResult> RunPaintAsync(bool previewOnly, bool unpreviewOnly, CancellationToken cancellationToken = default)
     {
-        if (PaintRunning)
-            return new HostCommandResult(false, "Paint: already running.");
+        if (PaintRunning || nativePaintMayBeRunning)
+        {
+            const string alreadyRunning = "Paint: already running.";
+            Log.Warn(alreadyRunning);
+            return new HostCommandResult(false, alreadyRunning);
+        }
         PaintRunning = true;
         currentPaintStartedAt = DateTimeOffset.UtcNow;
         currentProgressIsServerPaint = !previewOnly && !unpreviewOnly;
@@ -249,10 +254,8 @@ public sealed class HostSession
                 Log.Warn("Game process not found.");
                 return new HostCommandResult(false, "Game process not found.");
             }
-            var deferStartedLog = previewOnly || unpreviewOnly;
             var startedMessage = previewOnly ? "Preview: started." : (unpreviewOnly ? "UnPreview: started." : "Paint: started.");
-            if (!deferStartedLog)
-                Log.Info(startedMessage);
+            Log.Info(startedMessage);
             var payload = BridgePayloadBuilder.BuildPaintPayload(
                 Settings,
                 process.Id,
@@ -262,19 +265,26 @@ public sealed class HostSession
             var message = FriendlyBridgeMessage(response.Message.Length > 0 ? response.Message : response.Stage);
             if (response.Success)
             {
-                if (deferStartedLog)
-                    Log.Info(startedMessage);
+                nativePaintMayBeRunning = false;
                 LogFinalProgressOnce();
                 Log.Info(message);
                 return new HostCommandResult(true, message);
             }
             if (message == "Paint: canceled.")
+            {
+                nativePaintMayBeRunning = false;
                 return new HostCommandResult(false, message);
+            }
             if (IsGuardWarning(message))
             {
+                if (message == "Paint: already running.")
+                    nativePaintMayBeRunning = true;
+                else
+                    nativePaintMayBeRunning = false;
                 Log.Warn(message);
                 return new HostCommandResult(false, message);
             }
+            nativePaintMayBeRunning = false;
             LogFailureProgressOnce();
             Log.Error(message);
             return new HostCommandResult(false, message);
@@ -288,7 +298,7 @@ public sealed class HostSession
 
     public async Task<HostCommandResult> StopPaintAsync(CancellationToken cancellationToken = default)
     {
-        if (!PaintRunning)
+        if (!PaintRunning && !nativePaintMayBeRunning && !Runtime.IsConnected)
         {
             const string noActivePaint = "Paint: no active paint to cancel.";
             Log.Warn(noActivePaint);
@@ -296,8 +306,18 @@ public sealed class HostSession
         }
         var response = await Runtime.CancelPaintAsync(cancellationToken);
         var message = FriendlyBridgeMessage(response.Message.Length > 0 ? response.Message : response.Stage);
+        var cancelledJobs = CancelledPaintJobCount(response);
+        if (response.Success && cancelledJobs == 0)
+        {
+            const string noActivePaint = "Paint: no active paint to cancel.";
+            nativePaintMayBeRunning = false;
+            Log.Warn(noActivePaint);
+            PaintRunning = false;
+            return new HostCommandResult(false, noActivePaint);
+        }
         if (response.Success)
         {
+            nativePaintMayBeRunning = false;
             LogFinalProgressOnce();
             Log.Info("Paint: canceled.");
         }
@@ -311,6 +331,28 @@ public sealed class HostSession
         }
         PaintRunning = false;
         return new HostCommandResult(response.Success, response.Success ? "Paint: canceled." : message);
+    }
+
+    public static int? CancelledPaintJobCount(BridgeReply response)
+    {
+        if (string.IsNullOrWhiteSpace(response.Raw))
+            return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(response.Raw);
+            if (!doc.RootElement.TryGetProperty("metadata", out var metadata) ||
+                metadata.ValueKind != JsonValueKind.Object)
+            {
+                return null;
+            }
+            var active = Int(metadata, "cancelled_active_paint_jobs", 0);
+            var queued = Int(metadata, "cancelled_queued_paint_jobs", 0);
+            return Math.Max(0, active) + Math.Max(0, queued);
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     public void OpenLogs()

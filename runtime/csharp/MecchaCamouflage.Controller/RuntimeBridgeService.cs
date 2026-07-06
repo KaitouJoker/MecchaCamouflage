@@ -22,6 +22,7 @@ public sealed class RuntimeBridgeService
     private int lastInjectionProcessId;
     private int activeBridgePort = BridgePort;
     private bool bridgeReadyTimeoutLogged;
+    private bool bridgeConnected;
 
     public RuntimeBridgeService(AppPaths paths, RuntimeLog log)
     {
@@ -31,6 +32,7 @@ public sealed class RuntimeBridgeService
 
     public string BridgePath => bridgePath;
     public string ProgressPath => progressPath;
+    public bool IsConnected => bridgeConnected;
 
     public Process? FindGameProcess(string processName)
     {
@@ -333,6 +335,7 @@ public sealed class RuntimeBridgeService
 
     private void LogBridgeConnected(int processId, int port)
     {
+        bridgeConnected = true;
         var key = $"{processId}:{port}";
         if (string.Equals(lastBridgeReadyLogKey, key, StringComparison.Ordinal))
             return;
