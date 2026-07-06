@@ -36,10 +36,12 @@ cd MecchaCamouflage
 make run
 ```
 
-Game update work, mesh profile regeneration, and research-tool setup are
-documented in [docs/research-tools.md](docs/research-tools.md).
-Repository layout and generated-output policy are documented in
-[docs/repository-layout.md](docs/repository-layout.md).
+Core development references:
+
+- [Repository layout](docs/repository-layout.md)
+- [Runtime maintenance](docs/runtime-maintenance.md)
+- [Research tools](docs/research-tools.md)
+- [Release checklist](docs/release-checklist.md)
 
 ## License
 

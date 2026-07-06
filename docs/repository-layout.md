@@ -80,6 +80,13 @@ Expected contents:
 
 It should be safe to delete `.build/` at any time.
 
+`make clean` deletes `.build/` only. It intentionally does not delete
+`artifacts/`, because review and research outputs are often useful evidence
+while investigating runtime or multiplayer behavior.
+
+Use `make clean-artifacts` when review/research outputs should be discarded.
+Use `make clean-all` when both `.build/` and `artifacts/` should be discarded.
+
 ## Review and Research Output
 
 Human-inspected generated reports live under `artifacts/`.
@@ -99,6 +106,11 @@ paint investigation output.
 Third-party source checkouts and submodules live under `third_party/`.
 
 Generated outputs from helper tools should go to `.build/tools/` where possible.
+
+`tools/asset_probe/` is currently ignored local output from an older research
+tool. Only local `bin/` and `obj/` output remains. Keep it only when a local
+investigation still needs it. Do not treat it as maintained source unless the
+tool source is restored.
 
 ## Local App Runtime State
 

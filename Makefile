@@ -13,7 +13,7 @@ RESEARCH_PROBE_TYPE ?= paint_replication_probe
 RESEARCH_ARTIFACT_FLAGS := $(if $(filter 1 true TRUE yes YES on ON,$(RESEARCH_ARTIFACTS)),-EnableResearchArtifacts,)
 MESH_ARGS := $(if $(PAKS),-PaksPath "$(PAKS)",) $(if $(MAPPINGS),-MappingsPath "$(MAPPINGS)",) $(if $(CUE4PARSE),-Cue4ParsePath "$(CUE4PARSE)",) $(if $(OUTPUT),-OutputPath "$(OUTPUT)",) $(if $(ASSET),-AssetPath "$(ASSET)",) $(if $(EXPORT),-ExportName "$(EXPORT)",) $(if $(GAME_VERSION),-GameVersion "$(GAME_VERSION)",) $(if $(OODLE),-OodlePath "$(OODLE)",) $(if $(ZLIB),-ZlibPath "$(ZLIB)",) $(if $(TEXTURE_SIZE),-TextureSize "$(TEXTURE_SIZE)",) $(if $(EXPECTED_VERTICES),-ExpectedVertices "$(EXPECTED_VERTICES)",) $(if $(EXPECTED_INDICES),-ExpectedIndices "$(EXPECTED_INDICES)",) $(if $(EXPECTED_BONES),-ExpectedBones "$(EXPECTED_BONES)",)
 
-.PHONY: build run dev start package mesh review-dead-code research-probe research-pressure clean
+.PHONY: build run dev start package mesh review-dead-code research-probe research-pressure clean clean-artifacts clean-all
 
 define RUN_POWERSHELL
 	@if command -v pwsh >/dev/null 2>&1; then \
@@ -67,3 +67,8 @@ research-pressure:
 
 clean:
 	rm -rf .build
+
+clean-artifacts:
+	rm -rf artifacts/*
+
+clean-all: clean clean-artifacts

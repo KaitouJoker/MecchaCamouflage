@@ -1,7 +1,7 @@
 # Runtime Bridge Responsibility Map
 
-This document is the cleanup map for `src/native/bridge/bridge.cpp`. Its purpose is
-to make dead-code review safer before any deletion or file split.
+This document maps the responsibilities inside `src/native/bridge/bridge.cpp`.
+Use it before deleting code, moving code, or changing bridge command behavior.
 
 Current policy: do not delete or split bridge code before the code path is
 classified. Static reference count is not enough in this runtime because many
@@ -39,11 +39,9 @@ assertions without a binary-layout test or live verification.
 ### LEGACY_FALLBACK
 
 Old compact/adaptive/send-custom paint paths are not the normal user-facing
-route, but may still be useful for diagnostics, research, or rollback during
-packed-route stabilization.
-
-Do not delete before beta.3 packed paint behavior is validated and the command
-surface confirms no production path depends on the code.
+route. Keep old route names in inventory and event-watch searches when they are
+useful regression indicators, but do not reintroduce automatic fallback from the
+packed production route.
 
 ### RESEARCH_ONLY
 
@@ -62,7 +60,7 @@ Code can be considered for deletion only after it is not a dynamic entry, not a
 reflection entry, not SDK layout, not a legacy fallback, and not a research-only
 helper still needed for issue triage.
 
-## High-Risk Areas Before beta.3
+## High-Risk Areas
 
 - Runtime startup, injected thread setup, `DllMain`, hooks, and listener
   lifecycle.
@@ -74,8 +72,8 @@ helper still needed for issue triage.
 - Runtime asset cache repair, startup diagnostics, injector diagnostics, and
   Fixed Version WebView2 preparation.
 
-Before beta.3, changes in these areas should be limited to comments, additive
-diagnostics, or tightly scoped bug fixes with live verification.
+Changes in these areas require focused build verification and live smoke
+coverage.
 
 ## bridge.cpp Sections
 
@@ -103,9 +101,8 @@ single native translation unit:
 Replication-specific research notes live in
 `docs/runtime-paint-replication-research.md`.
 
-The first cleanup pass should add inventory and labels only. Later passes may
-move code into `.inc` files while preserving a single translation unit. Full
-`.cpp/.h` splitting should wait until behavior is stable and each moved section
+Runtime maintenance rules live in `docs/runtime-maintenance.md`. Prefer small
+mechanical `.inc` moves over broad native refactors unless the target section
 has focused verification.
 
 ## Review Commands
