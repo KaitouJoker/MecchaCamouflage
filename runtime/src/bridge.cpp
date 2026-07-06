@@ -36,6 +36,12 @@
 
 namespace
 {
+    // =============================================================================
+    // Section: Runtime globals, diagnostics, and bridge-side state
+    // Risk: high. These values are shared by the injected runtime, listener thread,
+    // Win32 hooks, progress sidecars, and C# host diagnostics.
+    // =============================================================================
+
     constexpr int DefaultBridgePort = 47654;
     constexpr std::size_t MaxRequestBytes = 8 * 1024 * 1024;
     constexpr int ProcessEventVtableIndex = 0x4C;
@@ -1222,6 +1228,12 @@ namespace
             return {};
         }
     };
+
+    // =============================================================================
+    // Section: UE reflection and ProcessEvent surface
+    // Risk: very high. Static references do not prove reachability here because
+    // functions and properties are resolved by Unreal object names at runtime.
+    // =============================================================================
 
     struct Reflection
     {
@@ -5104,6 +5116,11 @@ namespace
         }
     }
 
+    // =============================================================================
+    // Section: Mesh profile loading and mesh identity matching
+    // Risk: medium/high. Profiles are game-derived safety inputs for paint planning.
+    // =============================================================================
+
     auto mesh_first_parse_indices(const std::string& text, std::vector<int>& indices) -> bool
     {
         std::size_t begin = 0;
@@ -5991,6 +6008,11 @@ namespace
         std::string failure{"not_run"};
     };
 
+    // =============================================================================
+    // Section: Preview/unpreview texture channel IO
+    // Risk: high. Snapshot state is local-only but affects paint preview recovery.
+    // =============================================================================
+
     std::mutex g_mesh_first_preview_mutex;
     MeshFirstPreviewSnapshot g_mesh_first_preview_snapshot{};
 
@@ -6877,6 +6899,11 @@ namespace
         return std::isfinite(a) && std::isfinite(b) && std::isfinite(c) &&
                a >= kEpsilon && b >= kEpsilon && c >= kEpsilon;
     }
+
+    // =============================================================================
+    // Section: Runtime triangle cache and mesh-first paint planning
+    // Risk: high. Planner guards block unsafe samples instead of guessing.
+    // =============================================================================
 
     auto mesh_first_finite_vector(const sdk::FVector& value) -> bool
     {
@@ -8687,6 +8714,12 @@ namespace
             return "unknown";
         }
     }
+
+    // =============================================================================
+    // Section: Async mesh-first paint lifecycle
+    // Risk: very high. This owns queued paint progress, cancellation, pacing, and
+    // pawn/component-change guards while RPC batches are in flight.
+    // =============================================================================
 
     enum class MeshFirstBatchPhase
     {
@@ -12590,6 +12623,12 @@ namespace
         return ctx.server_paint_batch_function != 0;
     }
 
+    // =============================================================================
+    // Section: Paint replication pressure and packed paint RPC route
+    // Risk: very high. ServerPackedPaintBatch is the normal multiplayer path.
+    // Do not change payload layout or RPC parameter structs during cleanup.
+    // =============================================================================
+
     auto sdk_find_replication_manager(Reflection& ref) -> std::uintptr_t
     {
         return ref.find_first_instance("RuntimePaintReplicationManager");
@@ -15167,6 +15206,12 @@ namespace
                                                                         capture.texture_source == "bulk_calibrated_direct_texture"));
     }
 
+    // =============================================================================
+    // Section: Research and probe commands
+    // Risk: medium/high. These helpers are not normal paint behavior, but they are
+    // important for game-update recovery and multiplayer replication investigation.
+    // =============================================================================
+
     auto sdk_find_color_picker_caller(Reflection& ref) -> std::uintptr_t
     {
         if (const auto instance = ref.find_first_instance("ColorPicker"))
@@ -15613,6 +15658,11 @@ namespace
         return finish_response(job->response);
     }
 
+    // =============================================================================
+    // Section: Bridge IPC command dispatch and listener lifecycle
+    // Risk: very high. C# and WebView2 reach native behavior by command strings.
+    // =============================================================================
+
     auto handle_request(const std::string& line) -> std::string
     {
         if (line.find("\"type\":\"ping\"") != std::string::npos)
@@ -15811,6 +15861,11 @@ namespace
         }
     }
 }
+
+// =============================================================================
+// Section: Injected DLL entry point
+// Risk: very high. This is reached by LoadLibrary in the target game process.
+// =============================================================================
 
 BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID)
 {

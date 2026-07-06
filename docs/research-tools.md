@@ -9,6 +9,11 @@ injector, and the reviewed mesh profile artifacts under `assets/mesh-profiles/`.
 The tools below are for update recovery and profile regeneration, not normal
 app builds.
 
+Runtime bridge probes for multiplayer paint replication are documented in
+`docs/runtime-paint-replication-research.md`. Put repeatable bridge/runtime
+investigation scripts under `scripts/research/`; keep generated output under
+`artifacts/research/` or a local temp directory.
+
 v1.5.0 uses the mesh-first paint route. The required game-derived mesh profiles
 are tracked under `assets/mesh-profiles/`; `make build` copies the required
 profile assets into the local build output for package/debug runs. After game

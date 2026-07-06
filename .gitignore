@@ -1,5 +1,6 @@
 # Build artifacts
 /.build/
+/artifacts/
 /packages/
 *.obj
 *.pdb
