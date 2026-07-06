@@ -2,7 +2,10 @@ param(
     [string]$RuntimeRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
     [string]$OutDir = "",
     [string]$ExeName = "meccha-camouflage",
-    [string]$Version = ""
+    [string]$Version = "",
+    [ValidateSet("ReleaseSingleFile", "DevLooseSelfContained")]
+    [string]$BuildMode = "ReleaseSingleFile",
+    [switch]$ShowTimings
 )
 
 $ErrorActionPreference = "Stop"
@@ -176,12 +179,41 @@ function Assert-NativeDependencyAllowList {
     }
 }
 
+$BuildTimings = New-Object System.Collections.Generic.List[object]
+
+function Invoke-BuildStep {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][scriptblock]$ScriptBlock
+    )
+    $timer = [System.Diagnostics.Stopwatch]::StartNew()
+    try {
+        & $ScriptBlock
+    }
+    finally {
+        $timer.Stop()
+        if ($ShowTimings) {
+            $BuildTimings.Add([pscustomobject]@{
+                Step = $Name
+                Seconds = [math]::Round($timer.Elapsed.TotalSeconds, 3)
+            }) | Out-Null
+        }
+    }
+}
+
+$BuildTotalTimer = [System.Diagnostics.Stopwatch]::StartNew()
 $Version = Resolve-ProjectVersion -Requested $Version -Root $RuntimeRoot
 $ExeName = Get-ExeBaseName -Name $ExeName
 Write-Host "Build version: $Version"
+Write-Host "Build mode: $BuildMode"
 
 if (-not $OutDir) {
-    $OutDir = Join-Path $RuntimeRoot ".build\bin"
+    $OutDir = if ($BuildMode -eq "DevLooseSelfContained") {
+        Join-Path $RuntimeRoot ".build\bin-dev"
+    }
+    else {
+        Join-Path $RuntimeRoot ".build\bin"
+    }
 }
 $OutDir = [System.IO.Path]::GetFullPath($OutDir)
 $ObjDir = Join-Path $RuntimeRoot ".build\obj"
@@ -206,41 +238,53 @@ if (-not (Test-Path $MeshProfilesSourceDir -PathType Container)) {
     throw "Mesh profile asset directory not found: $MeshProfilesSourceDir"
 }
 
-Clear-DirectoryContents -Path $OutDir
-New-Item -ItemType Directory -Force -Path $ObjDir | Out-Null
-Clear-DirectoryContents -Path $NativePackageDir
-$WebView2RuntimeDir = Ensure-WebView2FixedRuntime -Version $WebView2FixedVersion -Url $WebView2FixedRuntimeUrl -CacheRoot $WebView2CacheRoot
+Invoke-BuildStep -Name "prepare output directories" -ScriptBlock {
+    Clear-DirectoryContents -Path $OutDir
+    New-Item -ItemType Directory -Force -Path $ObjDir | Out-Null
+    Clear-DirectoryContents -Path $NativePackageDir
+}
+$WebView2RuntimeDir = Invoke-BuildStep -Name "prepare WebView2 fixed runtime" -ScriptBlock {
+    Ensure-WebView2FixedRuntime -Version $WebView2FixedVersion -Url $WebView2FixedRuntimeUrl -CacheRoot $WebView2CacheRoot
+}
 
 Push-Location $RuntimeRoot
 try {
-    Invoke-DotNet -Arguments @("run", "--project", $TestsProject, "-c", "Release")
+    Invoke-BuildStep -Name "run C# tests" -ScriptBlock {
+        Invoke-DotNet -Arguments @("run", "--project", $TestsProject, "-c", "Release")
+    }
 
     $BridgeOutput = Join-Path $NativePackageDir "runtime-bridge.dll"
     $LoaderOutput = Join-Path $NativePackageDir "bridge-loader.dll"
     $InjectorOutput = Join-Path $NativePackageDir "runtime-injector.exe"
-    Invoke-VsToolCommand -ToolName "cl.exe" -ToolArgs @(
-        "/nologo", "/std:c++17", "/EHsc", "/O2", "/LD", $BridgeSource,
-        "/Fo:$(Join-Path $ObjDir 'bridge.obj')",
-        "/Fe:$BridgeOutput",
-        "Ws2_32.lib",
-        "User32.lib",
-        "/link",
-        "/Brepro"
-    )
-    Invoke-VsToolCommand -ToolName "cl.exe" -ToolArgs @(
-        "/nologo", "/std:c++17", "/EHsc", "/O2", "/LD", $LoaderSource,
-        "/Fo:$(Join-Path $ObjDir 'loader.obj')",
-        "/Fe:$LoaderOutput",
-        "/link",
-        "/Brepro"
-    )
-    Invoke-VsToolCommand -ToolName "cl.exe" -ToolArgs @(
-        "/nologo", "/EHsc", "/O2", $InjectorSource,
-        "/Fo:$(Join-Path $ObjDir 'injector.obj')",
-        "/Fe:$InjectorOutput",
-        "/link",
-        "/Brepro"
-    )
+    Invoke-BuildStep -Name "compile native bridge" -ScriptBlock {
+        Invoke-VsToolCommand -ToolName "cl.exe" -ToolArgs @(
+            "/nologo", "/std:c++17", "/EHsc", "/O2", "/LD", $BridgeSource,
+            "/Fo:$(Join-Path $ObjDir 'bridge.obj')",
+            "/Fe:$BridgeOutput",
+            "Ws2_32.lib",
+            "User32.lib",
+            "/link",
+            "/Brepro"
+        )
+    }
+    Invoke-BuildStep -Name "compile native loader" -ScriptBlock {
+        Invoke-VsToolCommand -ToolName "cl.exe" -ToolArgs @(
+            "/nologo", "/std:c++17", "/EHsc", "/O2", "/LD", $LoaderSource,
+            "/Fo:$(Join-Path $ObjDir 'loader.obj')",
+            "/Fe:$LoaderOutput",
+            "/link",
+            "/Brepro"
+        )
+    }
+    Invoke-BuildStep -Name "compile native injector" -ScriptBlock {
+        Invoke-VsToolCommand -ToolName "cl.exe" -ToolArgs @(
+            "/nologo", "/EHsc", "/O2", $InjectorSource,
+            "/Fo:$(Join-Path $ObjDir 'injector.obj')",
+            "/Fe:$InjectorOutput",
+            "/link",
+            "/Brepro"
+        )
+    }
 
     if (-not (Test-Path $BridgeOutput -PathType Leaf)) {
         throw "Bridge DLL was not produced: $BridgeOutput"
@@ -251,43 +295,67 @@ try {
     if (-not (Test-Path $InjectorOutput -PathType Leaf)) {
         throw "Injector EXE was not produced: $InjectorOutput"
     }
-    Assert-NativeDependencyAllowList -Path $BridgeOutput -Allowed @("KERNEL32.dll", "USER32.dll", "WS2_32.dll") -Label "runtime-bridge.dll"
-    Assert-NativeDependencyAllowList -Path $LoaderOutput -Allowed @("KERNEL32.dll") -Label "bridge-loader.dll"
+    Invoke-BuildStep -Name "check native dependencies" -ScriptBlock {
+        Assert-NativeDependencyAllowList -Path $BridgeOutput -Allowed @("KERNEL32.dll", "USER32.dll", "WS2_32.dll") -Label "runtime-bridge.dll"
+        Assert-NativeDependencyAllowList -Path $LoaderOutput -Allowed @("KERNEL32.dll") -Label "bridge-loader.dll"
+    }
 
     $MeshProfiles = @(Get-ChildItem -Path $MeshProfilesSourceDir -Filter "*.json" -File)
     if ($MeshProfiles.Count -le 0) {
         throw "No mesh profile JSON assets found in: $MeshProfilesSourceDir"
     }
 
-    Invoke-DotNet -Arguments @(
-        "publish", $WebHostProject,
-        "-c", "Release",
-        "-r", "win-x64",
-        "--self-contained", "true",
-        "-o", $OutDir,
-        "/p:PublishSingleFile=true",
-        "/p:IncludeAllContentForSelfExtract=true",
-        "/p:IncludeNativeLibrariesForSelfExtract=true",
-        "/p:EnableCompressionInSingleFile=true",
-        "/p:MecchaAppVersion=$Version",
-        "/p:MecchaNativeRuntimeDir=$NativePackageDir",
-        "/p:MecchaMeshProfilesDir=$MeshProfilesSourceDir",
-        "/p:MecchaWebView2RuntimeDir=$WebView2RuntimeDir",
-        "/p:MecchaWebView2Version=$WebView2FixedVersion"
-    )
-
-    $DefaultControllerOutput = Join-Path $OutDir "meccha-camouflage.exe"
-    $ControllerOutput = Join-Path $OutDir "$ExeName.exe"
-    if ($DefaultControllerOutput -ne $ControllerOutput -and (Test-Path $DefaultControllerOutput -PathType Leaf)) {
-        Move-Item -Force $DefaultControllerOutput $ControllerOutput
+    Invoke-BuildStep -Name $(if ($BuildMode -eq "DevLooseSelfContained") { "publish WebHost loose dev" } else { "publish WebHost single-file" }) -ScriptBlock {
+        $publishArgs = @(
+            "publish", $WebHostProject,
+            "-c", "Release",
+            "-r", "win-x64",
+            "--self-contained", "true",
+            "-o", $OutDir,
+            "/p:MecchaAppVersion=$Version",
+            "/p:MecchaNativeRuntimeDir=$NativePackageDir",
+            "/p:MecchaMeshProfilesDir=$MeshProfilesSourceDir",
+            "/p:MecchaWebView2RuntimeDir=$WebView2RuntimeDir",
+            "/p:MecchaWebView2Version=$WebView2FixedVersion"
+        )
+        if ($BuildMode -eq "DevLooseSelfContained") {
+            $publishArgs += "/p:PublishSingleFile=false"
+        }
+        else {
+            $publishArgs += @(
+                "/p:PublishSingleFile=true",
+                "/p:IncludeAllContentForSelfExtract=true",
+                "/p:IncludeNativeLibrariesForSelfExtract=true",
+                "/p:EnableCompressionInSingleFile=true"
+            )
+        }
+        Invoke-DotNet -Arguments $publishArgs
     }
 
-    if (-not (Test-Path $ControllerOutput -PathType Leaf)) {
-        throw "WebView2 controller EXE was not produced: $ControllerOutput"
+    Invoke-BuildStep -Name "verify build output" -ScriptBlock {
+        $DefaultControllerOutput = Join-Path $OutDir "meccha-camouflage.exe"
+        $ControllerOutput = Join-Path $OutDir "$ExeName.exe"
+        if ($DefaultControllerOutput -ne $ControllerOutput -and (Test-Path $DefaultControllerOutput -PathType Leaf)) {
+            Move-Item -Force $DefaultControllerOutput $ControllerOutput
+        }
+
+        if (-not (Test-Path $ControllerOutput -PathType Leaf)) {
+            throw "WebView2 controller EXE was not produced: $ControllerOutput"
+        }
     }
 }
 finally {
     Pop-Location
+}
+
+$BuildTotalTimer.Stop()
+if ($ShowTimings) {
+    Write-Host ""
+    Write-Host "Build timings:"
+    foreach ($entry in $BuildTimings) {
+        Write-Host ("  {0,-34} {1,8:N3}s" -f $entry.Step, $entry.Seconds)
+    }
+    Write-Host ("  {0,-34} {1,8:N3}s" -f "total", [math]::Round($BuildTotalTimer.Elapsed.TotalSeconds, 3))
 }
 
 Write-Host "Built runtime artifacts:"

@@ -1,5 +1,6 @@
 param(
     [string]$RuntimeRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path,
+    [string]$BuildOutputDir = ".build\bin",
     [string]$ExeName = "meccha-camouflage.exe",
     [string[]]$RuntimeArgs,
     [string]$RuntimeArgString = "",
@@ -20,8 +21,13 @@ function Invoke-PipelineStep {
 }
 
 function Resolve-RuntimeExe {
-    param([string]$RuntimeRoot, [string]$RuntimeName)
-    $candidate = Join-Path $RuntimeRoot ".build\bin\$RuntimeName.exe"
+    param([string]$RuntimeRoot, [string]$BuildOutputDir, [string]$RuntimeName)
+    $candidate = if ([System.IO.Path]::IsPathRooted($BuildOutputDir)) {
+        Join-Path $BuildOutputDir "$RuntimeName.exe"
+    }
+    else {
+        Join-Path (Join-Path $RuntimeRoot $BuildOutputDir) "$RuntimeName.exe"
+    }
     if (Test-Path $candidate) { return (Resolve-Path $candidate).Path }
     return ""
 }
@@ -87,7 +93,7 @@ if ($RuntimeArgString) {
     $RuntimeArgs = @($stringArgs + $RuntimeArgs)
 }
 
-$ExePath = Resolve-RuntimeExe -RuntimeRoot $RuntimeRoot -RuntimeName $RuntimeName
+$ExePath = Resolve-RuntimeExe -RuntimeRoot $RuntimeRoot -BuildOutputDir $BuildOutputDir -RuntimeName $RuntimeName
 if (-not (Test-Path $ExePath)) { throw "Executable not found: $ExePath. Run make build first." }
 if (-not $RuntimeArgs -or $RuntimeArgs.Count -eq 0) {
     $RuntimeArgs = @("--mode", "service", "--native-apply-mode", $NativeApplyMode, "--parent-pid", "$PID")
