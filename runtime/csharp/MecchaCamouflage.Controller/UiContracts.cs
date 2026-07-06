@@ -26,7 +26,8 @@ public sealed record RuntimeSnapshot(
     string Queue,
     string Logs,
     bool PaintRunning,
-    bool ProgressVisible);
+    bool ProgressVisible,
+    DiagnosticsSnapshot Diagnostics);
 
 public sealed record SettingsSnapshot(PaintSnapshot Paint, AppSnapshot App);
 

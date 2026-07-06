@@ -8704,8 +8704,11 @@ namespace
     struct MeshFirstServerBatchAsyncJob
     {
         std::shared_ptr<QueuedPaintJob> queued{};
+        std::uintptr_t controller{0};
+        std::uintptr_t pawn{0};
         std::uintptr_t component{0};
         std::uintptr_t relay_component{0};
+        std::uintptr_t k2_get_pawn_function{0};
         std::uintptr_t server_paint_batch_function{0};
         std::uintptr_t server_compact_paint_batch_function{0};
         std::uintptr_t server_packed_paint_batch_function{0};
@@ -11259,8 +11262,11 @@ namespace
         {
             auto async_job = std::make_shared<MeshFirstServerBatchAsyncJob>();
             async_job->queued = queued_job;
+            async_job->controller = ctx.controller;
+            async_job->pawn = ctx.pawn;
             async_job->component = ctx.component;
             async_job->relay_component = ctx.relay_component;
+            async_job->k2_get_pawn_function = ctx.k2_get_pawn_function;
             async_job->server_paint_batch_function = ctx.server_paint_batch_function;
             async_job->server_compact_paint_batch_function = ctx.server_compact_paint_batch_function;
             async_job->server_packed_paint_batch_function = ctx.server_packed_paint_batch_function;
@@ -11848,6 +11854,59 @@ namespace
                                                         metadata));
         };
 
+        auto active_context_still_matches = [&]() -> bool {
+            if (!live_uobject(job->component))
+            {
+                finish_failed("mesh_paint_context_changed",
+                              "Paint stopped because the game paint component is no longer available",
+                              "paint_component_unavailable");
+                return false;
+            }
+            if (!live_uobject(job->controller) || !job->k2_get_pawn_function)
+            {
+                finish_failed("mesh_paint_context_changed",
+                              "Paint stopped because the local player controller is no longer available",
+                              "paint_controller_unavailable");
+                return false;
+            }
+
+            sdk::Controller_K2_GetPawn pawn_params{};
+            std::string process_failure{};
+            if (!process_event(job->controller, job->k2_get_pawn_function, reinterpret_cast<std::uint8_t*>(&pawn_params), process_failure))
+            {
+                finish_failed("mesh_paint_context_changed",
+                              "Paint stopped because the local pawn could not be refreshed",
+                              "k2_get_pawn_failed:" + process_failure);
+                return false;
+            }
+            const auto current_pawn = reinterpret_cast<std::uintptr_t>(pawn_params.ReturnValue);
+            if (!live_uobject(current_pawn))
+            {
+                finish_failed("mesh_paint_context_changed",
+                              "Paint stopped because the local pawn is no longer available",
+                              "pawn_unavailable");
+                return false;
+            }
+            if (job->pawn && current_pawn != job->pawn)
+            {
+                finish_failed("mesh_paint_context_changed",
+                              "Paint stopped because the local pawn changed",
+                              "pawn_changed");
+                return false;
+            }
+
+            const auto current_component =
+                safe_read<std::uintptr_t>(current_pawn + sdk::FieldOffsets::BP_FirstPersonCharacter_RuntimePaintable);
+            if (live_uobject(current_component) && current_component != job->component)
+            {
+                finish_failed("mesh_paint_context_changed",
+                              "Paint stopped because the game paint component changed",
+                              "paint_component_changed");
+                return false;
+            }
+            return true;
+        };
+
         if (job->strokes.empty())
         {
             finish_failed("mesh_replay_empty",
@@ -11874,6 +11933,11 @@ namespace
             return;
         }
         job->next_dispatch_time = {};
+
+        if (!active_context_still_matches())
+        {
+            return;
+        }
 
         if (job->phase == MeshFirstBatchPhase::Planning)
         {

@@ -7,7 +7,6 @@ public sealed class RuntimeLog
     private readonly AppPaths paths;
     private readonly object gate = new();
     private readonly List<string> lines = [];
-    private string lastEntryKey = "";
 
     public RuntimeLog(AppPaths paths)
     {
@@ -32,15 +31,10 @@ public sealed class RuntimeLog
 
     private void Write(string level, string message)
     {
-        var entryKey = level + "\0" + message;
         var line = $"{DateTime.Now:HH:mm:ss} [{level}] {message}";
         var path = Path.Combine(paths.LogDirectory, $"runtime-{DateTime.Now:yyyy-MM-dd}.log");
         lock (gate)
         {
-            if (entryKey == lastEntryKey)
-                return;
-            lastEntryKey = entryKey;
-
             lines.Add(line);
             while (lines.Count > 400)
                 lines.RemoveAt(0);

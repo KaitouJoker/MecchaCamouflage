@@ -20,6 +20,7 @@ public sealed class AppPaths
         RuntimeBinDirectory = Path.Combine(RuntimeDirectory, "bin");
         ProgressDirectory = Path.Combine(RuntimeDirectory, "progress");
         DebugDirectory = Path.Combine(VersionRoot, "debug");
+        DiagnosticsDirectory = Path.Combine(VersionRoot, "diagnostics");
     }
 
     public string Version { get; }
@@ -32,6 +33,7 @@ public sealed class AppPaths
     public string RuntimeBinDirectory { get; }
     public string ProgressDirectory { get; }
     public string DebugDirectory { get; }
+    public string DiagnosticsDirectory { get; }
 
     public void EnsureBaseDirectories()
     {
@@ -39,6 +41,7 @@ public sealed class AppPaths
         Directory.CreateDirectory(LogDirectory);
         Directory.CreateDirectory(RuntimeBinDirectory);
         Directory.CreateDirectory(ProgressDirectory);
+        Directory.CreateDirectory(DiagnosticsDirectory);
     }
 
     public string RuntimeHashDirectory(string bridgePath, string injectorPath)

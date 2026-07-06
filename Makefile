@@ -5,10 +5,11 @@ BUILD_PS := scripts/build.ps1
 RUN_PS := scripts/dev.ps1
 PACKAGE_PS := scripts/release.ps1
 MESH_PS := scripts/mesh.ps1
+START_EXE ?= .build/bin/meccha-camouflage.exe
 RESEARCH_ARTIFACT_FLAGS := $(if $(filter 1 true TRUE yes YES on ON,$(RESEARCH_ARTIFACTS)),-EnableResearchArtifacts,)
 MESH_ARGS := $(if $(PAKS),-PaksPath "$(PAKS)",) $(if $(MAPPINGS),-MappingsPath "$(MAPPINGS)",) $(if $(CUE4PARSE),-Cue4ParsePath "$(CUE4PARSE)",) $(if $(OUTPUT),-OutputPath "$(OUTPUT)",) $(if $(ASSET),-AssetPath "$(ASSET)",) $(if $(EXPORT),-ExportName "$(EXPORT)",) $(if $(GAME_VERSION),-GameVersion "$(GAME_VERSION)",) $(if $(OODLE),-OodlePath "$(OODLE)",) $(if $(ZLIB),-ZlibPath "$(ZLIB)",) $(if $(TEXTURE_SIZE),-TextureSize "$(TEXTURE_SIZE)",) $(if $(EXPECTED_VERTICES),-ExpectedVertices "$(EXPECTED_VERTICES)",) $(if $(EXPECTED_INDICES),-ExpectedIndices "$(EXPECTED_INDICES)",) $(if $(EXPECTED_BONES),-ExpectedBones "$(EXPECTED_BONES)",)
 
-.PHONY: build run dev package mesh clean
+.PHONY: build run dev start package mesh clean
 
 define RUN_POWERSHELL
 	@if command -v pwsh >/dev/null 2>&1; then \
@@ -28,6 +29,22 @@ run: build
 	$(call RUN_POWERSHELL,$(RUN_PS),-NativeApplyMode $(NATIVE_APPLY_MODE) $(RESEARCH_ARTIFACT_FLAGS))
 
 dev: run
+
+start:
+	@if [ ! -f "$(START_EXE)" ]; then \
+		echo "Built exe not found: $(START_EXE). Run make build first, or pass START_EXE=path." >&2; \
+		exit 1; \
+	fi
+	@if command -v powershell.exe >/dev/null 2>&1; then \
+		EXE_WIN="$$(if command -v wslpath >/dev/null 2>&1; then wslpath -w "$(START_EXE)"; else printf '%s' "$(START_EXE)"; fi)"; \
+		EXE_PS="$$(printf '%s' "$$EXE_WIN" | sed "s/'/''/g")"; \
+		powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '$$EXE_PS'"; \
+	elif command -v pwsh >/dev/null 2>&1; then \
+		EXE_PS="$$(printf '%s' "$(START_EXE)" | sed "s/'/''/g")"; \
+		pwsh -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '$$EXE_PS'"; \
+	else \
+		echo "PowerShell runtime not found." >&2; exit 127; \
+	fi
 
 package: build
 	$(call RUN_POWERSHELL,$(PACKAGE_PS),-Version $(VERSION))

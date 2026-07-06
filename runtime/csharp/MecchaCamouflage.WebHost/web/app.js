@@ -11,6 +11,7 @@ let draftSnapshot = null;
 let editing = false;
 let activeLogFilter = "all";
 let recordingHotkey = null;
+let lastRenderedLogValue = null;
 
 window.chrome.webview.addEventListener("message", event => {
   const message = event.data;
@@ -124,7 +125,7 @@ function renderLogs(runtime) {
   const value = logs.trim().length > 0 ? logs : "";
   if (activeLogFilter === "all") {
     const progressLine = buildProgressLine(runtime);
-    setLogHtml([value, progressLine].filter(Boolean).join("\n") || i18n("logs.empty"));
+    setLogHtml([value, progressLine].filter(Boolean).join("\n"));
     return;
   }
   const token = `[${activeLogFilter.toUpperCase()}]`;
@@ -132,7 +133,7 @@ function renderLogs(runtime) {
     .split(/\r?\n/)
     .filter(line => line.toUpperCase().includes(token))
     .join("\n");
-  setLogHtml(filtered || i18n("logs.empty.filtered", i18n(`log.${activeLogFilter}`)));
+  setLogHtml(filtered);
 }
 
 function buildProgressLine(runtime) {
@@ -148,7 +149,7 @@ function buildProgressLine(runtime) {
     `ETA ${runtime.paintEta || "-"}`,
     `elapsed ${runtime.paintElapsed || "-"}`
   ].join(" | ");
-  return `Paint ${percent}% ${progressBar(percent)} | ${detail}`;
+  return `${logPrefix("INFO")} Paint: ${percent}% ${progressBar(percent)} | ${detail}`;
 }
 
 function progressBar(percent) {
@@ -157,20 +158,36 @@ function progressBar(percent) {
   return `[${"#".repeat(filled)}${"-".repeat(width - filled)}]`;
 }
 
+function logPrefix(level) {
+  const now = new Date();
+  const part = value => String(value).padStart(2, "0");
+  return `${part(now.getHours())}:${part(now.getMinutes())}:${part(now.getSeconds())} [${level}]`;
+}
+
 function setLogHtml(value) {
   const logs = byId("logs");
-  logs.innerHTML = String(value)
-    .split(/\r?\n/)
-    .map(line => `<span class="${logLineClass(line)}">${escapeHtml(line)}</span>`)
+  if (value === lastRenderedLogValue) {
+    return;
+  }
+  const stickToBottom = lastRenderedLogValue === null || (logs.scrollHeight - logs.scrollTop - logs.clientHeight) < 24;
+  lastRenderedLogValue = value;
+  const lines = String(value).split(/\r?\n/);
+  if (lines[lines.length - 1].length > 0) {
+    lines.push("");
+  }
+  logs.innerHTML = lines
+    .map(line => `<span class="${logLineClass(line)}">&gt; ${escapeHtml(line)}</span>`)
     .join("\n");
-  requestAnimationFrame(() => {
-    logs.scrollTop = logs.scrollHeight;
-  });
+  if (stickToBottom) {
+    requestAnimationFrame(() => {
+      logs.scrollTop = logs.scrollHeight;
+    });
+  }
 }
 
 function logLineClass(line) {
   const upper = line.toUpperCase();
-  if ((upper.startsWith("PAINT ") || /\[INFO\]\s+PAINT\s+\d+%/.test(upper)) && upper.includes("% [")) {
+  if ((upper.startsWith("PAINT: ") || /\[INFO\]\s+PAINT:\s+\d+%/.test(upper)) && upper.includes("% [")) {
     return "log-line progress";
   }
   if (upper.includes("[ERROR]")) {
@@ -203,7 +220,7 @@ function localizedStatus(value) {
 
 function statusClass(value) {
   const normalized = String(value || "").toLowerCase();
-  if (["attached", "ready", "running", "complete", "ok"].includes(normalized)) {
+  if (["attached", "connected", "ready", "running", "complete", "ok"].includes(normalized)) {
     return "ok";
   }
   if (["waiting", "starting", "pending"].includes(normalized)) {

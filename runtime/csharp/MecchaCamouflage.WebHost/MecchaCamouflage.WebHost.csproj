@@ -10,6 +10,7 @@
     <RootNamespace>MecchaCamouflage.WebHost</RootNamespace>
     <ApplicationIcon>..\..\..\assets\icon.ico</ApplicationIcon>
     <MecchaAppVersion Condition="'$(MecchaAppVersion)' == ''">dev</MecchaAppVersion>
+    <MecchaWebView2Version Condition="'$(MecchaWebView2Version)' == ''">unknown</MecchaWebView2Version>
   </PropertyGroup>
 
   <ItemGroup>
@@ -54,6 +55,9 @@
     </EmbeddedResource>
     <EmbeddedResource Include="$(MecchaMeshProfilesDir)\*.json" Condition="'$(MecchaMeshProfilesDir)' != ''">
       <LogicalName>packaged/mesh-profiles/%(Filename)%(Extension)</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="$(MecchaWebView2RuntimeDir)\**\*" Condition="'$(MecchaWebView2RuntimeDir)' != ''">
+      <LogicalName>packaged/webview2/%(RecursiveDir)%(Filename)%(Extension)</LogicalName>
     </EmbeddedResource>
   </ItemGroup>
 

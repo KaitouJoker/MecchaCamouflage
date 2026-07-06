@@ -65,6 +65,27 @@ function Invoke-VsToolCommand {
     if ($LASTEXITCODE -ne 0) { throw "$ToolName failed with exit code $LASTEXITCODE" }
 }
 
+function Invoke-VsToolCapture {
+    param(
+        [Parameter(Mandatory = $true)][string]$ToolName,
+        [Parameter(Mandatory = $true)][string[]]$ToolArgs
+    )
+    if (Get-Command $ToolName -ErrorAction SilentlyContinue) {
+        $output = & $ToolName @ToolArgs 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "$ToolName failed with exit code $LASTEXITCODE`n$output" }
+        return $output
+    }
+    $VsDevCmd = Get-VsDevCmd
+    if (-not $VsDevCmd) {
+        throw "$ToolName was not found. Install Visual Studio 2022 Build Tools or run from a VS Developer PowerShell."
+    }
+    $ArgText = ($ToolArgs | ForEach-Object { Quote-CmdArg $_ }) -join " "
+    $CommandLine = "$(Quote-CmdArg $VsDevCmd) -arch=x64 -host_arch=x64 >nul && $ToolName $ArgText"
+    $output = cmd /d /c $CommandLine 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "$ToolName failed with exit code $LASTEXITCODE`n$output" }
+    return $output
+}
+
 function Get-ExeBaseName {
     param([string]$Name)
     $candidate = (New-Object System.IO.FileInfo($Name)).BaseName
@@ -91,6 +112,67 @@ function Clear-DirectoryContents {
     Get-ChildItem -Force -LiteralPath $full | Remove-Item -Recurse -Force
 }
 
+function Ensure-WebView2FixedRuntime {
+    param(
+        [Parameter(Mandatory = $true)][string]$Version,
+        [Parameter(Mandatory = $true)][string]$Url,
+        [Parameter(Mandatory = $true)][string]$CacheRoot
+    )
+    $RuntimeDir = Join-Path $CacheRoot "runtime"
+    $RuntimeExe = Join-Path $RuntimeDir "msedgewebview2.exe"
+    if (Test-Path $RuntimeExe -PathType Leaf) {
+        return $RuntimeDir
+    }
+
+    New-Item -ItemType Directory -Force -Path $CacheRoot | Out-Null
+    $CabPath = Join-Path $CacheRoot "Microsoft.WebView2.FixedVersionRuntime.$Version.x64.cab"
+    if (-not (Test-Path $CabPath -PathType Leaf)) {
+        Write-Host "Downloading WebView2 Fixed Runtime $Version..."
+        Invoke-WebRequest -Uri $Url -OutFile $CabPath
+    }
+
+    $ExtractDir = Join-Path $CacheRoot ("extract." + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Force -Path $ExtractDir | Out-Null
+    try {
+        & expand.exe $CabPath -F:* $ExtractDir | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "expand.exe failed with exit code $LASTEXITCODE"
+        }
+        $Exe = Get-ChildItem -Path $ExtractDir -Recurse -Filter "msedgewebview2.exe" -File | Select-Object -First 1
+        if (-not $Exe) {
+            throw "WebView2 Fixed Runtime cab did not contain msedgewebview2.exe"
+        }
+        if (Test-Path $RuntimeDir) {
+            Remove-Item -Recurse -Force $RuntimeDir
+        }
+        New-Item -ItemType Directory -Force -Path $RuntimeDir | Out-Null
+        Copy-Item -Recurse -Force -Path (Join-Path $Exe.Directory.FullName "*") -Destination $RuntimeDir
+    }
+    finally {
+        if (Test-Path $ExtractDir) {
+            Remove-Item -Recurse -Force $ExtractDir
+        }
+    }
+    if (-not (Test-Path $RuntimeExe -PathType Leaf)) {
+        throw "WebView2 Fixed Runtime was not prepared: $RuntimeExe"
+    }
+    return $RuntimeDir
+}
+
+function Assert-BridgeDependencyAllowList {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $Allowed = @("KERNEL32.dll", "USER32.dll", "WS2_32.dll")
+    $Output = Invoke-VsToolCapture -ToolName "dumpbin.exe" -ToolArgs @("/nologo", "/dependents", $Path)
+    $Dlls = @($Output | ForEach-Object {
+        $line = $_.ToString().Trim()
+        if ($line -match '^[A-Za-z0-9_.-]+\.dll$') { $line }
+    } | Sort-Object -Unique)
+    $Unexpected = @($Dlls | Where-Object { $Allowed -notcontains $_ })
+    if ($Unexpected.Count -gt 0) {
+        throw "runtime-bridge.dll has unexpected dependencies: $($Unexpected -join ', ')"
+    }
+}
+
 $Version = Resolve-ProjectVersion -Requested $Version -Root $RuntimeRoot
 $ExeName = Get-ExeBaseName -Name $ExeName
 Write-Host "Build version: $Version"
@@ -101,6 +183,9 @@ if (-not $OutDir) {
 $OutDir = [System.IO.Path]::GetFullPath($OutDir)
 $ObjDir = Join-Path $RuntimeRoot ".build\obj"
 $NativePackageDir = Join-Path $ObjDir "package-native"
+$WebView2FixedVersion = "150.0.4078.48"
+$WebView2FixedRuntimeUrl = "https://msedge.sf.dl.delivery.mp.microsoft.com/filestreamingservice/files/60926d99-f201-46bb-91a0-d868dc06b275/Microsoft.WebView2.FixedVersionRuntime.150.0.4078.48.x64.cab"
+$WebView2CacheRoot = Join-Path $RuntimeRoot ".build\cache\webview2\$WebView2FixedVersion\win-x64"
 
 $BridgeSource = Join-Path $RuntimeRoot "runtime\src\bridge.cpp"
 $InjectorSource = Join-Path $RuntimeRoot "runtime\src\injector.cpp"
@@ -120,6 +205,7 @@ if (-not (Test-Path $MeshProfilesSourceDir -PathType Container)) {
 Clear-DirectoryContents -Path $OutDir
 New-Item -ItemType Directory -Force -Path $ObjDir | Out-Null
 Clear-DirectoryContents -Path $NativePackageDir
+$WebView2RuntimeDir = Ensure-WebView2FixedRuntime -Version $WebView2FixedVersion -Url $WebView2FixedRuntimeUrl -CacheRoot $WebView2CacheRoot
 
 Push-Location $RuntimeRoot
 try {
@@ -146,6 +232,7 @@ try {
     if (-not (Test-Path $InjectorOutput -PathType Leaf)) {
         throw "Injector EXE was not produced: $InjectorOutput"
     }
+    Assert-BridgeDependencyAllowList -Path $BridgeOutput
 
     $MeshProfiles = @(Get-ChildItem -Path $MeshProfilesSourceDir -Filter "*.json" -File)
     if ($MeshProfiles.Count -le 0) {
@@ -164,7 +251,9 @@ try {
         "/p:EnableCompressionInSingleFile=true",
         "/p:MecchaAppVersion=$Version",
         "/p:MecchaNativeRuntimeDir=$NativePackageDir",
-        "/p:MecchaMeshProfilesDir=$MeshProfilesSourceDir"
+        "/p:MecchaMeshProfilesDir=$MeshProfilesSourceDir",
+        "/p:MecchaWebView2RuntimeDir=$WebView2RuntimeDir",
+        "/p:MecchaWebView2Version=$WebView2FixedVersion"
     )
 
     $DefaultControllerOutput = Join-Path $OutDir "meccha-camouflage.exe"
@@ -184,3 +273,4 @@ finally {
 Write-Host "Built runtime artifacts:"
 Write-Host "  $(Join-Path $OutDir "$ExeName.exe")"
 Write-Host "  native runtime embedded from $NativePackageDir"
+Write-Host "  WebView2 Fixed Runtime $WebView2FixedVersion embedded from $WebView2RuntimeDir"

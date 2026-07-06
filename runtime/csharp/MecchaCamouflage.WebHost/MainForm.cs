@@ -49,14 +49,29 @@ public sealed class MainForm : Form
 
         Shown += async (_, _) =>
         {
-            StartBridgeWarmup();
-            await InitializeWebViewAsync();
+            try
+            {
+                StartBridgeWarmup();
+                await InitializeWebViewAsync();
+            }
+            catch (Exception ex)
+            {
+                DiagnosticsState.RecordException("webview2_initialize_failed", ex);
+                session.Log.Error(ex.Message);
+                MessageBox.Show(
+                    "Meccha Camouflage failed to start. Diagnostic logs were written to:" +
+                    Environment.NewLine + session.Paths.DiagnosticsDirectory +
+                    Environment.NewLine + Environment.NewLine + ex.Message,
+                    "Meccha Camouflage",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+                Close();
+            }
         };
         FormClosing += (_, _) =>
         {
             PersistWindowSnapshot();
             UnregisterHotkeys();
-            _ = Task.Run(session.ShutdownBridgeAsync);
         };
         ResizeEnd += (_, _) => PersistWindowSnapshot();
         Move += (_, _) => PersistWindowSnapshot();
@@ -97,10 +112,15 @@ public sealed class MainForm : Form
 
     private async Task InitializeWebViewAsync()
     {
-        await webView.EnsureCoreWebView2Async();
-        var webRoot = Path.Combine(PackagedAssets.ResolveAssetRoot(session.Paths, "web"), "web");
-        if (!Directory.Exists(webRoot))
-            throw new DirectoryNotFoundException("Packaged web assets are missing: " + webRoot);
+        DiagnosticsState.SetStartupPhase("webview2_prepare");
+        var runtime = await Task.Run(PrepareFixedWebRuntime);
+        session.Log.Info("WebView2 runtime: initializing.");
+        var environment = await CoreWebView2Environment.CreateAsync(runtime.BrowserExecutableFolder, runtime.UserDataFolder);
+        await webView.EnsureCoreWebView2Async(environment);
+        DiagnosticsState.SetStartupPhase("webview2_ready");
+        session.Log.Info($"WebView2 runtime: initialized ({runtime.Version}).");
+        if (!Directory.Exists(runtime.WebRoot))
+            throw new DirectoryNotFoundException("Packaged web assets are missing: " + runtime.WebRoot);
 
         webView.CoreWebView2.WebMessageReceived += async (_, args) => await HandleWebMessageAsync(args);
         webView.CoreWebView2.NavigationCompleted += (_, _) => ApplyWindowSettings();
@@ -108,7 +128,7 @@ public sealed class MainForm : Form
         webView.CoreWebView2.NewWindowRequested += (_, args) => HandleNewWindowRequested(args);
         webView.CoreWebView2.SetVirtualHostNameToFolderMapping(
             "meccha.localhost",
-            webRoot,
+            runtime.WebRoot,
             CoreWebView2HostResourceAccessKind.DenyCors);
         webView.CoreWebView2.Settings.AreDefaultScriptDialogsEnabled = true;
         webView.CoreWebView2.Settings.AreDefaultContextMenusEnabled = false;
@@ -119,6 +139,68 @@ public sealed class MainForm : Form
         webReady = true;
         await PushSnapshotAsync();
         StartBridgeWarmup();
+    }
+
+    private WebRuntimeInfo PrepareFixedWebRuntime()
+    {
+        var assetRoot = PackagedAssets.ResolveRequiredAssetRoot(session.Paths, "webview2", session.Log);
+        var webView2Root = Path.Combine(assetRoot, "webview2");
+        var executable = Directory.EnumerateFiles(webView2Root, "msedgewebview2.exe", SearchOption.AllDirectories)
+            .Order(StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(executable))
+        {
+            DiagnosticsState.SetLastCode("MC-WV-001", "msedgewebview2.exe missing from fixed runtime");
+            throw new FileNotFoundException("MC-WV-001 Fixed WebView2 runtime is missing msedgewebview2.exe.");
+        }
+
+        var browserExecutableFolder = Path.GetDirectoryName(executable)!;
+        ApplyWindows10WebView2Acl(browserExecutableFolder);
+        var version = CoreWebView2Environment.GetAvailableBrowserVersionString(browserExecutableFolder);
+        var userDataFolder = Path.Combine(session.Paths.RuntimeDirectory, "webview2-user-data");
+        Directory.CreateDirectory(userDataFolder);
+        var webRoot = Path.Combine(PackagedAssets.ResolveRequiredAssetRoot(session.Paths, "web", session.Log), "web");
+        DiagnosticsState.SetWebView2Runtime($"fixed version={version} path={browserExecutableFolder}");
+        return new WebRuntimeInfo(browserExecutableFolder, userDataFolder, webRoot, version);
+    }
+
+    private sealed record WebRuntimeInfo(string BrowserExecutableFolder, string UserDataFolder, string WebRoot, string Version);
+
+    private static void ApplyWindows10WebView2Acl(string browserExecutableFolder)
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+        var version = Environment.OSVersion.Version;
+        if (version.Major != 10 || version.Build >= 22000)
+            return;
+
+        RunIcaclsGrant(browserExecutableFolder, "*S-1-15-2-2:(OI)(CI)(RX)");
+        RunIcaclsGrant(browserExecutableFolder, "*S-1-15-2-1:(OI)(CI)(RX)");
+    }
+
+    private static void RunIcaclsGrant(string path, string grant)
+    {
+        var start = new ProcessStartInfo("icacls.exe")
+        {
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        start.ArgumentList.Add(path);
+        start.ArgumentList.Add("/grant");
+        start.ArgumentList.Add(grant);
+        using var process = Process.Start(start);
+        if (process is null)
+            throw new IOException("MC-WV-ACL-001 icacls.exe could not be started.");
+        process.WaitForExit();
+        var stdout = process.StandardOutput.ReadToEnd();
+        var stderr = process.StandardError.ReadToEnd();
+        if (process.ExitCode != 0)
+        {
+            DiagnosticsState.SetLastCode("MC-WV-ACL-001", stderr.Trim().Length == 0 ? stdout.Trim() : stderr.Trim());
+            throw new IOException("MC-WV-ACL-001 Windows denied Fixed WebView2 runtime permissions.");
+        }
     }
 
     private void StartBridgeWarmup()
@@ -395,7 +477,10 @@ public sealed class MainForm : Form
         {
             if (InvokeRequired)
             {
-                BeginInvoke((MethodInvoker)(async () => await PushSnapshotAsync()));
+                BeginInvoke((MethodInvoker)(async () =>
+                {
+                    await PushSnapshotAsync();
+                }));
                 return;
             }
             _ = PushSnapshotAsync();

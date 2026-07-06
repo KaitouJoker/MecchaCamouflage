@@ -32,11 +32,12 @@ public sealed class HostSession
     public HostSession(string version)
     {
         Paths = new AppPaths(version);
+        DiagnosticsState.EnsureInitialized(Paths, version);
         Store = new SettingsStore(Paths);
         Settings = Store.Load();
         Log = new RuntimeLog(Paths);
         Runtime = new RuntimeBridgeService(Paths, Log);
-        Log.Info("App started.");
+        Log.Info("GUI: initialized.");
     }
 
     public LocalizationCatalog Localization { get; } = LocalizationCatalog.Load();
@@ -63,7 +64,7 @@ public sealed class HostSession
             (ping.ProcessId is null || ping.ProcessId == process.Id);
         return CreateSnapshot(
             process is null ? "waiting" : "attached",
-            bridgeReady ? "ready" : "waiting",
+            bridgeReady ? "connected" : "waiting",
             bridgeReady ? "ready" : "stopped",
             progress);
     }
@@ -78,16 +79,18 @@ public sealed class HostSession
         try
         {
             var process = Runtime.FindGameProcess(Settings.GameProcessName);
-            var ping = await Runtime.PingAsync(cancellationToken, RuntimeBridgeService.BridgeProbeTimeout);
-            if (ping.Ok &&
-                ping.Success &&
-                (process is null || ping.ProcessId is null || ping.ProcessId == process.Id))
+            if (process is null)
             {
+                _ = await Runtime.EnsureReadyAsync(Settings.GameProcessName, cancellationToken);
                 nextBridgeWarmupAttempt = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(2);
                 return;
             }
-            if (process is null)
+            var ping = await Runtime.PingAsync(cancellationToken, RuntimeBridgeService.BridgeProbeTimeout);
+            if (ping.Ok &&
+                ping.Success &&
+                (ping.ProcessId is null || ping.ProcessId == process.Id))
             {
+                Runtime.ObserveBridgeConnected(process.Id);
                 nextBridgeWarmupAttempt = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(2);
                 return;
             }
@@ -226,7 +229,7 @@ public sealed class HostSession
     public async Task<HostCommandResult> RunPaintAsync(bool previewOnly, bool unpreviewOnly, CancellationToken cancellationToken = default)
     {
         if (PaintRunning)
-            return new HostCommandResult(false, "Paint is already running.");
+            return new HostCommandResult(false, "Paint: already running.");
         PaintRunning = true;
         currentPaintStartedAt = DateTimeOffset.UtcNow;
         currentProgressIsServerPaint = !previewOnly && !unpreviewOnly;
@@ -236,14 +239,17 @@ public sealed class HostSession
         {
             var ready = await Runtime.EnsureReadyAsync(Settings.GameProcessName, cancellationToken);
             if (!ready)
-                return new HostCommandResult(false, "Bridge is not ready.");
+                return new HostCommandResult(false, "Bridge is not connected.");
             var process = Runtime.FindGameProcess(Settings.GameProcessName);
             if (process is null)
             {
                 Log.Warn("Game process not found.");
                 return new HostCommandResult(false, "Game process not found.");
             }
-            Log.Info(previewOnly ? "Preview started." : (unpreviewOnly ? "UnPreview started." : "Paint started."));
+            var deferStartedLog = previewOnly || unpreviewOnly;
+            var startedMessage = previewOnly ? "Preview: started." : (unpreviewOnly ? "UnPreview: started." : "Paint: started.");
+            if (!deferStartedLog)
+                Log.Info(startedMessage);
             var payload = BridgePayloadBuilder.BuildPaintPayload(
                 Settings,
                 process.Id,
@@ -251,14 +257,22 @@ public sealed class HostSession
                 new PaintRequestOptions(previewOnly, unpreviewOnly, Environment.GetEnvironmentVariable("MECCHA_RESEARCH_ARTIFACTS") == "1"));
             var response = await Runtime.SendPaintAsync(payload, cancellationToken);
             var message = FriendlyBridgeMessage(response.Message.Length > 0 ? response.Message : response.Stage);
-            LogFinalProgressOnce();
             if (response.Success)
             {
+                if (deferStartedLog)
+                    Log.Info(startedMessage);
+                LogFinalProgressOnce();
                 Log.Info(message);
                 return new HostCommandResult(true, message);
             }
-            if (message == "Paint canceled.")
+            if (message == "Paint: canceled.")
                 return new HostCommandResult(false, message);
+            if (IsGuardWarning(message))
+            {
+                Log.Warn(message);
+                return new HostCommandResult(false, message);
+            }
+            LogFailureProgressOnce();
             Log.Error(message);
             return new HostCommandResult(false, message);
         }
@@ -271,18 +285,35 @@ public sealed class HostSession
 
     public async Task<HostCommandResult> StopPaintAsync(CancellationToken cancellationToken = default)
     {
+        if (!PaintRunning)
+        {
+            const string noActivePaint = "Paint: no active paint to cancel.";
+            Log.Warn(noActivePaint);
+            return new HostCommandResult(false, noActivePaint);
+        }
         var response = await Runtime.CancelPaintAsync(cancellationToken);
         var message = FriendlyBridgeMessage(response.Message.Length > 0 ? response.Message : response.Stage);
-        LogFinalProgressOnce();
-        Log.Info(response.Success ? "Paint canceled." : "Paint cancel failed: " + message);
+        if (response.Success)
+        {
+            LogFinalProgressOnce();
+            Log.Info("Paint: canceled.");
+        }
+        else if (IsGuardWarning(message))
+        {
+            Log.Warn(message);
+        }
+        else
+        {
+            Log.Error("Paint: cancel failed: " + message);
+        }
         PaintRunning = false;
-        return new HostCommandResult(response.Success, response.Success ? "Paint canceled." : message);
+        return new HostCommandResult(response.Success, response.Success ? "Paint: canceled." : message);
     }
 
     public void OpenLogs()
     {
-        Directory.CreateDirectory(Paths.LogDirectory);
-        Process.Start(new ProcessStartInfo(Paths.LogDirectory) { UseShellExecute = true });
+        Directory.CreateDirectory(Paths.DiagnosticsDirectory);
+        Process.Start(new ProcessStartInfo(Paths.VersionRoot) { UseShellExecute = true });
     }
 
     public string ClipboardLogText()
@@ -330,27 +361,37 @@ public sealed class HostSession
         var lower = value.ToLowerInvariant();
 
         if (lower.Contains("already running"))
-            return "Paint is already running.";
+            return "Paint: already running.";
         if (lower is "mesh_first_paint_done" ||
+            lower is "paint completed." ||
+            lower is "paint completed" ||
+            lower is "paint: completed." ||
+            lower is "paint: completed" ||
             lower.Contains("mesh-first paint completed") ||
             lower.Contains("sent through serverpaintbatch"))
-            return "Paint completed.";
+            return "Paint: completed.";
         if (lower.Contains("mesh-first paint cancelled") || lower.Contains("mesh-first paint canceled"))
-            return "Paint canceled.";
+            return "Paint: canceled.";
         if (lower is "mesh_preview_done" || lower.Contains("local preview material texture imported"))
-            return "Preview applied.";
+            return "Preview: applied.";
         if (lower is "mesh_unpreview_done" || lower.Contains("local preview material texture restored"))
-            return "Preview restored.";
+            return "Preview: restored.";
         if (lower is "mesh_preview_failed" || lower.Contains("local preview material texture import failed"))
-            return "Preview failed.";
+            return "Preview: failed.";
         if (lower is "mesh_unpreview_failed" || lower.Contains("local preview material restore failed"))
-            return "Preview restore failed.";
-        if (lower is "mesh_unpreview_snapshot_unavailable")
-            return "No preview is available to restore.";
+            return "Preview: restore failed.";
+        if (lower is "mesh_unpreview_snapshot_unavailable" || lower.Contains("no local preview snapshot is available"))
+            return "Preview: no active preview to restore.";
         if (lower is "mesh_unpreview_component_mismatch")
             return "The saved preview belongs to a different mesh.";
         if (lower is "mesh_local_visual_sync_failed")
-            return "Paint completed, but local preview failed.";
+            return "Paint: completed, but local preview failed.";
+        if (lower is "mesh_paint_context_changed" || lower.Contains("paint_context_changed"))
+            return "Paint: stopped because the game paint component changed.";
+        if (lower.Contains("paint_component_unavailable"))
+            return "Paint: stopped because the game paint component is unavailable.";
+        if (lower.Contains("unsafe color-transfer candidates"))
+            return "Paint: blocked because the current mesh sampling was unsafe.";
         if (lower is "mesh_server_packed_batch_unavailable" || lower.Contains("serverpackedpaintbatch is unavailable"))
             return "Packed multiplayer paint sync is unavailable.";
         if (lower is "mesh_server_packed_batch_incompatible" || lower.Contains("serverpackedpaintbatch requires"))
@@ -358,13 +399,18 @@ public sealed class HostSession
         if (lower is "mesh_server_packed_source_id_unavailable" || lower.Contains("source id is unavailable"))
             return "Packed multiplayer paint source id is unavailable.";
         if (lower is "mesh_server_batch_failed")
-            return "Paint failed while sending strokes.";
+            return "Paint: failed while sending strokes.";
 
         return value
             .Replace("mesh-first ", "", StringComparison.OrdinalIgnoreCase)
             .Replace("mesh first ", "", StringComparison.OrdinalIgnoreCase)
             .Replace("mesh_first_", "", StringComparison.OrdinalIgnoreCase);
     }
+
+    private static bool IsGuardWarning(string message) =>
+        message.Equals("Paint: already running.", StringComparison.OrdinalIgnoreCase) ||
+        message.Equals("Paint: no active paint to cancel.", StringComparison.OrdinalIgnoreCase) ||
+        message.Equals("Preview: no active preview to restore.", StringComparison.OrdinalIgnoreCase);
 
     private static AppSettings Clone(AppSettings source) =>
         JsonSerializer.Deserialize<AppSettings>(JsonSerializer.Serialize(source)) ?? new AppSettings();
@@ -395,7 +441,7 @@ public sealed class HostSession
         return new UiSnapshot(
             VersionInfo.Current,
             Settings.Language,
-            new RuntimeSnapshot(process, bridge, service, percent, eta, elapsed, batch, delay, timingLabel, queue, Log.Text, PaintRunning, progress is not null),
+            new RuntimeSnapshot(process, bridge, service, percent, eta, elapsed, batch, delay, timingLabel, queue, Log.Text, PaintRunning, progress is not null, DiagnosticsState.Snapshot(Paths)),
             ToSnapshot(Settings),
             ToSnapshot(defaults),
             BuildResetSnapshot(Settings, defaults),
@@ -616,18 +662,51 @@ public sealed class HostSession
 
     private ProgressSnapshot? ReadCurrentProgressSnapshot(bool liveOnly)
     {
-        var progress = ReadProgressSnapshot(Runtime.ProgressPath, out var writeTime);
-        if (progress is null)
-            return null;
         if (currentPaintStartedAt == DateTimeOffset.MinValue)
             return null;
-        if (writeTime < currentPaintStartedAt.AddSeconds(-1))
+        var progress = ReadProgressSnapshot(Runtime.ProgressPath, out var writeTime);
+        if (progress is null)
+            progress = ReadFallbackProgressSnapshot(out writeTime);
+        if (progress is null)
             return null;
+        var cutoff = currentPaintStartedAt.AddSeconds(-1);
+        if (writeTime < cutoff)
+        {
+            progress = ReadFallbackProgressSnapshot(out writeTime);
+            if (progress is null || writeTime < cutoff)
+                return null;
+        }
         if (liveOnly && !PaintRunning)
             return null;
         if (liveOnly && !currentProgressIsServerPaint)
             return null;
         return progress;
+    }
+
+    private ProgressSnapshot? ReadFallbackProgressSnapshot(out DateTimeOffset writeTime)
+    {
+        writeTime = DateTimeOffset.MinValue;
+        if (currentPaintStartedAt == DateTimeOffset.MinValue)
+            return null;
+        var cutoff = currentPaintStartedAt.AddSeconds(-1);
+        try
+        {
+            if (!Directory.Exists(Paths.ProgressDirectory))
+                return null;
+            foreach (var path in Directory.EnumerateFiles(Paths.ProgressDirectory, "*.progress.json")
+                         .OrderByDescending(File.GetLastWriteTimeUtc))
+            {
+                var progress = ReadProgressSnapshot(path, out var candidateWriteTime);
+                if (progress is null || candidateWriteTime < cutoff)
+                    continue;
+                writeTime = candidateWriteTime;
+                return progress;
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+        }
+        return null;
     }
 
     private void LogFinalProgressOnce()
@@ -646,13 +725,37 @@ public sealed class HostSession
         Log.Info(line);
     }
 
+    private void LogFailureProgressOnce()
+    {
+        if (!currentProgressIsServerPaint)
+            return;
+        if (finalProgressLogged)
+            return;
+        var progress = ReadCurrentProgressSnapshot(liveOnly: false);
+        if (progress is null || !ShouldLogFailureProgress(progress))
+            return;
+        var line = FormatProgressLogLine(progress);
+        if (line.Length == 0)
+            return;
+        finalProgressLogged = true;
+        Log.Info(line);
+    }
+
+    private static bool ShouldLogFailureProgress(ProgressSnapshot progress)
+    {
+        var phase = progress.Phase.Trim().ToLowerInvariant();
+        return phase is "server_batch" or "local_sync" or "local_texture_import" or "texture_sync_observe" or "server_texture_sync" or "failed" or "cancelled" ||
+               phase.StartsWith("mesh_server_batch", StringComparison.OrdinalIgnoreCase) ||
+               phase.StartsWith("mesh_paint_", StringComparison.OrdinalIgnoreCase);
+    }
+
     private string FormatProgressLogLine(ProgressSnapshot progress)
     {
         var percent = progress.TotalSteps > 0
             ? Math.Clamp(progress.Step * 100.0 / progress.TotalSteps, 0.0, 100.0)
             : Math.Clamp(progress.Progress * 100.0, 0.0, 100.0);
         var rounded = (int)Math.Round(percent);
-        return $"Paint {rounded}% {ProgressBar(rounded)} | batch {FormatBatch(progress, Settings)} | {TimingLabel(progress)} {FormatDelay(progress, Settings)} | queue {FormatQueue(progress)} | ETA {FormatEta(progress)} | elapsed {FormatDuration(progress.PaintElapsedMs)}";
+        return $"Paint: {rounded}% {ProgressBar(rounded)} | batch {FormatBatch(progress, Settings)} | {TimingLabel(progress)} {FormatDelay(progress, Settings)} | queue {FormatQueue(progress)} | ETA {FormatEta(progress)} | elapsed {FormatDuration(progress.PaintElapsedMs)}";
     }
 
     private static string ProgressBar(int percent)

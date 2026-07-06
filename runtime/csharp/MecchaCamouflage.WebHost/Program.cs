@@ -7,8 +7,41 @@ internal static class Program
     [STAThread]
     private static void Main()
     {
-        ApplicationConfiguration.Initialize();
-        using var form = new MainForm(new HostSession(VersionInfo.Current));
-        Application.Run(form);
+        var paths = new MecchaCamouflage.Core.AppPaths(VersionInfo.Current);
+        DiagnosticsState.Initialize(paths, VersionInfo.Current);
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+        Application.ThreadException += (_, args) => DiagnosticsState.RecordException("winforms_thread_exception", args.Exception);
+        AppDomain.CurrentDomain.UnhandledException += (_, args) =>
+        {
+            if (args.ExceptionObject is Exception exception)
+                DiagnosticsState.RecordException("appdomain_unhandled_exception", exception);
+        };
+        TaskScheduler.UnobservedTaskException += (_, args) =>
+        {
+            DiagnosticsState.RecordException("task_unobserved_exception", args.Exception);
+            args.SetObserved();
+        };
+
+        try
+        {
+            DiagnosticsState.SetStartupPhase("application_configuration");
+            ApplicationConfiguration.Initialize();
+            DiagnosticsState.SetStartupPhase("main_form_create");
+            using var form = new MainForm(new HostSession(VersionInfo.Current));
+            DiagnosticsState.SetStartupPhase("application_run");
+            Application.Run(form);
+            DiagnosticsState.SetStartupPhase("application_exit");
+        }
+        catch (Exception exception)
+        {
+            DiagnosticsState.RecordException("application_run_failed", exception);
+            MessageBox.Show(
+                "Meccha Camouflage failed to start. Diagnostic logs were written to:" +
+                Environment.NewLine + paths.DiagnosticsDirectory +
+                Environment.NewLine + Environment.NewLine + exception.Message,
+                "Meccha Camouflage",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Error);
+        }
     }
 }
