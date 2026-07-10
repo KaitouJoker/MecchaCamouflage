@@ -39,6 +39,7 @@ make run
 Core development references:
 
 - [Repository layout](docs/repository-layout.md)
+- [Direct bridge injection](docs/runtime-direct-bridge.md)
 - [Runtime maintenance](docs/runtime-maintenance.md)
 - [Research tools](docs/research-tools.md)
 - [Release checklist](docs/release-checklist.md)

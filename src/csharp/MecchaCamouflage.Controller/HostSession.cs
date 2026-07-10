@@ -59,7 +59,7 @@ public sealed class HostSession
 
     public async Task<UiSnapshot> GetSnapshotAsync(CancellationToken cancellationToken = default)
     {
-        var process = Runtime.FindGameProcess(Settings.GameProcessName);
+        using var process = Runtime.FindGameProcess(Settings.GameProcessName);
         var ping = await Runtime.PingAsync(cancellationToken, RuntimeBridgeService.BridgeProbeTimeout);
         var progress = ReadCurrentProgressSnapshot(liveOnly: true);
         var bridgeReady = process is not null &&
@@ -83,14 +83,14 @@ public sealed class HostSession
             return;
         try
         {
-            var process = Runtime.FindGameProcess(Settings.GameProcessName);
+            using var process = Runtime.FindGameProcess(Settings.GameProcessName);
             if (process is null)
             {
                 _ = await Runtime.EnsureReadyAsync(Settings.GameProcessName, cancellationToken);
                 nextBridgeWarmupAttempt = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(2);
                 return;
             }
-            var ready = await Runtime.EnsureReadyAsync(Settings.GameProcessName, cancellationToken);
+            var ready = await Runtime.EnsureReadyAsync(process, cancellationToken);
             nextBridgeWarmupAttempt = ready
                 ? DateTimeOffset.UtcNow + TimeSpan.FromSeconds(2)
                 : DateTimeOffset.UtcNow + TimeSpan.FromSeconds(10);
@@ -238,15 +238,15 @@ public sealed class HostSession
         TryDeleteProgressSnapshot();
         try
         {
-            var ready = await Runtime.EnsureReadyAsync(Settings.GameProcessName, cancellationToken);
-            if (!ready)
-                return new HostCommandResult(false, "Bridge is not connected.");
-            var process = Runtime.FindGameProcess(Settings.GameProcessName);
+            using var process = Runtime.FindGameProcess(Settings.GameProcessName);
             if (process is null)
             {
                 Log.Warn("Game process not found.");
                 return new HostCommandResult(false, "Game process not found.");
             }
+            var ready = await Runtime.EnsureReadyAsync(process, cancellationToken);
+            if (!ready)
+                return new HostCommandResult(false, "Bridge is not connected.");
             var startedMessage = previewOnly ? "Preview: started." : (unpreviewOnly ? "UnPreview: started." : "Paint: started.");
             Log.Info(startedMessage);
             var payload = BridgePayloadBuilder.BuildPaintPayload(

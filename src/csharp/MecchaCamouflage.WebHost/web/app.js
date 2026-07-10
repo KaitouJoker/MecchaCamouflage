@@ -1,3 +1,25 @@
+function reportUiStartupFailure(kind, value) {
+  try {
+    const message = value instanceof Error ? value.message : String(value ?? "unknown JavaScript error");
+    window.chrome?.webview?.postMessage({
+      type: "uiStartupFailure",
+      kind,
+      message: message.slice(0, 2000)
+    });
+  } catch {
+    // A broken WebView bridge must not turn error reporting into another page error.
+  }
+}
+
+window.addEventListener("error", event => {
+  const location = event.filename ? ` (${event.filename}:${event.lineno}:${event.colno})` : "";
+  reportUiStartupFailure("error", `${event.message || "JavaScript error"}${location}`);
+});
+
+window.addEventListener("unhandledrejection", event => {
+  reportUiStartupFailure("unhandledrejection", event.reason);
+});
+
 const pending = new Map();
 const hotkeyKeys = [
   "app.startHotkey",
@@ -700,5 +722,6 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   }
   document.addEventListener("keydown", recordHotkeyFromEvent);
+  window.chrome.webview.postMessage({ type: "uiReady" });
   refresh().catch(error => showError(error.message || String(error)));
 });

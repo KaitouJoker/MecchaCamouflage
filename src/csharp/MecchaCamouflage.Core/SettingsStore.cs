@@ -20,11 +20,10 @@ public sealed class SettingsStore
 
     public AppSettings Load()
     {
-        var path = File.Exists(paths.ConfigPath) ? paths.ConfigPath : paths.LegacyConfigPath;
-        if (!File.Exists(path))
+        if (!File.Exists(paths.ConfigPath))
             return Clamp(new AppSettings());
 
-        var text = File.ReadAllText(path);
+        var text = File.ReadAllText(paths.ConfigPath);
         var root = JsonNode.Parse(text)?.AsObject();
         if (root is null)
             return Clamp(new AppSettings());
@@ -41,7 +40,7 @@ public sealed class SettingsStore
         settings.Opacity = ReadDouble(root, "opacity", settings.Opacity);
         if (RgbColor.TryParse(ReadString(root, "theme_color", settings.ThemeColor.ToHex()), out var theme))
             settings.ThemeColor = theme;
-        settings.StartHotkey = ReadString(root, "start_hotkey", ReadString(root, "paint_hotkey", settings.StartHotkey));
+        settings.StartHotkey = ReadString(root, "start_hotkey", settings.StartHotkey);
         settings.StopHotkey = ReadString(root, "stop_hotkey", settings.StopHotkey);
         settings.PreviewHotkey = ReadString(root, "preview_hotkey", settings.PreviewHotkey);
         settings.UnPreviewHotkey = ReadString(root, "unpreview_hotkey", settings.UnPreviewHotkey);
@@ -53,10 +52,10 @@ public sealed class SettingsStore
         paint.CoverageStepTexels = ReadDouble(root, "coverage_step_texels", paint.CoverageStepTexels);
         paint.SideSourceMaxUv = ReadDouble(root, "side_source_max_uv", paint.SideSourceMaxUv);
         paint.FrontBackSourceMaxUv = ReadDouble(root, "front_back_source_max_uv", paint.FrontBackSourceMaxUv);
-        paint.FrontRegionMode = ReadRegionMode(root, "front_region_mode", "enable_front_paint", paint.FrontRegionMode);
-        paint.SideRegionMode = ReadRegionMode(root, "side_region_mode", "enable_side_paint", paint.SideRegionMode);
-        paint.BackRegionMode = ReadRegionMode(root, "back_region_mode", "enable_back_paint", paint.BackRegionMode);
-        paint.AutoMaterial = ReadBool(root, "auto_material", ReadBool(root, "auto_material_properties", paint.AutoMaterial));
+        paint.FrontRegionMode = ReadRegionMode(root, "front_region_mode", paint.FrontRegionMode);
+        paint.SideRegionMode = ReadRegionMode(root, "side_region_mode", paint.SideRegionMode);
+        paint.BackRegionMode = ReadRegionMode(root, "back_region_mode", paint.BackRegionMode);
+        paint.AutoMaterial = ReadBool(root, "auto_material", paint.AutoMaterial);
         paint.Metallic = ReadDouble(root, "metallic", paint.Metallic);
         paint.Roughness = ReadDouble(root, "roughness", paint.Roughness);
         if (RgbColor.TryParse(ReadString(root, "fill_color", paint.FillColor.ToHex()), out var fill))
@@ -139,7 +138,6 @@ public sealed class SettingsStore
         side_region_mode = RegionModeText(settings.Paint.SideRegionMode),
         back_region_mode = RegionModeText(settings.Paint.BackRegionMode),
         auto_material = settings.Paint.AutoMaterial,
-        auto_material_properties = settings.Paint.AutoMaterial,
         metallic = settings.Paint.Metallic,
         roughness = settings.Paint.Roughness,
         fill_color = settings.Paint.FillColor.ToHex(),
@@ -154,13 +152,11 @@ public sealed class SettingsStore
         _ => "paint"
     };
 
-    private static RegionMode ReadRegionMode(JsonObject root, string key, string legacyBoolKey, RegionMode fallback)
+    private static RegionMode ReadRegionMode(JsonObject root, string key, RegionMode fallback)
     {
         var mode = ReadString(root, key, "");
         if (Enum.TryParse<RegionMode>(mode, true, out var parsed))
             return parsed;
-        if (root.TryGetPropertyValue(legacyBoolKey, out var legacy) && legacy is not null)
-            return legacy.GetValue<bool>() ? RegionMode.Paint : RegionMode.Fill;
         return fallback;
     }
 

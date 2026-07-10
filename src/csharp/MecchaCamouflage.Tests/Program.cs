@@ -1,16 +1,17 @@
 using System.Text.Json;
+using System.Buffers.Binary;
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
 using MecchaCamouflage.Controller;
 using MecchaCamouflage.Core;
 
 var tests = new List<(string Name, Action Run)>
 {
-    ("legacy false region migrates to fill", LegacyFalseRegionMigratesToFill),
     ("payload includes packed route and fill material", PayloadIncludesPackedRouteAndFillMaterial),
     ("settings clamp syncs packed batch delay", SettingsClampSyncsPackedBatchDelay),
     ("locales have complete keys", LocalesHaveCompleteKeys),
     ("color parser accepts rrggbb", ColorParserAcceptsHex),
-    ("runtime cleanup removes old hash dirs", RuntimeCleanupRemovesOldHashDirs),
-    ("runtime cleanup keeps loader and bridge dirs", RuntimeCleanupKeepsLoaderAndBridgeDirs),
     ("runtime log keeps repeated guard messages", RuntimeLogKeepsRepeatedGuardMessages),
     ("asset validation rejects stale ready cache", AssetValidationRejectsStaleReadyCache),
     ("copy if invalid repairs corrupt target", CopyIfInvalidRepairsCorruptTarget),
@@ -35,7 +36,15 @@ var tests = new List<(string Name, Action Run)>
     ("host session progress candidates use bridge state", HostSessionProgressCandidatesUseBridgeState),
     ("host session snapshot ignores pre-paint progress", HostSessionSnapshotIgnoresPrePaintProgress),
     ("host session warns when cancel has no active paint", HostSessionWarnsWhenCancelHasNoActivePaint),
-    ("host session counts native cancel jobs", HostSessionCountsNativeCancelJobs)
+    ("host session counts native cancel jobs", HostSessionCountsNativeCancelJobs),
+    ("bridge start block has a fixed portable layout", BridgeStartBlockHasFixedPortableLayout),
+    ("injector result requires matching bridge identity", InjectorResultRequiresMatchingBridgeIdentity),
+    ("bridge hello serializes and validates identity", BridgeHelloSerializesAndValidatesIdentity),
+    ("bridge client sends hello before the command", BridgeClientSendsHelloBeforeCommand),
+    ("runtime exposes exact PID bridge startup", RuntimeExposesExactPidBridgeStartup),
+    ("web startup lifecycle stabilizes after navigation and ui ready", WebStartupLifecycleStabilizesAfterNavigationAndUiReady),
+    ("direct bridge names avoid historical loader pattern", DirectBridgeNamesAvoidHistoricalLoaderPattern),
+    ("release packaging contains only direct bridge components", ReleasePackagingContainsOnlyDirectBridge)
 };
 
 var failed = 0;
@@ -54,26 +63,6 @@ foreach (var test in tests)
 }
 
 return failed == 0 ? 0 : 1;
-
-static void LegacyFalseRegionMigratesToFill()
-{
-    using var temp = new TempHome();
-    var paths = new AppPaths("test-version");
-    Directory.CreateDirectory(paths.VersionRoot);
-    File.WriteAllText(paths.LegacyConfigPath, """
-    {
-      "layout_version": 23,
-      "enable_front_paint": false,
-      "enable_side_paint": true,
-      "enable_back_paint": false
-    }
-    """);
-
-    var settings = new SettingsStore(paths).Load();
-    Assert(settings.Paint.FrontRegionMode == RegionMode.Fill, "front should migrate to fill");
-    Assert(settings.Paint.SideRegionMode == RegionMode.Paint, "side should migrate to paint");
-    Assert(settings.Paint.BackRegionMode == RegionMode.Fill, "back should migrate to fill");
-}
 
 static void PayloadIncludesPackedRouteAndFillMaterial()
 {
@@ -97,8 +86,10 @@ static void PayloadIncludesPackedRouteAndFillMaterial()
     Assert(tuning.GetProperty("server_batch_delay_ms").GetInt32() == 88, "server batch delay should be sent");
     Assert(tuning.GetProperty("fill_color").GetString() == "#F11111", "fill color missing");
     Assert(Math.Abs(tuning.GetProperty("fill_color_r").GetDouble() - (241.0 / 255.0)) < 0.00001, "fill red not normalized");
-    Assert(tuning.GetProperty("enable_front_paint").GetBoolean() == false, "compat front bool wrong");
-    Assert(tuning.GetProperty("enable_back_paint").GetBoolean(), "compat back bool wrong");
+    Assert(!tuning.TryGetProperty("enable_front_paint", out _), "legacy front bool must not be sent");
+    Assert(!tuning.TryGetProperty("enable_side_paint", out _), "legacy side bool must not be sent");
+    Assert(!tuning.TryGetProperty("enable_back_paint", out _), "legacy back bool must not be sent");
+    Assert(!tuning.TryGetProperty("auto_material_properties", out _), "legacy material key must not be sent");
     Assert(!tuning.TryGetProperty("adaptive_batch_enabled", out _), "payload should not send legacy adaptive tuning");
     Assert(!tuning.TryGetProperty("server_batch_limit", out _), "payload should not send legacy batch limit tuning");
 }
@@ -120,50 +111,6 @@ static void ColorParserAcceptsHex()
 {
     Assert(RgbColor.TryParse("F11111", out var color), "hex without # should parse");
     Assert(color.ToHex() == "#F11111", "hex roundtrip failed");
-}
-
-static void RuntimeCleanupRemovesOldHashDirs()
-{
-    using var temp = new TempHome();
-    var paths = new AppPaths("cleanup-test");
-    var keep = Path.Combine(paths.RuntimeBinDirectory, "keep");
-    var recent = Path.Combine(paths.RuntimeBinDirectory, "recent");
-    var old = Path.Combine(paths.RuntimeBinDirectory, "old");
-    Directory.CreateDirectory(keep);
-    Directory.CreateDirectory(recent);
-    Directory.CreateDirectory(old);
-    File.WriteAllText(Path.Combine(keep, "current.dll"), "");
-    File.WriteAllText(Path.Combine(recent, "bridge.dll"), "");
-    File.WriteAllText(Path.Combine(old, "bridge.dll"), "");
-    Directory.SetLastWriteTimeUtc(old, DateTime.UtcNow - TimeSpan.FromDays(30));
-
-    paths.CleanupRuntimeBinDirectories(keep, TimeSpan.FromDays(14), keepNewest: 3);
-
-    Assert(Directory.Exists(keep), "current hash dir should be kept");
-    Assert(Directory.Exists(recent), "recent hash dir should be kept");
-    Assert(!Directory.Exists(old), "old hash dir should be removed");
-}
-
-static void RuntimeCleanupKeepsLoaderAndBridgeDirs()
-{
-    using var temp = new TempHome();
-    var paths = new AppPaths("cleanup-multi-keep-test");
-    var loader = Path.Combine(paths.RuntimeBinDirectory, "loader-current");
-    var bridge = Path.Combine(paths.RuntimeBinDirectory, "bridge-current");
-    var old = Path.Combine(paths.RuntimeBinDirectory, "bridge-old");
-    Directory.CreateDirectory(loader);
-    Directory.CreateDirectory(bridge);
-    Directory.CreateDirectory(old);
-    File.WriteAllText(Path.Combine(loader, "bridge-loader.dll"), "");
-    File.WriteAllText(Path.Combine(bridge, "runtime-bridge.dll"), "");
-    File.WriteAllText(Path.Combine(old, "runtime-bridge.dll"), "");
-    Directory.SetLastWriteTimeUtc(old, DateTime.UtcNow - TimeSpan.FromDays(30));
-
-    paths.CleanupRuntimeBinDirectories([loader, bridge], TimeSpan.FromDays(14), keepNewest: 2);
-
-    Assert(Directory.Exists(loader), "loader runtime dir should be kept");
-    Assert(Directory.Exists(bridge), "bridge runtime dir should be kept");
-    Assert(!Directory.Exists(old), "old bridge runtime dir should be removed");
 }
 
 static void RuntimeLogKeepsRepeatedGuardMessages()
@@ -598,6 +545,200 @@ static void HostSessionCountsNativeCancelJobs()
 
     Assert(HostSession.CancelledPaintJobCount(none) == 0, "zero cancel counts should remain zero");
     Assert(HostSession.CancelledPaintJobCount(active) == 3, "active and queued cancel counts should be summed");
+}
+
+static void BridgeStartBlockHasFixedPortableLayout()
+{
+    var instanceId = Guid.Parse("00112233-4455-6677-8899-aabbccddeeff");
+    var token = Enumerable.Range(0, BridgeStartBlockV1.TokenLength).Select(value => (byte)value).ToArray();
+    var hash = Enumerable.Range(0, BridgeStartBlockV1.HashLength).Select(value => (byte)(255 - value)).ToArray();
+    var source = BridgeStartBlockV1.Create(4242, instanceId, token, hash);
+
+    var bytes = source.Serialize();
+
+    Assert(bytes.Length == BridgeStartBlockV1.Size, "start block size changed");
+    Assert(BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(0, 4)) == BridgeStartBlockV1.Magic, "magic offset changed");
+    Assert(BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(4, 4)) == BridgeStartBlockV1.Size, "size offset changed");
+    Assert(BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(12, 4)) == 4242, "pid offset changed");
+    Assert(Convert.ToHexString(bytes.AsSpan(16, 16)).ToLowerInvariant() == "00112233445566778899aabbccddeeff", "GUID must use RFC byte order");
+    Assert(bytes.AsSpan(32, 32).SequenceEqual(token), "token offset changed");
+    Assert(bytes.AsSpan(64, 32).SequenceEqual(hash), "hash offset changed");
+    Assert(BridgeStartBlockV1.TryDeserialize(bytes, out var parsed, out var error), error);
+    Assert(parsed.ExpectedPid == 4242 && parsed.InstanceId == instanceId, "start block did not round-trip");
+    Assert(parsed.ConnectionToken.SequenceEqual(token), "token did not round-trip");
+    Assert(parsed.ExpectedBridgeHash.SequenceEqual(hash), "hash did not round-trip");
+}
+
+static void InjectorResultRequiresMatchingBridgeIdentity()
+{
+    var instanceId = Guid.Parse("00112233-4455-6677-8899-aabbccddeeff");
+    var hash = string.Concat(Enumerable.Repeat("ab", 32));
+    var raw = $$"""
+    {"phase":"open_process","success":true,"pid":4242}
+    {"event":"result","protocol":1,"success":true,"state":"listening","pid":4242,"instance_id":"{{instanceId:N}}","bridge_hash":"{{hash}}","port":54321,"win32":0,"winsock":0}
+    """;
+
+    Assert(InjectorResultV1.TryParseFinal(raw, out var result, out var error), error);
+    Assert(result.Matches(4242, instanceId, hash), "matching result should be accepted");
+    Assert(!result.Matches(4243, instanceId, hash), "wrong PID must be rejected");
+    Assert(!result.Matches(4242, Guid.NewGuid(), hash), "wrong instance GUID must be rejected");
+    Assert(!result.Matches(4242, instanceId, string.Concat(Enumerable.Repeat("cd", 32))), "wrong hash must be rejected");
+}
+
+static void BridgeHelloSerializesAndValidatesIdentity()
+{
+    var instanceId = Guid.Parse("00112233-4455-6677-8899-aabbccddeeff");
+    var token = Enumerable.Range(0, BridgeStartBlockV1.TokenLength).Select(value => (byte)value).ToArray();
+    var hash = string.Concat(Enumerable.Repeat("ab", 32));
+    var endpoint = new BridgeEndpoint("127.0.0.1", 54321, instanceId, token, hash, BridgeProtocolV1.Version);
+    var hello = BridgeProtocolV1.CreateHello(endpoint);
+    using var request = JsonDocument.Parse(hello);
+    Assert(request.RootElement.GetProperty("type").GetString() == "hello", "hello type missing");
+    Assert(request.RootElement.GetProperty("instance_id").GetString() == instanceId.ToString("N"), "hello GUID missing");
+    Assert(request.RootElement.GetProperty("token").GetString() == Convert.ToHexString(token).ToLowerInvariant(), "hello token missing");
+
+    var reply = JsonSerializer.Serialize(new
+    {
+        success = true,
+        stage = "hello",
+        message = "ok",
+        metadata = new { pid = 4242, instance_id = instanceId.ToString("N"), bridge_hash = hash, protocol_version = 1 }
+    });
+    Assert(BridgeProtocolV1.TryValidateHelloReply(reply, endpoint, 4242, out _, out var error), error);
+    Assert(!BridgeProtocolV1.TryValidateHelloReply(reply, endpoint, 4243, out _, out _), "wrong PID hello must be rejected");
+}
+
+static void BridgeClientSendsHelloBeforeCommand() => BridgeClientSendsHelloBeforeCommandAsync().GetAwaiter().GetResult();
+
+static async Task BridgeClientSendsHelloBeforeCommandAsync()
+{
+    var instanceId = Guid.Parse("00112233-4455-6677-8899-aabbccddeeff");
+    var token = Enumerable.Range(0, BridgeStartBlockV1.TokenLength).Select(value => (byte)value).ToArray();
+    var hash = string.Concat(Enumerable.Repeat("ab", 32));
+    using var listener = new TcpListener(IPAddress.Loopback, 0);
+    listener.Start();
+    var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+    var endpoint = new BridgeEndpoint("127.0.0.1", port, instanceId, token, hash, BridgeProtocolV1.Version);
+    var commandAfterHello = "";
+    var server = Task.Run(async () =>
+    {
+        using var accepted = await listener.AcceptTcpClientAsync();
+        await using var stream = accepted.GetStream();
+        using var reader = new StreamReader(stream, Encoding.UTF8, leaveOpen: true);
+        await using var writer = new StreamWriter(stream, new UTF8Encoding(false), leaveOpen: true) { AutoFlush = true };
+        var hello = await reader.ReadLineAsync();
+        using var helloDocument = JsonDocument.Parse(hello ?? "");
+        Assert(helloDocument.RootElement.GetProperty("type").GetString() == "hello", "client must send hello first");
+        Assert(helloDocument.RootElement.GetProperty("token").GetString() == Convert.ToHexString(token).ToLowerInvariant(), "client hello token mismatch");
+        await writer.WriteLineAsync(JsonSerializer.Serialize(new
+        {
+            success = true,
+            stage = "hello",
+            message = "ok",
+            metadata = new { pid = 4242, instance_id = instanceId.ToString("N"), bridge_hash = hash, protocol_version = 1 }
+        }));
+        commandAfterHello = await reader.ReadLineAsync() ?? "";
+        await writer.WriteLineAsync("{\"success\":true,\"stage\":\"ping\",\"message\":\"pong\",\"metadata\":{\"pid\":4242}}");
+    });
+
+    var reply = await new BridgeClient(endpoint, 4242, TimeSpan.FromSeconds(2)).PingAsync();
+    await server;
+    Assert(reply.Ok && reply.Success, "authenticated ping should succeed");
+    Assert(commandAfterHello == "{\"type\":\"ping\"}", "application command must follow hello on the same connection");
+
+    using var rejectingListener = new TcpListener(IPAddress.Loopback, 0);
+    rejectingListener.Start();
+    var rejectingPort = ((IPEndPoint)rejectingListener.LocalEndpoint).Port;
+    var rejectingEndpoint = new BridgeEndpoint("127.0.0.1", rejectingPort, instanceId, token, hash, BridgeProtocolV1.Version);
+    var rejectedCommand = "sent";
+    var rejectingServer = Task.Run(async () =>
+    {
+        using var accepted = await rejectingListener.AcceptTcpClientAsync();
+        await using var stream = accepted.GetStream();
+        using var reader = new StreamReader(stream, Encoding.UTF8, leaveOpen: true);
+        await using var writer = new StreamWriter(stream, new UTF8Encoding(false), leaveOpen: true) { AutoFlush = true };
+        _ = await reader.ReadLineAsync();
+        await writer.WriteLineAsync("{\"success\":false,\"stage\":\"hello_rejected\",\"message\":\"token rejected\"}");
+        rejectedCommand = await reader.ReadLineAsync() ?? "";
+    });
+
+    var rejected = await new BridgeClient(rejectingEndpoint, 4242, TimeSpan.FromSeconds(2)).PingAsync();
+    await rejectingServer;
+    Assert(!rejected.Ok && rejected.Stage == "hello_error", "rejected hello must stop the request");
+    Assert(rejectedCommand.Length == 0, "client must not send an application command after a rejected token");
+}
+
+static void RuntimeExposesExactPidBridgeStartup()
+{
+    var byPid = typeof(RuntimeBridgeService).GetMethod(
+        nameof(RuntimeBridgeService.EnsureReadyAsync),
+        [typeof(int), typeof(CancellationToken)]);
+    var byProcess = typeof(RuntimeBridgeService).GetMethod(
+        nameof(RuntimeBridgeService.EnsureReadyAsync),
+        [typeof(System.Diagnostics.Process), typeof(CancellationToken)]);
+
+    Assert(byPid is not null, "runtime must expose exact PID startup");
+    Assert(byProcess is not null, "runtime must accept a caller-selected Process");
+}
+
+static void WebStartupLifecycleStabilizesAfterNavigationAndUiReady()
+{
+    var lifecycle = new WebViewStartupLifecycle();
+    var first = lifecycle.Begin();
+
+    Assert(lifecycle.RegisterInitialNavigation(first, 101), "initial navigation must be registered");
+    Assert(!lifecycle.IsInitialNavigation(first, 102), "later navigations must not be treated as startup");
+    Assert(!lifecycle.MarkNavigationSucceeded(first, 102), "a non-startup navigation must not stabilize the window");
+    Assert(!lifecycle.MarkNavigationSucceeded(first, 101), "navigation alone must not stabilize the window");
+    Assert(lifecycle.MarkUiReady(first), "uiReady after successful navigation must request one stabilization");
+    Assert(!lifecycle.MarkUiReady(first), "duplicate uiReady must not queue another stabilization");
+
+    var second = lifecycle.Begin();
+    Assert(!lifecycle.RegisterInitialNavigation(first, 303), "stale WebView generations must not register navigation");
+    Assert(lifecycle.RegisterInitialNavigation(second, 202), "replacement WebView must register its own startup navigation");
+    Assert(!lifecycle.MarkUiReady(first), "stale WebView generations must be ignored");
+    Assert(!lifecycle.MarkUiReady(second), "uiReady alone must not stabilize the window");
+    Assert(lifecycle.MarkNavigationSucceeded(second, 202), "navigation after uiReady must request one stabilization");
+}
+
+static void DirectBridgeNamesAvoidHistoricalLoaderPattern()
+{
+    var hash = string.Concat(Enumerable.Repeat("0123456789abcdef", 4));
+    var name = BridgeInstanceNaming.CreateBridgeFileName(hash, Guid.Parse("00112233-4455-6677-8899-aabbccddeeff"));
+    Assert(name.StartsWith("meccha-direct-bridge-v1-", StringComparison.Ordinal), "direct bridge prefix missing");
+    Assert(name.Contains(hash, StringComparison.Ordinal), "direct bridge must include its full build hash");
+    Assert(!name.Contains("runtime-bridge", StringComparison.OrdinalIgnoreCase), "historical loader pattern must not be used");
+}
+
+static void ReleasePackagingContainsOnlyDirectBridge()
+{
+    var root = FindRepositoryRoot();
+    var build = File.ReadAllText(Path.Combine(root, "scripts", "build.ps1"));
+    var project = File.ReadAllText(Path.Combine(root, "src", "csharp", "MecchaCamouflage.WebHost", "MecchaCamouflage.WebHost.csproj"));
+    var workflow = File.ReadAllText(Path.Combine(root, ".github", "workflows", "ci.yml"));
+    var directDoc = Path.Combine(root, "docs", "runtime-direct-bridge.md");
+    var oldLoaderSource = Path.Combine(root, "src", "native", "loader", "loader.cpp");
+    var oldLoaderAbi = Path.Combine(root, "src", "native", "include", "bridge_loader_abi.hpp");
+
+    Assert(!build.Contains("bridge-loader.dll", StringComparison.OrdinalIgnoreCase), "build must not produce a loader DLL");
+    Assert(!project.Contains("bridge-loader.dll", StringComparison.OrdinalIgnoreCase), "single EXE must not embed a loader DLL");
+    Assert(workflow.Contains("bridge loader must not be packaged", StringComparison.OrdinalIgnoreCase), "CI must reject a packaged loader DLL");
+    Assert(!File.Exists(oldLoaderSource), "obsolete loader source must be removed");
+    Assert(!File.Exists(oldLoaderAbi), "obsolete loader ABI must be removed");
+    Assert(File.Exists(directDoc), "direct bridge injection must have one authoritative design document");
+    Assert(!build.Contains("FixedVersionRuntime", StringComparison.OrdinalIgnoreCase), "build must not download a Fixed WebView2 Runtime");
+    Assert(!project.Contains("MecchaWebView2RuntimeDir", StringComparison.OrdinalIgnoreCase), "single EXE must not embed a Fixed WebView2 Runtime");
+    Assert(project.Contains("webview2-bootstrapper", StringComparison.OrdinalIgnoreCase), "single EXE must embed the Evergreen bootstrapper");
+}
+
+static string FindRepositoryRoot()
+{
+    for (var directory = new DirectoryInfo(Directory.GetCurrentDirectory()); directory is not null; directory = directory.Parent)
+    {
+        if (File.Exists(Path.Combine(directory.FullName, "scripts", "build.ps1")))
+            return directory.FullName;
+    }
+    throw new DirectoryNotFoundException("Repository root could not be found.");
 }
 
 static void Assert(bool condition, string message)

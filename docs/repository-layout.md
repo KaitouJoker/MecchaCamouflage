@@ -17,11 +17,10 @@ src/
   native/
     bridge/
       bridge.cpp
-    loader/
-      loader.cpp
     injector/
       injector.cpp
     include/
+      direct_bridge_abi.hpp
       sdk.hpp
 ```
 
@@ -74,7 +73,7 @@ Expected contents:
 
 - `.build/bin/`: runnable development EXE from `make build`
 - `.build/obj/`: native object files and native package inputs
-- `.build/cache/`: downloaded build caches such as WebView2 Fixed Runtime
+- `.build/cache/`: downloaded build caches such as the WebView2 Evergreen bootstrapper
 - `.build/dotnet/`: .NET `bin` and `obj` output redirected from source projects
 - `.build/tools/`: generated helper tools
 - `.build/tmp/`: scratch directories
@@ -123,19 +122,21 @@ Important paths:
 
 ```text
 %LOCALAPPDATA%\MecchaCamouflage\versions\<version>\
-%LOCALAPPDATA%\MecchaCamouflage\bridge-loaders\
+%LOCALAPPDATA%\MecchaCamouflage\bridge-instances\
 %LOCALAPPDATA%\MecchaCamouflage\bridge-state\
 ```
 
-Versioned app logs, diagnostics, extracted package assets, and WebView2 user
-data live under `versions/<version>/`.
+Versioned app logs, diagnostics, and extracted package assets live under
+`versions/<version>/`. WebView2 user data lives in the stable shared folder
+`%LOCALAPPDATA%\MecchaCamouflage\webview2-user-data\` so it is not tied to a
+single-file extraction directory or app version.
 
 Bridge live state, such as progress snapshots tied to an injected bridge in the
 game process, lives under `bridge-state/`.
 
-Stable injected loader DLLs live under `bridge-loaders/` by loader content hash.
-Do not move loader DLLs under `versions/<version>/`; bridge-only rebuilds must
-remain switchable through an already loaded loader.
+Each direct bridge injection stages a uniquely named DLL and its profiles under
+`bridge-instances/<instance-guid>/`. Older bridge instances may remain loaded
+in a game process; the current host only connects to the instance it started.
 
 Repository `src/` and app LocalAppData runtime state are intentionally separate
 concepts.
