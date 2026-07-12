@@ -12,9 +12,12 @@ var tests = new List<(string Name, Action Run)>
     ("legacy default brush migrates to two-pass defaults", LegacyDefaultBrushMigratesToTwoPassDefaults),
     ("legacy brush migration handles missing layout version", LegacyBrushMigrationHandlesMissingLayoutVersion),
     ("legacy explicit brush migrates to detail brush", LegacyExplicitBrushMigratesToDetailBrush),
+    ("existing explicit Brush 1 value is preserved", ExistingExplicitBrush1ValueIsPreserved),
     ("two-pass brush settings clamp to supported ranges", TwoPassBrushSettingsClampToSupportedRanges),
     ("paint defaults expose fastest batch sliders", PaintDefaultsExposeFastestBatchSliders),
+    ("app defaults use 99 percent opacity", AppDefaultsUse99PercentOpacity),
     ("payload sends the two-pass brush pipeline", PayloadSendsTwoPassBrushPipeline),
+    ("native accepts the Brush 1 configured range", NativeAcceptsBrush1ConfiguredRange),
     ("payload includes packed route and fill material", PayloadIncludesPackedRouteAndFillMaterial),
     ("payload sends batch slider values", PayloadSendsBatchSliderValues),
     ("pre-mode pacing preserves saved delay", PreModePacingPreservesSavedDelay),
@@ -29,7 +32,15 @@ var tests = new List<(string Name, Action Run)>
     ("copy if invalid repairs corrupt target", CopyIfInvalidRepairsCorruptTarget),
     ("research event-watch sidecar uses exact staged bridge path", ResearchEventWatchSidecarUsesExactStagedBridgePath),
     ("research texture probe is explicitly dispatched", ResearchTextureProbeIsExplicitlyDispatched),
+    ("native research replay plan preserves actual pass strokes", NativeResearchReplayPlanPreservesActualPassStrokes),
+    ("research runner can isolate one planned replay stroke", ResearchRunnerCanIsolateOnePlannedReplayStroke),
     ("research runner records two-pass brushes and packed local queue mode", ResearchRunnerRecordsTwoPassBrushesAndPackedLocalQueueMode),
+    ("UV replay atlas separates passes and packed radii", UvReplayAtlasSeparatesPassesAndPackedRadii),
+    ("research replay sidecar is staged as a UV PNG", ResearchReplaySidecarIsStagedAsUvPng),
+    ("research replay sidecar refuses a non-successful paint", ResearchReplaySidecarRefusesNonSuccessfulPaint),
+    ("research texture probes stage an actual delta PNG", ResearchTextureProbesStageActualDeltaPng),
+    ("research texture probes reject a component switch", ResearchTextureProbesRejectComponentSwitch),
+    ("research texture probes reject an unexpected discovery receiver", ResearchTextureProbesRejectUnexpectedDiscoveryReceiver),
     ("diagnostic summary includes file not found details", DiagnosticSummaryIncludesFileNotFoundDetails),
     ("diagnostics log write is best effort when file is locked", DiagnosticsLogWriteIsBestEffortWhenFileLocked),
     ("runtime log write is best effort when file is locked", RuntimeLogWriteIsBestEffortWhenFileLocked),
@@ -39,8 +50,10 @@ var tests = new List<(string Name, Action Run)>
     ("settings detect supported system language", SettingsDetectSupportedSystemLanguage),
     ("ui snapshot exposes two-pass brushes and batch sliders", UiSnapshotExposesTwoPassBrushesAndBatchSliders),
     ("web ui exposes two-pass brush sliders", WebUiExposesTwoPassBrushSliders),
+    ("web UI keeps theme color on readonly range and checkbox controls", WebUiKeepsThemeColorOnReadonlyControls),
     ("web ui renders pass progress and total eta", WebUiRendersPassProgressAndTotalEta),
     ("global hotkeys suppress key repeat", GlobalHotkeysSuppressKeyRepeat),
+    ("global hotkeys wait for bridge attach and report OS failure", GlobalHotkeysWaitForBridgeAttachAndReportOsFailure),
     ("native progress exposes replay pass state", NativeProgressExposesReplayPassState),
     ("hotkey validation rejects duplicates", HotkeyValidationRejectsDuplicates),
     ("host session reset restores setting default", HostSessionResetRestoresDefault),
@@ -61,19 +74,24 @@ var tests = new List<(string Name, Action Run)>
     ("host session logs each pass transition once per job", HostSessionLogsEachPassTransitionOnce),
     ("host session snapshot ignores pre-paint progress", HostSessionSnapshotIgnoresPrePaintProgress),
     ("host session warns when cancel has no active paint", HostSessionWarnsWhenCancelHasNoActivePaint),
+    ("host session pre-dispatch cancel prevents a late paint send", HostSessionPreDispatchCancelPreventsLatePaintSend),
+    ("host session retries cancel across native admission", HostSessionRetriesCancelAcrossNativeAdmission),
     ("host session counts native cancel jobs", HostSessionCountsNativeCancelJobs),
+    ("host session keeps cancellation pending until native terminal reply", HostSessionKeepsCancellationPendingUntilNativeTerminalReply),
     ("bridge start block has a fixed portable layout", BridgeStartBlockHasFixedPortableLayout),
     ("injector result requires matching bridge identity", InjectorResultRequiresMatchingBridgeIdentity),
     ("bridge hello serializes and validates identity", BridgeHelloSerializesAndValidatesIdentity),
     ("bridge client sends hello before the command", BridgeClientSendsHelloBeforeCommand),
     ("bridge shutdown client outlives native quiescence budget", BridgeShutdownClientOutlivesNativeQuiescenceBudget),
+    ("native stop paths latch in-flight paint admission", NativeStopPathsLatchInFlightPaintAdmission),
     ("bridge shutdown permits a fresh instance", BridgeShutdownPermitsFreshInstance),
     ("stale bridge shutdown preserves a replacement instance", StaleBridgeShutdownPreservesReplacementInstance),
     ("stale bridge request preserves replacement connection state", StaleBridgeRequestPreservesReplacementConnectionState),
     ("runtime exposes exact PID bridge startup", RuntimeExposesExactPidBridgeStartup),
     ("web startup lifecycle stabilizes after navigation and ui ready", WebStartupLifecycleStabilizesAfterNavigationAndUiReady),
     ("direct bridge names avoid historical loader pattern", DirectBridgeNamesAvoidHistoricalLoaderPattern),
-    ("release packaging contains only direct bridge components", ReleasePackagingContainsOnlyDirectBridge)
+    ("release packaging contains only direct bridge components", ReleasePackagingContainsOnlyDirectBridge),
+    ("release build excludes research runner and devtools", ReleaseBuildExcludesResearchRunnerAndDevTools)
 };
 
 var failed = 0;
@@ -97,7 +115,7 @@ static void PaintDefaultsExposeCoarseAndDetailBrushes()
 {
     var paint = new AppSettings().Paint;
 
-    Assert(Math.Abs(paint.Brush1SizeTexels - 20.0) < 0.000001, "brush 1 should default to the fastest coarse size");
+    Assert(Math.Abs(paint.Brush1SizeTexels - 30.0) < 0.000001, "brush 1 should default to the largest coarse size");
     Assert(Math.Abs(paint.Brush2SizeTexels - 10.0) < 0.000001, "brush 2 should default to the largest detail size");
     Assert(Math.Abs(paint.CoverageStepTexels - paint.Brush2SizeTexels) < 0.000001, "coverage compatibility should follow brush 2");
 }
@@ -116,13 +134,13 @@ static void LegacyDefaultBrushMigratesToTwoPassDefaults()
 
     var settings = new SettingsStore(paths).Load();
 
-    Assert(Math.Abs(settings.Paint.Brush1SizeTexels - 20.0) < 0.000001, "legacy settings should gain the coarse brush default");
+    Assert(Math.Abs(settings.Paint.Brush1SizeTexels - 30.0) < 0.000001, "legacy settings without brush 1 should gain the coarse brush default");
     Assert(Math.Abs(settings.Paint.Brush2SizeTexels - 10.0) < 0.000001, "the historical default 5 should migrate to the new detail default 10");
     Assert(Math.Abs(settings.Paint.CoverageStepTexels - 10.0) < 0.000001, "coverage compatibility should migrate with brush 2");
 
     new SettingsStore(paths).Save(settings);
     using var saved = JsonDocument.Parse(File.ReadAllText(paths.ConfigPath));
-    Assert(Math.Abs(saved.RootElement.GetProperty("brush_1_size_texels").GetDouble() - 20.0) < 0.000001, "brush 1 should persist with its new key");
+    Assert(Math.Abs(saved.RootElement.GetProperty("brush_1_size_texels").GetDouble() - 30.0) < 0.000001, "brush 1 should persist with its new default");
     Assert(Math.Abs(saved.RootElement.GetProperty("brush_2_size_texels").GetDouble() - 10.0) < 0.000001, "brush 2 should persist with its new key");
     Assert(!saved.RootElement.TryGetProperty("stroke_size_texels", out _), "the legacy brush key should not be persisted");
 }
@@ -157,29 +175,50 @@ static void LegacyExplicitBrushMigratesToDetailBrush()
 
     var settings = new SettingsStore(paths).Load();
 
-    Assert(Math.Abs(settings.Paint.Brush1SizeTexels - 20.0) < 0.000001, "legacy explicit settings should gain the coarse brush default");
+    Assert(Math.Abs(settings.Paint.Brush1SizeTexels - 30.0) < 0.000001, "legacy explicit settings should gain the coarse brush default");
     Assert(Math.Abs(settings.Paint.Brush2SizeTexels - 7.5) < 0.000001, "a legacy explicit value should migrate to brush 2");
     Assert(Math.Abs(settings.Paint.CoverageStepTexels - 7.5) < 0.000001, "coverage compatibility should follow the migrated brush 2");
+}
+
+static void ExistingExplicitBrush1ValueIsPreserved()
+{
+    using var temp = new TempHome();
+    var paths = new AppPaths("brush-1-explicit-value-preservation-test");
+    Directory.CreateDirectory(paths.ConfigDirectory);
+    File.WriteAllText(paths.ConfigPath, """
+    {
+      "layout_version": 37,
+      "brush_1_size_texels": 20.0,
+      "brush_2_size_texels": 7.5
+    }
+    """);
+
+    var settings = new SettingsStore(paths).Load();
+
+    Assert(Math.Abs(settings.Paint.Brush1SizeTexels - 20.0) < 0.000001,
+        "an explicit legacy Brush 1 selection must not be silently changed to the new default");
+    Assert(Math.Abs(settings.Paint.Brush2SizeTexels - 7.5) < 0.000001,
+        "preserving Brush 1 must not disturb Brush 2");
 }
 
 static void TwoPassBrushSettingsClampToSupportedRanges()
 {
     var settings = new AppSettings();
-    settings.Paint.Brush1SizeTexels = 12.0;
+    settings.Paint.Brush1SizeTexels = 5.0;
     settings.Paint.Brush2SizeTexels = 3.0;
     settings.Paint.CoverageStepTexels = 99.0;
 
     var clamped = SettingsStore.Clamp(settings);
 
-    Assert(Math.Abs(clamped.Paint.Brush1SizeTexels - 15.0) < 0.000001, "brush 1 should clamp to 15 at the lower bound");
+    Assert(Math.Abs(clamped.Paint.Brush1SizeTexels - 10.0) < 0.000001, "brush 1 should clamp to 10 at the lower bound");
     Assert(Math.Abs(clamped.Paint.Brush2SizeTexels - 5.0) < 0.000001, "brush 2 should clamp to 5 at the lower bound");
     Assert(Math.Abs(clamped.Paint.CoverageStepTexels - 5.0) < 0.000001, "coverage compatibility should follow the clamped brush 2");
 
-    settings.Paint.Brush1SizeTexels = 25.0;
+    settings.Paint.Brush1SizeTexels = 35.0;
     settings.Paint.Brush2SizeTexels = 15.0;
     clamped = SettingsStore.Clamp(settings);
 
-    Assert(Math.Abs(clamped.Paint.Brush1SizeTexels - 20.0) < 0.000001, "brush 1 should clamp to 20 at the upper bound");
+    Assert(Math.Abs(clamped.Paint.Brush1SizeTexels - 30.0) < 0.000001, "brush 1 should clamp to 30 at the upper bound");
     Assert(Math.Abs(clamped.Paint.Brush2SizeTexels - 10.0) < 0.000001, "brush 2 should clamp to 10 at the upper bound");
 }
 
@@ -189,6 +228,16 @@ static void PaintDefaultsExposeFastestBatchSliders()
 
     Assert(paint.PackedBatchLimit == 20, "batch limit should default to the observed maximum");
     Assert(paint.PackedBatchPacingMs == 50, "batch pacing should default to the fastest safe interval");
+}
+
+static void AppDefaultsUse99PercentOpacity()
+{
+    using var temp = new TempHome();
+    var defaults = new AppSettings();
+    var loaded = new SettingsStore(new AppPaths("opacity-default-test")).Load();
+
+    Assert(Math.Abs(defaults.Opacity - 0.99) < 0.000001, "a new app settings instance should default to 99 percent opacity");
+    Assert(Math.Abs(loaded.Opacity - 0.99) < 0.000001, "a new persisted settings file should inherit the 99 percent opacity default");
 }
 
 static void PayloadSendsTwoPassBrushPipeline()
@@ -206,6 +255,17 @@ static void PayloadSendsTwoPassBrushPipeline()
     Assert(tuning.GetProperty("brush_pipeline_version").GetInt32() == 2, "payload should select the two-pass planner");
     Assert(Math.Abs(tuning.GetProperty("stroke_size_texels").GetDouble() - 7.5) < 0.000001, "legacy stroke size should mirror brush 2");
     Assert(Math.Abs(tuning.GetProperty("coverage_step_texels").GetDouble() - 7.5) < 0.000001, "coverage compatibility should mirror brush 2");
+}
+
+static void NativeAcceptsBrush1ConfiguredRange()
+{
+    var bridge = File.ReadAllText(Path.Combine(
+        FindRepositoryRoot(),
+        "src", "native", "bridge", "bridge.cpp"));
+
+    Assert(bridge.Contains("json_number_field(request, \"brush_1_size_texels\", 30.0)", StringComparison.Ordinal) &&
+           bridge.Contains("10.0, 30.0", StringComparison.Ordinal),
+        "native paint payload parsing must preserve the configured 10-30 Brush 1 range");
 }
 
 static void PayloadIncludesPackedRouteAndFillMaterial()
@@ -535,11 +595,20 @@ static void BridgeMessagesAreUserFriendly()
         "internal no-resend route validation failed for this game build: main_module_build_identity_mismatch");
     var partialLocalFailure = HostSession.FriendlyBridgeMessage(
         "Paint strokes were submitted, but local rendering failed: internal_common_no_resend_exception. Do not retry automatically.");
+    var cancelledAfterSubmission = HostSession.FriendlyBridgeMessage(
+        "paint cancellation arrived after submission; the committed local queue drained");
+    var cancelledWithBoundedTail = HostSession.FriendlyBridgeMessage(
+        "paint cancellation stopped further submission; the committed local queue drained");
     var unsafeSampling = HostSession.FriendlyBridgeMessage("planner found unsafe color-transfer candidates in enabled regions; replay was blocked instead of skipping samples");
+    var localOnlyCompletion = HostSession.DescribePaintCompletion(completed, serverPaint: false);
+    var replicatedCompletion = HostSession.DescribePaintCompletion(completed, serverPaint: true);
 
     Assert(alreadyRunning == "Paint: already running.", "already-running message should be friendly");
     Assert(completed == "Paint: completed.", "completed message should be friendly");
     Assert(alreadyFriendlyCompleted == "Paint: completed.", "already-friendly completed message should be normalized");
+    Assert(localOnlyCompletion == "Paint: completed.", "non-replicated completion should retain the simple local message");
+    Assert(replicatedCompletion.Contains("joined clients may still be rendering", StringComparison.Ordinal),
+        "replicated completion must not claim that a joining client has already presented its final pixels");
     Assert(preview == "Preview: applied.", "preview message should be friendly");
     Assert(noPreview == "Preview: no active preview to restore.", "missing preview snapshot should be a guard warning");
     Assert(contextChanged == "Paint: stopped because the game paint component changed.", "paint context change should be friendly");
@@ -547,6 +616,10 @@ static void BridgeMessagesAreUserFriendly()
     Assert(pawnUnavailable == "Paint: stopped because the local pawn is no longer available.", "pawn unavailable should be friendly");
     Assert(unsupportedNoResendRoute == "Paint: this game build is not supported.", "unsupported no-resend route should be friendly");
     Assert(partialLocalFailure == "Paint: strokes were sent, but local rendering failed. Do not retry automatically.", "partial local failure should warn against retry");
+    Assert(cancelledAfterSubmission == "Paint: canceled.",
+        "a late cancel that waited for the committed queue must remain a concise cancellation");
+    Assert(cancelledWithBoundedTail == "Paint: canceled.",
+        "a bounded local queue cancel should remain a concise cancellation");
     Assert(unsafeSampling == "Paint: blocked because the current mesh sampling was unsafe.", "unsafe mesh sampling should be friendly");
     Assert(!alreadyRunning.Contains("mesh", StringComparison.OrdinalIgnoreCase), "internal mesh wording should be hidden");
 }
@@ -611,12 +684,36 @@ static void WebUiExposesTwoPassBrushSliders()
     Assert(index.Contains("id=\"brush-1-size\"", StringComparison.Ordinal), "web UI should include the coarse brush slider");
     Assert(index.Contains("id=\"brush-2-size\"", StringComparison.Ordinal), "web UI should include the detail brush slider");
     Assert(index.IndexOf("id=\"brush-1-size\"", StringComparison.Ordinal) < index.IndexOf("id=\"brush-2-size\"", StringComparison.Ordinal), "brush 1 should appear to the left of brush 2");
-    Assert(index.Contains("min=\"15\" max=\"20\" step=\"0.5\"", StringComparison.Ordinal), "brush 1 should expose the 15-20 range");
+    Assert(index.Contains("min=\"10\" max=\"30\" step=\"0.5\"", StringComparison.Ordinal), "brush 1 should expose the 10-30 range");
     Assert(index.Contains("min=\"5\" max=\"10\" step=\"0.5\"", StringComparison.Ordinal), "brush 2 should expose the 5-10 range");
     Assert(app.Contains("paint.brush1SizeTexels", StringComparison.Ordinal), "web UI should bind brush 1");
     Assert(app.Contains("paint.brush2SizeTexels", StringComparison.Ordinal), "web UI should bind brush 2");
     Assert(!app.Contains("paint.brushSizeTexels", StringComparison.Ordinal), "web UI should not send the removed single-brush key");
     Assert(!app.Contains("coverageStepTexels", StringComparison.Ordinal), "web UI should not expose internal coverage compatibility");
+}
+
+static void WebUiKeepsThemeColorOnReadonlyControls()
+{
+    var repository = FindRepositoryRoot();
+    var app = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "app.js"));
+    var styles = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "styles.css"));
+
+    Assert(app.Contains("isThemeVisibleReadOnlyControl", StringComparison.Ordinal),
+        "the UI should distinguish passive themed controls from ordinary disabled inputs");
+    Assert(app.Contains("control.disabled = disabled && !themeVisibleReadonly", StringComparison.Ordinal),
+        "readonly range and checkbox controls should remain paint-enabled for Chromium accent rendering");
+    Assert(styles.Contains("input.theme-visible-readonly[type=\"range\"]", StringComparison.Ordinal),
+        "readonly sliders need a dedicated themed style");
+    Assert(styles.Contains("input.theme-visible-readonly[type=\"checkbox\"]", StringComparison.Ordinal),
+        "readonly checkboxes need a dedicated themed style");
+    Assert(styles.Contains("pointer-events: none", StringComparison.Ordinal),
+        "passive themed controls must not become interactive outside Edit mode");
+    Assert(app.Contains("function canEditControl(control = null)", StringComparison.Ordinal) &&
+           app.Contains("control?.getAttribute(\"aria-disabled\")", StringComparison.Ordinal) &&
+           app.Contains("if (!canEditControl(source))", StringComparison.Ordinal),
+        "passive themed controls must reject keyboard and label-driven edits outside Edit mode, including dependent locks");
+    Assert(app.Contains("document.activeElement === control", StringComparison.Ordinal),
+        "locking a previously focused themed control must blur it before keyboard input can change its visible value");
 }
 
 static void WebUiRendersPassProgressAndTotalEta()
@@ -645,6 +742,24 @@ static void GlobalHotkeysSuppressKeyRepeat()
         "global hotkeys must not be registered without the no-repeat modifier");
 }
 
+static void GlobalHotkeysWaitForBridgeAttachAndReportOsFailure()
+{
+    var repository = FindRepositoryRoot();
+    var mainForm = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "MainForm.cs"));
+
+    Assert(mainForm.Contains("RequestHotkeyRegistrationAfterAttach", StringComparison.Ordinal),
+        "hotkey registration should be scheduled only after bridge warmup has attached");
+    Assert(mainForm.Contains("Marshal.GetLastWin32Error()", StringComparison.Ordinal),
+        "a hotkey registration failure must retain the actionable Win32 error");
+    Assert(mainForm.Contains("Hotkey registration failed: {key} (Win32 error {error})", StringComparison.Ordinal),
+        "hotkey registration logs should name the key and OS error");
+    Assert(!mainForm.Contains("ApplyWindowSettings(\"handle-created\");\n        if (!TryRegisterHotkeys", StringComparison.Ordinal),
+        "the form must not try to register F1 before the controller bridge has attached");
+    Assert(mainForm.Contains("HandleResetAllSettings", StringComparison.Ordinal) &&
+           mainForm.Contains("ReconcileChangedHotkeys", StringComparison.Ordinal),
+        "reset flows must reconcile hotkeys with the current HWND instead of leaving stale registrations");
+}
+
 static void NativeProgressExposesReplayPassState()
 {
     var repository = FindRepositoryRoot();
@@ -657,6 +772,12 @@ static void NativeProgressExposesReplayPassState()
     Assert(bridge.Contains("g_paint_dispatch_message_pending", StringComparison.Ordinal), "scheduler wakeups should be coalesced");
     Assert(bridge.Contains("defer_user_cancel_until_receiver_drain", StringComparison.Ordinal),
         "a user cancel after paired submission should retain queue ownership until drain");
+    Assert(bridge.Contains("paired_local_queue_commit_count", StringComparison.Ordinal) &&
+           bridge.Contains("mesh_local_queue_capacity_wait", StringComparison.Ordinal),
+        "paired packed paint should cap local commitment before each server/local batch");
+    Assert(bridge.Contains("cancellation_stopped_further_submission", StringComparison.Ordinal) &&
+           bridge.Contains("job->local_packed_queue_strokes_submitted", StringComparison.Ordinal),
+        "a canceled bounded local tail must report only actually submitted strokes as rendered");
     Assert(bridge.Contains("force_terminal_idle_local_queue_drain", StringComparison.Ordinal),
         "shutdown and request timeout should be able to terminalize an idle drain safely");
     Assert(bridge.Contains("receiver_queue_idle_threshold_reached", StringComparison.Ordinal),
@@ -1063,6 +1184,106 @@ static void HostSessionWarnsWhenCancelHasNoActivePaint()
     Assert(!session.Log.Text.Contains("cancel failed", StringComparison.OrdinalIgnoreCase), "cancel guard should not be logged as a failure");
 }
 
+static void HostSessionPreDispatchCancelPreventsLatePaintSend()
+{
+    using var temp = new TempHome();
+    var session = new HostSession("host-pre-dispatch-cancel-test");
+    var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+    var runningProperty = typeof(HostSession).GetProperty(nameof(HostSession.PaintRunning))
+        ?? throw new InvalidOperationException("PaintRunning property missing");
+    var activeField = typeof(HostSession).GetField("activePaintGeneration", flags)
+        ?? throw new InvalidOperationException("activePaintGeneration field missing");
+    var nextField = typeof(HostSession).GetField("nextPaintGeneration", flags)
+        ?? throw new InvalidOperationException("nextPaintGeneration field missing");
+    runningProperty.SetValue(session, true);
+    activeField.SetValue(session, 1);
+    nextField.SetValue(session, 1);
+
+    var cancel = session.StopPaintAsync().GetAwaiter().GetResult();
+    Assert(cancel.Success && cancel.Message == "Paint: canceled.",
+        "cancel during bridge attach must latch locally instead of asking native to cancel a nonexistent job");
+
+    var tryBeginDispatch = typeof(HostSession).GetMethod("TryBeginPaintDispatch", flags)
+        ?? throw new InvalidOperationException("TryBeginPaintDispatch method missing");
+    var maySend = (bool)(tryBeginDispatch.Invoke(session, [1])
+        ?? throw new InvalidOperationException("TryBeginPaintDispatch returned null"));
+    Assert(!maySend, "a pre-dispatch cancel must forbid the later paint request from being sent");
+}
+
+static void HostSessionRetriesCancelAcrossNativeAdmission()
+{
+    HostSessionRetriesCancelAcrossNativeAdmissionAsync().GetAwaiter().GetResult();
+}
+
+static async Task HostSessionRetriesCancelAcrossNativeAdmissionAsync()
+{
+    using var temp = new TempHome();
+    var session = new HostSession("host-cancel-admission-race-test");
+    using var listener = new TcpListener(IPAddress.Loopback, 0);
+    listener.Start();
+    var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+    var instanceId = Guid.Parse("10234567-89ab-cdef-0123-456789abcdef");
+    var token = Enumerable.Range(1, BridgeStartBlockV1.TokenLength).Select(value => (byte)value).ToArray();
+    var hash = string.Concat(Enumerable.Repeat("cd", 32));
+    var target = TargetProcessIdentity.Create(4243, 1, Path.Combine(Path.GetTempPath(), "cancel-admission-game.exe"));
+    var instance = new BridgeInstance(target, instanceId, token, hash, "bridge.dll", "injector.exe", "progress.json");
+    instance.SetPort(port);
+    SetActiveBridge(session.Runtime, instance, connected: true);
+    SetHostPaintState(session, running: true, nativeMayBeRunning: false, activeGeneration: 1);
+
+    var server = Task.Run(async () =>
+    {
+        for (var request = 0; request < 2; ++request)
+        {
+            using var accepted = await listener.AcceptTcpClientAsync();
+            await using var stream = accepted.GetStream();
+            using var reader = new StreamReader(stream, Encoding.UTF8, leaveOpen: true);
+            await using var writer = new StreamWriter(stream, new UTF8Encoding(false), leaveOpen: true) { AutoFlush = true };
+            _ = await reader.ReadLineAsync();
+            await writer.WriteLineAsync(JsonSerializer.Serialize(new
+            {
+                success = true,
+                stage = "hello",
+                message = "ok",
+                metadata = new { pid = 4243, instance_id = instanceId.ToString("N"), bridge_hash = hash, protocol_version = 1 }
+            }));
+            var command = await reader.ReadLineAsync();
+            Assert(command == "{\"type\":\"cancel_paint\"}", "admission retry must preserve the authenticated cancel command");
+            var metadata = request == 0
+                ? "\"cancelled_active_paint_jobs\":0,\"cancelled_queued_paint_jobs\":0"
+                : "\"cancelled_active_paint_jobs\":1,\"cancelled_queued_paint_jobs\":0";
+            await writer.WriteLineAsync("{\"success\":true,\"stage\":\"paint_cancel_requested\",\"message\":\"paint cancel requested\",\"metadata\":{" + metadata + "}}");
+        }
+    });
+
+    var result = await session.StopPaintAsync().WaitAsync(TimeSpan.FromSeconds(3));
+    Assert(result.Success && result.Message == "Paint: cancel requested.",
+        "a zero-job early ACK must retry and return the concise pending cancellation state");
+    Assert(!session.Log.Text.Contains("no active paint", StringComparison.OrdinalIgnoreCase),
+        "the admission race must not produce a misleading no-active warning");
+    await server.WaitAsync(TimeSpan.FromSeconds(3));
+
+    static void SetHostPaintState(HostSession targetSession, bool running, bool nativeMayBeRunning, int activeGeneration)
+    {
+        var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        var runningProperty = typeof(HostSession).GetProperty(nameof(HostSession.PaintRunning))
+            ?? throw new InvalidOperationException("PaintRunning property missing");
+        var nativeField = typeof(HostSession).GetField("nativePaintMayBeRunning", flags)
+            ?? throw new InvalidOperationException("nativePaintMayBeRunning field missing");
+        var activeField = typeof(HostSession).GetField("activePaintGeneration", flags)
+            ?? throw new InvalidOperationException("activePaintGeneration field missing");
+        var nextField = typeof(HostSession).GetField("nextPaintGeneration", flags)
+            ?? throw new InvalidOperationException("nextPaintGeneration field missing");
+        var dispatchGenerationField = typeof(HostSession).GetField("paintRequestDispatchGeneration", flags)
+            ?? throw new InvalidOperationException("paintRequestDispatchGeneration field missing");
+        runningProperty.SetValue(targetSession, running);
+        nativeField.SetValue(targetSession, nativeMayBeRunning);
+        activeField.SetValue(targetSession, activeGeneration);
+        nextField.SetValue(targetSession, activeGeneration);
+        dispatchGenerationField.SetValue(targetSession, activeGeneration);
+    }
+}
+
 static void HostSessionCountsNativeCancelJobs()
 {
     var none = new BridgeReply(
@@ -1077,9 +1298,126 @@ static void HostSessionCountsNativeCancelJobs()
         "paint_cancel_requested",
         "paint cancel requested",
         """{"success":true,"metadata":{"cancelled_active_paint_jobs":1,"cancelled_queued_paint_jobs":2}}""");
+    var latched = new BridgeReply(
+        true,
+        true,
+        "paint_cancel_requested",
+        "paint cancel requested",
+        """{"success":true,"metadata":{"cancelled_active_paint_jobs":0,"cancelled_queued_paint_jobs":0,"cancel_latched_paint_request":true}}""");
 
     Assert(HostSession.CancelledPaintJobCount(none) == 0, "zero cancel counts should remain zero");
     Assert(HostSession.CancelledPaintJobCount(active) == 3, "active and queued cancel counts should be summed");
+    Assert(HostSession.NativePaintRequestCancellationLatched(latched),
+        "a native admission latch must distinguish an in-flight request from no active paint");
+}
+
+static void HostSessionKeepsCancellationPendingUntilNativeTerminalReply()
+{
+    HostSessionKeepsCancellationPendingUntilNativeTerminalReplyAsync().GetAwaiter().GetResult();
+}
+
+static async Task HostSessionKeepsCancellationPendingUntilNativeTerminalReplyAsync()
+{
+    using var temp = new TempHome();
+    var session = new HostSession("host-cancel-state-test");
+    using var listener = new TcpListener(IPAddress.Loopback, 0);
+    listener.Start();
+    var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+    var instanceId = Guid.Parse("01234567-89ab-cdef-0123-456789abcdef");
+    var token = Enumerable.Range(1, BridgeStartBlockV1.TokenLength).Select(value => (byte)value).ToArray();
+    var hash = string.Concat(Enumerable.Repeat("ab", 32));
+    var target = TargetProcessIdentity.Create(4242, 1, Path.Combine(Path.GetTempPath(), "cancel-state-game.exe"));
+    var instance = new BridgeInstance(target, instanceId, token, hash, "bridge.dll", "injector.exe", "progress.json");
+    instance.SetPort(port);
+    SetActiveBridge(session.Runtime, instance, connected: true);
+
+    var firstReceived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var secondReceived = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var releaseFirstReply = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var releaseSecondReply = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    var server = Task.Run(async () =>
+    {
+        for (var request = 0; request < 2; ++request)
+        {
+            using var accepted = await listener.AcceptTcpClientAsync();
+            await using var stream = accepted.GetStream();
+            using var reader = new StreamReader(stream, Encoding.UTF8, leaveOpen: true);
+            await using var writer = new StreamWriter(stream, new UTF8Encoding(false), leaveOpen: true) { AutoFlush = true };
+            _ = await reader.ReadLineAsync();
+            await writer.WriteLineAsync(JsonSerializer.Serialize(new
+            {
+                success = true,
+                stage = "hello",
+                message = "ok",
+                metadata = new { pid = 4242, instance_id = instanceId.ToString("N"), bridge_hash = hash, protocol_version = 1 }
+            }));
+            var command = await reader.ReadLineAsync();
+            Assert(command == "{\"type\":\"cancel_paint\"}", "cancel command should be authenticated before its reply");
+            if (request == 0)
+            {
+                firstReceived.TrySetResult();
+                await releaseFirstReply.Task;
+            }
+            else
+            {
+                secondReceived.TrySetResult();
+                await releaseSecondReply.Task;
+            }
+            await writer.WriteLineAsync("{\"success\":true,\"stage\":\"paint_cancel_requested\",\"message\":\"paint cancel requested\",\"metadata\":{\"cancelled_active_paint_jobs\":1,\"cancelled_queued_paint_jobs\":0}}");
+        }
+    });
+
+    SetHostPaintState(session, running: true, nativeMayBeRunning: false, activeGeneration: 1);
+    var firstCancel = session.StopPaintAsync();
+    await firstReceived.Task.WaitAsync(TimeSpan.FromSeconds(2));
+    var secondCancel = await session.StopPaintAsync();
+    Assert(secondCancel.Success && secondCancel.Message == "Paint: cancel requested.",
+        "a second stop while the ACK is in flight should remain local");
+    releaseFirstReply.SetResult();
+    var firstResult = await firstCancel;
+    Assert(firstResult.Success && firstResult.Message == "Paint: cancel requested.",
+        "a controller-owned ACK must retain the concise pending cancellation state until its terminal reply");
+
+    // Model the original paint request terminalizing before a later independently-sent cancel
+    // ACK returns. The late ACK must not revive the pending state or block the next paint.
+    SetHostPaintState(session, running: true, nativeMayBeRunning: false, activeGeneration: 2);
+    var racedCancel = session.StopPaintAsync();
+    await secondReceived.Task.WaitAsync(TimeSpan.FromSeconds(2));
+    SetHostPaintState(session, running: false, nativeMayBeRunning: false, activeGeneration: 0);
+    releaseSecondReply.SetResult();
+    var racedResult = await racedCancel;
+    Assert(racedResult.Success && racedResult.Message.Contains("terminalized", StringComparison.Ordinal),
+        "a late cancel ACK must report the already-terminal paint without reviving it");
+    var noActive = await session.StopPaintAsync();
+    Assert(!noActive.Success && noActive.Message == "Paint: no active paint to cancel.",
+        "a late ACK must leave the next paint/cancel state unblocked");
+    await server;
+
+    static void SetHostPaintState(HostSession targetSession, bool running, bool nativeMayBeRunning, int activeGeneration)
+    {
+        var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+        var runningProperty = typeof(HostSession).GetProperty(nameof(HostSession.PaintRunning))
+            ?? throw new InvalidOperationException("PaintRunning property missing");
+        var nativeField = typeof(HostSession).GetField("nativePaintMayBeRunning", flags)
+            ?? throw new InvalidOperationException("nativePaintMayBeRunning field missing");
+        var activeField = typeof(HostSession).GetField("activePaintGeneration", flags)
+            ?? throw new InvalidOperationException("activePaintGeneration field missing");
+        var nextField = typeof(HostSession).GetField("nextPaintGeneration", flags)
+            ?? throw new InvalidOperationException("nextPaintGeneration field missing");
+        var cancelStateField = typeof(HostSession).GetField("cancelState", flags)
+            ?? throw new InvalidOperationException("cancelState field missing");
+        var cancelGenerationField = typeof(HostSession).GetField("cancelPaintGeneration", flags)
+            ?? throw new InvalidOperationException("cancelPaintGeneration field missing");
+        var dispatchGenerationField = typeof(HostSession).GetField("paintRequestDispatchGeneration", flags)
+            ?? throw new InvalidOperationException("paintRequestDispatchGeneration field missing");
+        runningProperty.SetValue(targetSession, running);
+        nativeField.SetValue(targetSession, nativeMayBeRunning);
+        activeField.SetValue(targetSession, activeGeneration);
+        nextField.SetValue(targetSession, activeGeneration);
+        cancelStateField.SetValue(targetSession, Enum.ToObject(cancelStateField.FieldType, 0));
+        cancelGenerationField.SetValue(targetSession, 0);
+        dispatchGenerationField.SetValue(targetSession, activeGeneration);
+    }
 }
 
 static void BridgeStartBlockHasFixedPortableLayout()
@@ -1205,6 +1543,34 @@ static async Task BridgeClientSendsHelloBeforeCommandAsync()
 
 static void BridgeShutdownClientOutlivesNativeQuiescenceBudget() =>
     BridgeShutdownClientOutlivesNativeQuiescenceBudgetAsync().GetAwaiter().GetResult();
+
+static void NativeStopPathsLatchInFlightPaintAdmission()
+{
+    var native = File.ReadAllText(Path.Combine(
+        FindRepositoryRoot(),
+        "src", "native", "bridge", "bridge.cpp"));
+    const string stopMarker = "auto request_bridge_stop() -> void";
+    var start = native.IndexOf(stopMarker, StringComparison.Ordinal);
+    Assert(start >= 0, "native stop path is missing");
+    var end = native.IndexOf("auto handle_request", start, StringComparison.Ordinal);
+    Assert(end > start, "native stop path must precede request dispatch");
+    var stopPath = native[start..end];
+    var closeAdmission = stopPath.IndexOf("g_accepting_bridge_commands.store(false", StringComparison.Ordinal);
+    var latchAdmission = stopPath.IndexOf("latch_active_paint_request_cancel();", StringComparison.Ordinal);
+    Assert(closeAdmission >= 0 && latchAdmission > closeAdmission,
+        "shutdown must latch a paint handler already inside admission before sweeping jobs");
+
+    const string listenerMarker = "auto bridge_thread(SOCKET listener, int bridge_port) -> void";
+    var listenerStart = native.IndexOf(listenerMarker, StringComparison.Ordinal);
+    Assert(listenerStart >= 0, "native listener loop is missing");
+    var listenerEnd = native.IndexOf("namespace", listenerStart + listenerMarker.Length, StringComparison.Ordinal);
+    Assert(listenerEnd > listenerStart, "native listener loop must have a bounded stop path");
+    var listenerStop = native[listenerStart..listenerEnd];
+    var listenerCloseAdmission = listenerStop.LastIndexOf("g_accepting_bridge_commands.store(false", StringComparison.Ordinal);
+    var listenerLatchAdmission = listenerStop.LastIndexOf("latch_active_paint_request_cancel();", StringComparison.Ordinal);
+    Assert(listenerCloseAdmission >= 0 && listenerLatchAdmission > listenerCloseAdmission,
+        "listener failure must close and latch admission before its shutdown sweep");
+}
 
 static async Task BridgeShutdownClientOutlivesNativeQuiescenceBudgetAsync()
 {
@@ -1464,21 +1830,390 @@ static void ResearchTextureProbeIsExplicitlyDispatched()
         "native probe recognition must include the texture command");
     Assert(native.Contains("line.find(\"" + serializedCommand + "\")", StringComparison.Ordinal),
         "bridge request dispatch must include the texture command");
-    Assert(native.Contains("paint_replication_component_inventory_metadata(ref, ctx, texture_probe)", StringComparison.Ordinal),
-        "texture command must select the explicit checksum inventory path");
+    Assert(native.Contains("matches_texture_export_target", StringComparison.Ordinal),
+        "texture command must retain the component selected for its export");
+    Assert(native.Contains("eventwatch_multicast_packed_receiver", StringComparison.Ordinal),
+        "texture command must be able to pin the watched multicast receiver rather than the local pawn");
+    Assert(native.Contains("research_texture_target_unavailable", StringComparison.Ordinal),
+        "an unobserved or stale multicast receiver must fail closed");
+}
+
+static void NativeResearchReplayPlanPreservesActualPassStrokes()
+{
+    var native = File.ReadAllText(Path.Combine(
+        FindRepositoryRoot(),
+        "src", "native", "bridge", "bridge.cpp"));
+
+    Assert(native.Contains("research_uv_replay_atlas", StringComparison.Ordinal),
+        "native paint requests should explicitly gate UV replay sidecars to research mode");
+    Assert(native.Contains("mesh_first_write_uv_replay_plan_artifact", StringComparison.Ordinal),
+        "native bridge should write the actual replay-plan sidecar after planning");
+    Assert(native.Contains("research_uv_replay_plan_written", StringComparison.Ordinal),
+        "native reply must say whether the replay-plan sidecar was written");
+    Assert(native.Contains("effective_fill_end", StringComparison.Ordinal) && native.Contains("effective_coarse_end", StringComparison.Ordinal),
+        "native replay sidecar must use the post-truncation pass boundaries");
+}
+
+static void ResearchRunnerCanIsolateOnePlannedReplayStroke()
+{
+    var root = FindRepositoryRoot();
+    var runner = File.ReadAllText(Path.Combine(
+        root,
+        "src", "csharp", "MecchaCamouflage.WebHost", "ResearchRunner.cs"));
+    var native = File.ReadAllText(Path.Combine(root, "src", "native", "bridge", "bridge.cpp"));
+
+    Assert(runner.Contains("--replay-stroke-index", StringComparison.Ordinal),
+        "research runner should expose an explicit one-stroke replay selector");
+    Assert(runner.Contains("research_replay_stroke_index", StringComparison.Ordinal),
+        "research runner should serialize the one-stroke selector only into research payloads");
+    Assert(native.Contains("research_replay_stroke_index", StringComparison.Ordinal),
+        "native planner should read the research-only replay selector");
+    Assert(native.Contains("research_replay_stroke_index_invalid", StringComparison.Ordinal),
+        "native planner should reject an out-of-range selected replay stroke before dispatch");
+    Assert(native.Contains("replay_plan.entries = {selected_entry};", StringComparison.Ordinal),
+        "native selector should rebuild pass boundaries from exactly the selected entry");
 }
 
 static void ResearchRunnerRecordsTwoPassBrushesAndPackedLocalQueueMode()
 {
+    var root = FindRepositoryRoot();
     var source = File.ReadAllText(Path.Combine(
-        FindRepositoryRoot(),
+        root,
         "src", "csharp", "MecchaCamouflage.WebHost", "ResearchRunner.cs"));
+    var runtime = File.ReadAllText(Path.Combine(
+        root,
+        "src", "csharp", "MecchaCamouflage.Controller", "RuntimeBridgeService.cs"));
+    var native = File.ReadAllText(Path.Combine(root, "src", "native", "bridge", "bridge.cpp"));
 
     Assert(source.Contains("brush_1_size_texels = paint.Brush1SizeTexels", StringComparison.Ordinal), "research artifacts should record brush 1");
     Assert(source.Contains("brush_2_size_texels = paint.Brush2SizeTexels", StringComparison.Ordinal), "research artifacts should record brush 2");
     Assert(source.Contains("brush_pipeline_version = 2", StringComparison.Ordinal), "research artifacts should identify the two-pass pipeline");
     Assert(source.Contains("paintMode != \"packed-local-queue\"", StringComparison.Ordinal), "research runner should accept packed-local-queue mode");
     Assert(source.Contains("GetValueOrDefault(\"--paint-mode\", \"packed-local-queue\")", StringComparison.Ordinal), "research runner should default to the production-shaped packed local queue route");
+    Assert(source.Contains("research_uv_replay_atlas", StringComparison.Ordinal), "research paint should explicitly request a pass-aware UV replay atlas");
+    Assert(source.Contains("ResearchUvReplayArtifacts.StageAndRender", StringComparison.Ordinal), "research runs should retain the native replay plan and render its PNG atlas");
+    Assert(source.Contains("ResearchTextureDeltaArtifacts.StageAndRender", StringComparison.Ordinal), "texture snapshot runs should retain an actual changed-pixel PNG mask");
+    Assert(source.Contains("--texture-discovery-seconds", StringComparison.Ordinal) &&
+           source.Contains("WaitForMulticastPackedReceiverAsync", StringComparison.Ordinal),
+        "joining texture evidence should wait for and pin an observed packed multicast receiver");
+    Assert(runtime.Contains("research_texture_expected_component", StringComparison.Ordinal) &&
+           native.Contains("research_texture_target_pin_mismatch", StringComparison.Ordinal),
+        "joining texture probes must send the discovered receiver address back to the native bridge as a fail-closed pin");
+    Assert(source.Contains("TryNormalizeNonZeroHexAddress", StringComparison.Ordinal) &&
+           source.Contains("ulong.TryParse", StringComparison.Ordinal),
+        "joining receiver discovery must require a strict non-zero hexadecimal component address");
+    Assert(native.Contains("selected_texture_target_only", StringComparison.Ordinal),
+        "texture diagnostics must avoid unrelated component readbacks that perturb joining-client timing");
+    Assert(source.Contains("CancelPaintAfterDelayAsync(session.Runtime, cancelAfterMs, paintTask)", StringComparison.Ordinal) &&
+           source.Contains("cancel_admission_latched", StringComparison.Ordinal) &&
+           native.Contains("cancel_latched_paint_request", StringComparison.Ordinal),
+        "research cancellation must retain an admission-time cancel latch instead of misreporting no active job");
+    Assert(source.Contains("textureSnapshot && shutdownAfterMs is not null", StringComparison.Ordinal),
+        "a texture snapshot must reject scheduled shutdown because it cannot safely produce an after image");
+}
+
+static void UvReplayAtlasSeparatesPassesAndPackedRadii()
+{
+    var plan = new UvReplayPlan(
+        TextureSize: 128,
+        Strokes:
+        [
+            new UvReplayStroke(0.25, 0.25, 0.10, 0.20, UvReplayPass.Fill, "front", "torso"),
+            new UvReplayStroke(0.50, 0.50, 0.08, 0.16, UvReplayPass.CoarsePaint, "side", "arm"),
+            new UvReplayStroke(0.75, 0.75, 0.04, 0.08, UvReplayPass.FinePaint, "back", "arm")
+        ]);
+
+    var atlas = UvReplayAtlasRasterizer.Render(plan, tileSize: 64);
+    Assert(atlas.Width == 192 && atlas.Height == 128, "the atlas should be a three-pass by two-radius grid");
+
+    var plannerFillCenter = atlas.RgbaAt(16, 47);
+    var packedFillCenter = atlas.RgbaAt(16, 111);
+    Assert(plannerFillCenter.SequenceEqual(UvReplayAtlasRasterizer.FillColor), "fill must occupy the planner row");
+    Assert(packedFillCenter.SequenceEqual(UvReplayAtlasRasterizer.FillColor), "fill must occupy the packed row");
+    Assert(atlas.RgbaAt(26, 47).SequenceEqual(UvReplayAtlasRasterizer.BackgroundColor),
+        "planner radius should remain independent from the packed radius");
+    Assert(atlas.RgbaAt(26, 111).SequenceEqual(UvReplayAtlasRasterizer.FillColor),
+        "packed row should render the packed wire radius rather than the planner radius");
+    Assert(atlas.RgbaAt(175, 16).SequenceEqual(UvReplayAtlasRasterizer.FineColor),
+        "brush 2 must occupy the fine-pass column rather than the coarse column");
+
+    var directOnly = UvReplayAtlasRasterizer.Render(
+        new UvReplayPlan(
+            65_536,
+            [new UvReplayStroke(0.5, 0.5, 0.1, 0.2, UvReplayPass.FinePaint, "front", "arm", false)]),
+        tileSize: 64);
+    Assert(directOnly.RgbaAt(170, 96).SequenceEqual(UvReplayAtlasRasterizer.BackgroundColor),
+        "an unencoded direct route must not fabricate a packed-wire brush footprint");
+    var bounded = UvReplayAtlasRasterizer.Render(new UvReplayPlan(65_536, []));
+    Assert(bounded.Width == 3_072 && bounded.Height == 2_048,
+        "a large game texture should produce a bounded proportional atlas rather than fail or allocate at source size");
+
+    var directory = Path.Combine(Path.GetTempPath(), "meccha-uv-atlas-" + Guid.NewGuid().ToString("N"));
+    try
+    {
+        Directory.CreateDirectory(directory);
+        var output = Path.Combine(directory, "uv-replay-atlas.png");
+        UvReplayAtlasPng.Write(output, atlas);
+        var bytes = File.ReadAllBytes(output);
+        Assert(bytes.Length > 24, "PNG output should not be empty");
+        Assert(bytes.AsSpan(0, 8).SequenceEqual(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 }),
+            "UV replay artifact must be a PNG rather than a screenshot or BMP");
+    }
+    finally
+    {
+        try { Directory.Delete(directory, recursive: true); } catch { }
+    }
+}
+
+static void ResearchReplaySidecarIsStagedAsUvPng()
+{
+    var directory = Path.Combine(Path.GetTempPath(), "meccha-uv-sidecar-" + Guid.NewGuid().ToString("N"));
+    try
+    {
+        Directory.CreateDirectory(directory);
+        var source = Path.Combine(directory, "native-plan.json");
+        File.WriteAllText(source, """
+        {
+          "schema": "meccha_uv_replay_plan_v1",
+          "texture_size": 64,
+          "strokes": [
+            { "u": 0.5, "v": 0.5, "planner_radius_uv": 0.1, "packed_wire_radius_uv": 0.2, "pass": "fine_paint", "region": "front", "body_region": "arm" }
+          ]
+        }
+        """);
+        var raw = JsonSerializer.Serialize(new
+        {
+            metadata = new
+            {
+                research_uv_replay_plan_written = true,
+                research_uv_replay_plan_path = source
+            }
+        });
+
+        var artifact = ResearchUvReplayArtifacts.StageAndRender(
+            new BridgeReply(true, true, "mesh_replay_complete", "ok", raw),
+            Path.Combine(directory, "run"));
+
+        Assert(artifact.Success, "a valid native sidecar should be copied and rendered");
+        Assert(File.Exists(artifact.PlanPath), "the native stroke plan should be retained with the run artifacts");
+        Assert(File.Exists(artifact.AtlasPath), "the staged run should include a PNG UV replay atlas");
+    }
+    finally
+    {
+        try { Directory.Delete(directory, recursive: true); } catch { }
+    }
+}
+
+static void ResearchReplaySidecarRefusesNonSuccessfulPaint()
+{
+    using var temp = new TempHome();
+    var raw = JsonSerializer.Serialize(new
+    {
+        metadata = new
+        {
+            research_uv_replay_plan_written = true,
+            research_uv_replay_plan_path = Path.Combine(Path.GetTempPath(), "must-not-be-staged.json")
+        }
+    });
+
+    var artifact = ResearchUvReplayArtifacts.StageAndRender(
+        new BridgeReply(true, false, "mesh_paint_cancelled", "paint cancelled", raw),
+        Path.Combine(Path.GetTempPath(), "meccha-uv-non-success-" + Guid.NewGuid().ToString("N")));
+
+    Assert(!artifact.Success && artifact.Error.Contains("intentionally not staged", StringComparison.Ordinal),
+        "a cancellation must not retain a planning-time UV sidecar as rendered evidence");
+}
+
+static void ResearchTextureProbesStageActualDeltaPng()
+{
+    var directory = Path.Combine(Path.GetTempPath(), "meccha-texture-delta-" + Guid.NewGuid().ToString("N"));
+    try
+    {
+        Directory.CreateDirectory(directory);
+        var beforeRaw = Path.Combine(directory, "before.rgba");
+        var afterRaw = Path.Combine(directory, "after.rgba");
+        File.WriteAllBytes(beforeRaw,
+        [
+            0, 0, 0, 255, 0, 0, 0, 255,
+            0, 0, 0, 255, 0, 0, 0, 255
+        ]);
+        File.WriteAllBytes(afterRaw,
+        [
+            0, 0, 0, 255, 0, 0, 0, 255,
+            0, 0, 0, 255, 255, 0, 255, 255
+        ]);
+        var beforeArtifact = Path.Combine(directory, "texture-before.json");
+        var afterArtifact = Path.Combine(directory, "texture-after.json");
+        File.WriteAllText(beforeArtifact, TextureProbeArtifact(beforeRaw, baselineComponentMatch: false));
+        File.WriteAllText(afterArtifact, TextureProbeArtifact(afterRaw, baselineComponentMatch: true));
+
+        var result = ResearchTextureDeltaArtifacts.StageAndRender(beforeArtifact, afterArtifact, Path.Combine(directory, "run"));
+
+        Assert(result.Success, result.Error);
+        Assert(result.TextureSize == 2 && result.ChangedPixels == 1, "the texture delta should preserve its dimensions and changed pixel count");
+        Assert(File.Exists(result.BeforePngPath) && File.Exists(result.AfterPngPath) && File.Exists(result.DeltaMaskPath),
+            "research texture probes should retain before, after, and changed-pixel PNGs");
+    }
+    finally
+    {
+        try { Directory.Delete(directory, recursive: true); } catch { }
+    }
+
+    static string TextureProbeArtifact(string path, bool baselineComponentMatch)
+    {
+        var native = JsonSerializer.Serialize(new
+        {
+            metadata = new
+            {
+                research_texture_export_target_component = "0x0000000000000042",
+                research_texture_export_target_source = "resolved_component",
+                runtime_paint_component_inventory = new[]
+                {
+                    new
+                    {
+                        component = "0x0000000000000042",
+                        outer = "0x0000000000000007",
+                        matches_resolved_component = true,
+                        matches_texture_export_target = true,
+                        texture_delta = new
+                        {
+                            albedo_dump_written = true,
+                            albedo_dump_texture_size = 2,
+                            albedo_dump_path = path,
+                            baseline_component_match = baselineComponentMatch
+                        }
+                    }
+                }
+            }
+        });
+        return JsonSerializer.Serialize(new { Reply = new { Raw = native } });
+    }
+}
+
+static void ResearchTextureProbesRejectComponentSwitch()
+{
+    var directory = Path.Combine(Path.GetTempPath(), "meccha-texture-switch-" + Guid.NewGuid().ToString("N"));
+    try
+    {
+        Directory.CreateDirectory(directory);
+        var beforeRaw = Path.Combine(directory, "before.rgba");
+        var afterRaw = Path.Combine(directory, "after.rgba");
+        File.WriteAllBytes(beforeRaw, [0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255]);
+        File.WriteAllBytes(afterRaw, [255, 0, 255, 255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255]);
+        var beforeNative = JsonSerializer.Serialize(new
+        {
+            metadata = new
+            {
+                research_texture_export_target_component = "0x42",
+                runtime_paint_component_inventory = new[]
+                {
+                    new
+                    {
+                        component = "0x42",
+                        outer = "0x7",
+                        matches_texture_export_target = true,
+                        texture_delta = new
+                        {
+                            albedo_dump_written = true,
+                            albedo_dump_texture_size = 2,
+                            albedo_dump_path = beforeRaw,
+                            baseline_component_match = false
+                        }
+                    }
+                }
+            }
+        });
+        var afterNative = JsonSerializer.Serialize(new
+        {
+            metadata = new
+            {
+                research_texture_export_target_component = "0x43",
+                runtime_paint_component_inventory = new[]
+                {
+                    new
+                    {
+                        component = "0x43",
+                        outer = "0x8",
+                        matches_texture_export_target = true,
+                        texture_delta = new
+                        {
+                            albedo_dump_written = true,
+                            albedo_dump_texture_size = 2,
+                            albedo_dump_path = afterRaw,
+                            baseline_component_match = true
+                        }
+                    }
+                }
+            }
+        });
+        var beforeArtifact = Path.Combine(directory, "before.json");
+        var afterArtifact = Path.Combine(directory, "after.json");
+        File.WriteAllText(beforeArtifact, JsonSerializer.Serialize(new { Reply = new { Raw = beforeNative } }));
+        File.WriteAllText(afterArtifact, JsonSerializer.Serialize(new { Reply = new { Raw = afterNative } }));
+
+        var result = ResearchTextureDeltaArtifacts.StageAndRender(beforeArtifact, afterArtifact, Path.Combine(directory, "run"));
+
+        Assert(!result.Success && result.Error.Contains("different component addresses", StringComparison.Ordinal),
+            "a pointer switch must not be rendered as a texture delta");
+    }
+    finally
+    {
+        try { Directory.Delete(directory, recursive: true); } catch { }
+    }
+}
+
+static void ResearchTextureProbesRejectUnexpectedDiscoveryReceiver()
+{
+    var directory = Path.Combine(Path.GetTempPath(), "meccha-texture-discovery-pin-" + Guid.NewGuid().ToString("N"));
+    try
+    {
+        Directory.CreateDirectory(directory);
+        var beforeRaw = Path.Combine(directory, "before.rgba");
+        var afterRaw = Path.Combine(directory, "after.rgba");
+        File.WriteAllBytes(beforeRaw, [0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255]);
+        File.WriteAllBytes(afterRaw, [255, 0, 255, 255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255]);
+        var native = JsonSerializer.Serialize(new
+        {
+            metadata = new
+            {
+                research_texture_export_target_component = "0x42",
+                runtime_paint_component_inventory = new[]
+                {
+                    new
+                    {
+                        component = "0x42",
+                        outer = "0x7",
+                        matches_texture_export_target = true,
+                        texture_delta = new
+                        {
+                            albedo_dump_written = true,
+                            albedo_dump_texture_size = 2,
+                            albedo_dump_path = beforeRaw,
+                            baseline_component_match = false
+                        }
+                    }
+                }
+            }
+        });
+        var afterNative = native.Replace(beforeRaw, afterRaw, StringComparison.Ordinal);
+        var beforeArtifact = Path.Combine(directory, "before.json");
+        var afterArtifact = Path.Combine(directory, "after.json");
+        File.WriteAllText(beforeArtifact, JsonSerializer.Serialize(new { Reply = new { Raw = native } }));
+        File.WriteAllText(afterArtifact, JsonSerializer.Serialize(new { Reply = new { Raw = afterNative } }));
+
+        var result = ResearchTextureDeltaArtifacts.StageAndRender(
+            beforeArtifact,
+            afterArtifact,
+            Path.Combine(directory, "run"),
+            expectedComponent: "0x43");
+
+        Assert(!result.Success && result.Error.Contains("pinned discovery receiver", StringComparison.Ordinal),
+            "a probe must not render a delta when it differs from the receiver chosen during discovery");
+    }
+    finally
+    {
+        try { Directory.Delete(directory, recursive: true); } catch { }
+    }
 }
 
 static void WebStartupLifecycleStabilizesAfterNavigationAndUiReady()
@@ -1529,6 +2264,32 @@ static void ReleasePackagingContainsOnlyDirectBridge()
     Assert(!build.Contains("FixedVersionRuntime", StringComparison.OrdinalIgnoreCase), "build must not download a Fixed WebView2 Runtime");
     Assert(!project.Contains("MecchaWebView2RuntimeDir", StringComparison.OrdinalIgnoreCase), "single EXE must not embed a Fixed WebView2 Runtime");
     Assert(project.Contains("webview2-bootstrapper", StringComparison.OrdinalIgnoreCase), "single EXE must embed the Evergreen bootstrapper");
+    Assert(build.Contains("/p:DebugSymbols=false", StringComparison.Ordinal) &&
+           build.Contains("/p:DebugType=None", StringComparison.Ordinal) &&
+           build.Contains("/p:CopyOutputSymbolsToPublishDirectory=false", StringComparison.Ordinal) &&
+           build.Contains("ReleaseSingleFile output contains debug artifacts", StringComparison.Ordinal),
+        "ReleaseSingleFile builds must suppress and reject debug symbol sidecars");
+    var release = File.ReadAllText(Path.Combine(root, "scripts", "release.ps1"));
+    Assert(release.Contains("Release output directory contains debug artifacts", StringComparison.Ordinal),
+        "release packaging must reject a package directory containing debug sidecars");
+}
+
+static void ReleaseBuildExcludesResearchRunnerAndDevTools()
+{
+    var root = FindRepositoryRoot();
+    var project = File.ReadAllText(Path.Combine(root, "src", "csharp", "MecchaCamouflage.WebHost", "MecchaCamouflage.WebHost.csproj"));
+    var program = File.ReadAllText(Path.Combine(root, "src", "csharp", "MecchaCamouflage.WebHost", "Program.cs"));
+    var form = File.ReadAllText(Path.Combine(root, "src", "csharp", "MecchaCamouflage.WebHost", "MainForm.cs"));
+    var researchBuild = File.ReadAllText(Path.Combine(root, "scripts", "research", "build-replication-runner.ps1"));
+
+    Assert(project.Contains("<Compile Remove=\"ResearchRunner.cs\" />", StringComparison.Ordinal) &&
+           project.Contains("MecchaResearchBuild", StringComparison.Ordinal),
+        "the normal WebHost build must omit the research runner source");
+    Assert(program.Contains("#if MECCHA_RESEARCH_BUILD", StringComparison.Ordinal) &&
+           form.Contains("BuildFeatures.ResearchArtifactsEnabled", StringComparison.Ordinal),
+        "research command dispatch and DevTools must be unavailable in a normal release build");
+    Assert(researchBuild.Contains("/p:MecchaResearchBuild=true", StringComparison.Ordinal),
+        "the explicit research build must opt in to the runner");
 }
 
 static string FindRepositoryRoot()
@@ -1574,6 +2335,17 @@ static void ConfigureLiveProgressSession(HostSession session, string preferredPr
     startedField.SetValue(session, DateTimeOffset.UtcNow.AddSeconds(-1));
     serverProgressField.SetValue(session, true);
     paintRunningProperty.SetValue(session, true);
+}
+
+static void SetActiveBridge(RuntimeBridgeService service, BridgeInstance instance, bool connected)
+{
+    var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+    var activeField = typeof(RuntimeBridgeService).GetField("activeInstance", flags)
+        ?? throw new InvalidOperationException("activeInstance field missing");
+    var connectedField = typeof(RuntimeBridgeService).GetField("bridgeConnected", flags)
+        ?? throw new InvalidOperationException("bridgeConnected field missing");
+    activeField.SetValue(service, instance);
+    connectedField.SetValue(service, connected);
 }
 
 static int CountOccurrences(string text, string value)

@@ -131,6 +131,14 @@ input[type="checkbox"] {
   accent-color: var(--primary);
 }
 
+input.theme-visible-readonly[type="range"],
+input.theme-visible-readonly[type="checkbox"] {
+  opacity: 1;
+  accent-color: var(--primary);
+  cursor: default;
+  pointer-events: none;
+}
+
 a {
   color: var(--muted);
   text-decoration: none;

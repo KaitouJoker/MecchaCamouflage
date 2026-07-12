@@ -135,7 +135,7 @@ public sealed class SettingsStore
         if (string.IsNullOrWhiteSpace(settings.StopHotkey))
             settings.StopHotkey = "F4";
 
-        settings.Paint.Brush1SizeTexels = Math.Clamp(settings.Paint.Brush1SizeTexels, 15.0, 20.0);
+        settings.Paint.Brush1SizeTexels = Math.Clamp(settings.Paint.Brush1SizeTexels, 10.0, 30.0);
         settings.Paint.Brush2SizeTexels = Math.Clamp(settings.Paint.Brush2SizeTexels, 5.0, 10.0);
         settings.Paint.PackedBatchLimit = Math.Clamp(settings.Paint.PackedBatchLimit, 1, 20);
         settings.Paint.PackedBatchPacingMs = Math.Clamp(settings.Paint.PackedBatchPacingMs, 50, 500);

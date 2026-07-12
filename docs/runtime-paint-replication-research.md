@@ -5,6 +5,10 @@ replication. It is separate from normal runtime docs because these entrypoints
 are investigative and may be useful even when they are not part of production
 paint behavior.
 
+For the evidence-backed findings, known limits, and release boundary from the
+Issue #87 investigation, see
+[`runtime-paint-replication-validation.md`](runtime-paint-replication-validation.md).
+
 ## Current Production Route
 
 Normal paint uses the direct component route:

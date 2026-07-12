@@ -312,7 +312,10 @@ try {
                 "/p:PublishSingleFile=true",
                 "/p:IncludeAllContentForSelfExtract=true",
                 "/p:IncludeNativeLibrariesForSelfExtract=true",
-                "/p:EnableCompressionInSingleFile=true"
+                "/p:EnableCompressionInSingleFile=true",
+                "/p:DebugSymbols=false",
+                "/p:DebugType=None",
+                "/p:CopyOutputSymbolsToPublishDirectory=false"
             )
         }
         Invoke-DotNet -Arguments $publishArgs
@@ -327,6 +330,15 @@ try {
 
         if (-not (Test-Path $ControllerOutput -PathType Leaf)) {
             throw "WebView2 controller EXE was not produced: $ControllerOutput"
+        }
+        if ($BuildMode -eq "ReleaseSingleFile") {
+            $debugArtifacts = @(
+                Get-ChildItem -Path $OutDir -File -Recurse |
+                    Where-Object { $_.Extension -in @(".pdb", ".dbg", ".ilk") }
+            )
+            if ($debugArtifacts.Count -gt 0) {
+                throw "ReleaseSingleFile output contains debug artifacts: $($debugArtifacts.FullName -join ', ')"
+            }
         }
     }
 }

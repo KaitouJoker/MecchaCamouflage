@@ -301,7 +301,7 @@ function renderSettings(snapshot) {
   setValue("language", snapshot.language);
 
   for (const control of document.querySelectorAll(".setting-control")) {
-    control.disabled = !editing;
+    setControlDisabled(control, !editing);
   }
   for (const button of document.querySelectorAll(".record-hotkey")) {
     button.disabled = !editing;
@@ -351,7 +351,28 @@ function applyThemeColor(value) {
 
 function setDisabled(ids, disabled) {
   for (const id of ids) {
-    byId(id).disabled = disabled;
+    setControlDisabled(byId(id), disabled);
+  }
+}
+
+function isThemeVisibleReadOnlyControl(control) {
+  return control instanceof HTMLInputElement &&
+    (control.type === "range" || control.type === "checkbox");
+}
+
+function setControlDisabled(control, disabled) {
+  const themeVisibleReadonly = disabled && isThemeVisibleReadOnlyControl(control);
+  if (themeVisibleReadonly && document.activeElement === control) {
+    control.blur();
+  }
+  control.disabled = disabled && !themeVisibleReadonly;
+  control.classList.toggle("theme-visible-readonly", themeVisibleReadonly);
+  if (themeVisibleReadonly) {
+    control.setAttribute("aria-disabled", "true");
+    control.tabIndex = -1;
+  } else {
+    control.removeAttribute("aria-disabled");
+    control.removeAttribute("tabindex");
   }
 }
 
@@ -480,6 +501,19 @@ function setDraftSetting(key, value) {
   node[path.at(-1)] = value;
 }
 
+function canEditControl(control = null) {
+  if (editing && control?.getAttribute("aria-disabled") !== "true" && !control?.disabled) {
+    return true;
+  }
+  const snapshot = currentSnapshot();
+  if (snapshot) {
+    // Ranges and checkboxes stay paint-enabled solely so Chromium retains the
+    // theme accent. Restore a keyboard/label-driven attempted change at once.
+    renderSettings(snapshot);
+  }
+  return false;
+}
+
 function getSnapshotSetting(snapshot, key) {
   if (key === "app.language") {
     return snapshot.language;
@@ -547,6 +581,9 @@ function bindRangePair(sliderId, numberId, key, transform = Number) {
   const slider = byId(sliderId);
   const number = byId(numberId);
   const commit = source => {
+    if (!canEditControl(source)) {
+      return;
+    }
     const raw = Number(source.value);
     if (!Number.isFinite(raw)) {
       return;
@@ -577,7 +614,12 @@ function bindRangePair(sliderId, numberId, key, transform = Number) {
 
 function bindInput(id, key, transform = value => value) {
   const element = byId(id);
-  element.addEventListener("change", () => setDraftSetting(key, transform(element.value)));
+  element.addEventListener("change", () => {
+    if (!canEditControl(element)) {
+      return;
+    }
+    setDraftSetting(key, transform(element.value));
+  });
   element.addEventListener("keydown", event => {
     if (event.key === "Enter") {
       element.blur();
@@ -587,6 +629,9 @@ function bindInput(id, key, transform = value => value) {
 
 function bindCheckbox(id, key) {
   byId(id).addEventListener("change", event => {
+    if (!canEditControl(event.target)) {
+      return;
+    }
     setDraftSetting(key, event.target.checked);
     renderSettings(draftSnapshot);
   });
@@ -596,6 +641,9 @@ function bindColorPair(pickerId, inputId, key) {
   const picker = byId(pickerId);
   const textInput = byId(inputId);
   picker.addEventListener("input", () => {
+    if (!canEditControl(picker)) {
+      return;
+    }
     const color = normalizeColor(picker.value);
     if (!color) {
       return;
@@ -607,6 +655,9 @@ function bindColorPair(pickerId, inputId, key) {
     }
   });
   textInput.addEventListener("change", () => {
+    if (!canEditControl(textInput)) {
+      return;
+    }
     const color = normalizeColor(textInput.value);
     if (!color) {
       setDraftSetting(key, textInput.value);
@@ -719,6 +770,9 @@ document.addEventListener("DOMContentLoaded", () => {
   languageSelect.addEventListener("blur", () => languageWrap?.classList.remove("open"));
   languageSelect.addEventListener("change", event => {
     languageWrap?.classList.remove("open");
+    if (!canEditControl(languageSelect)) {
+      return;
+    }
     setDraftSetting("app.language", event.target.value);
     render();
   });

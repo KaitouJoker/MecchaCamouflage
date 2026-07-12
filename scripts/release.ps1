@@ -37,7 +37,15 @@ if (-not $ExePath) { $ExePath = Join-Path $RuntimeRoot ".build\bin\meccha-camouf
 if (-not (Test-Path $ExePath -PathType Leaf)) { throw "Executable not found: $ExePath. Run scripts/build.ps1 first." }
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+$DebugArtifacts = @(
+    Get-ChildItem -Path $OutDir -File -Recurse |
+        Where-Object { $_.Extension -in @(".pdb", ".dbg", ".ilk") }
+)
+if ($DebugArtifacts.Count -gt 0) {
+    throw "Release output directory contains debug artifacts: $($DebugArtifacts.FullName -join ', ')"
+}
 $ArtifactPath = Join-Path $OutDir "$ArtifactName.exe"
 if (Test-Path $ArtifactPath) { Remove-Item -Force $ArtifactPath }
 Copy-Item -Force -Path $ExePath -Destination $ArtifactPath
+if ((Get-Item $ArtifactPath).Length -le 0) { throw "Release artifact is empty: $ArtifactPath" }
 Write-Host "Wrote $ArtifactPath"

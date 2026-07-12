@@ -4,6 +4,7 @@ using System.Diagnostics;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 using MecchaCamouflage.Controller;
+using MecchaCamouflage.Core;
 
 namespace MecchaCamouflage.WebHost;
 
@@ -36,6 +37,8 @@ public sealed class MainForm : Form
     private bool guiInitializedLogged;
     private bool settingsEditing;
     private bool hotkeyRecording;
+    private bool hotkeysRegistered;
+    private string lastHotkeyRegistrationFailure = "";
     private bool webViewRetryUsed;
     private bool webViewRecoveryInProgress;
 
@@ -94,10 +97,13 @@ public sealed class MainForm : Form
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
+        // Hotkeys are bound to a concrete HWND. A recreated form handle must register again
+        // after the controller bridge is attached instead of trusting the old handle's state.
+        hotkeysRegistered = false;
         ApplyDarkTitleBar();
         ApplyWindowSettings("handle-created");
-        if (!TryRegisterHotkeys(out var message))
-            session.Log.Warn(message);
+        if (session.Runtime.IsConnected)
+            RequestHotkeyRegistrationAfterAttach();
     }
 
     protected override void WndProc(ref Message message)
@@ -151,8 +157,7 @@ public sealed class MainForm : Form
         core.Settings.AreDefaultScriptDialogsEnabled = true;
         core.Settings.AreDefaultContextMenusEnabled = false;
         core.Settings.AreBrowserAcceleratorKeysEnabled = false;
-        core.Settings.AreDevToolsEnabled =
-            string.Equals(Environment.GetEnvironmentVariable("MECCHA_RESEARCH_ARTIFACTS"), "1", StringComparison.Ordinal);
+        core.Settings.AreDevToolsEnabled = BuildFeatures.ResearchArtifactsEnabled;
         DiagnosticsState.SetStartupPhase("webview2_navigate");
         session.Log.Info("GUI: navigating packaged index.html.");
         DiagnosticsState.WriteLine("webview2", $"navigation_requested generation={generation} uri={WebUiStartUri}");
@@ -376,6 +381,8 @@ public sealed class MainForm : Form
             try
             {
                 await session.WarmupBridgeAsync();
+                if (session.Runtime.IsConnected)
+                    RequestHotkeyRegistrationAfterAttach();
             }
             catch (OperationCanceledException)
             {
@@ -730,7 +737,7 @@ public sealed class MainForm : Form
             case "resetSection":
                 return HandleResetSection(command.Payload);
             case "resetAllSettings":
-                return ApplyResult(session.ResetAllSettings());
+                return HandleResetAllSettings();
             case "openLogs":
                 session.OpenLogs();
                 return new { success = true };
@@ -806,7 +813,8 @@ public sealed class MainForm : Form
         var key = payload.GetProperty("key").GetString() ?? "";
         var oldHotkeys = HotkeySet.From(session.Settings);
         var result = session.UpdateSetting(key, payload.GetProperty("value"));
-        if (result.Success && key.Contains("Hotkey", StringComparison.OrdinalIgnoreCase) && !TryRegisterHotkeys(out var message))
+        var hotkeyChanged = key.Contains("Hotkey", StringComparison.OrdinalIgnoreCase);
+        if (result.Success && hotkeyChanged && session.Runtime.IsConnected && !TryRegisterHotkeys(out var message))
         {
             oldHotkeys.ApplyTo(session.Settings);
             session.UpdateSetting("app.startHotkey", JsonSerializer.SerializeToElement(oldHotkeys.Start));
@@ -815,6 +823,17 @@ public sealed class MainForm : Form
             session.UpdateSetting("app.stopHotkey", JsonSerializer.SerializeToElement(oldHotkeys.Stop));
             TryRegisterHotkeys(out _);
             result = new HostCommandResult(false, message);
+        }
+        else if (result.Success && hotkeyChanged && !session.Runtime.IsConnected)
+        {
+            // The old registrations belong to the prior settings. Do not leave them active
+            // while the bridge is disconnected and the new values wait for attach.
+            UnregisterHotkeys();
+            lastHotkeyRegistrationFailure = "";
+        }
+        else if (result.Success && hotkeyChanged)
+        {
+            lastHotkeyRegistrationFailure = "";
         }
         ApplyWindowSettings();
         return ApplyResult(result);
@@ -833,15 +852,20 @@ public sealed class MainForm : Form
         }
 
         var result = session.UpdateSettings(changes);
-        if (result.Success && hasHotkeyChange && !TryRegisterHotkeys(out var message))
+        if (result.Success && hasHotkeyChange && session.Runtime.IsConnected && !TryRegisterHotkeys(out var message))
         {
             session.UpdateSettings(HotkeyRevertChanges(oldHotkeys));
             TryRegisterHotkeys(out _);
             result = new HostCommandResult(false, message);
         }
-        else if (result.Success)
+        else if (result.Success && hasHotkeyChange && !session.Runtime.IsConnected)
         {
-            TryRegisterHotkeys(out _);
+            UnregisterHotkeys();
+            lastHotkeyRegistrationFailure = "";
+        }
+        else if (result.Success && hasHotkeyChange)
+        {
+            lastHotkeyRegistrationFailure = "";
         }
         ApplyWindowSettings();
         return ApplyResult(result);
@@ -849,18 +873,54 @@ public sealed class MainForm : Form
 
     private object HandleResetSetting(JsonElement payload)
     {
-        var result = session.ResetSetting(payload.GetProperty("key").GetString() ?? "");
-        TryRegisterHotkeys(out _);
+        var key = payload.GetProperty("key").GetString() ?? "";
+        var oldHotkeys = HotkeySet.From(session.Settings);
+        var result = session.ResetSetting(key);
+        if (result.Success && key.Contains("Hotkey", StringComparison.OrdinalIgnoreCase))
+            result = ReconcileChangedHotkeys(oldHotkeys);
         ApplyWindowSettings();
         return ApplyResult(result);
     }
 
     private object HandleResetSection(JsonElement payload)
     {
-        var result = session.ResetSection(payload.GetProperty("section").GetString() ?? "");
-        TryRegisterHotkeys(out _);
+        var section = payload.GetProperty("section").GetString() ?? "";
+        var oldHotkeys = HotkeySet.From(session.Settings);
+        var result = session.ResetSection(section);
+        if (result.Success && section.Equals("app", StringComparison.OrdinalIgnoreCase))
+            result = ReconcileChangedHotkeys(oldHotkeys);
         ApplyWindowSettings();
         return ApplyResult(result);
+    }
+
+    private object HandleResetAllSettings()
+    {
+        var oldHotkeys = HotkeySet.From(session.Settings);
+        var result = session.ResetAllSettings();
+        if (result.Success)
+            result = ReconcileChangedHotkeys(oldHotkeys);
+        ApplyWindowSettings();
+        return ApplyResult(result);
+    }
+
+    private HostCommandResult ReconcileChangedHotkeys(HotkeySet oldHotkeys)
+    {
+        if (!session.Runtime.IsConnected)
+        {
+            // The next successful bridge attach owns the deferred registration. Never leave the
+            // old OS registrations live after persisting a new hotkey set.
+            UnregisterHotkeys();
+            lastHotkeyRegistrationFailure = "";
+            return new HostCommandResult(true);
+        }
+        if (TryRegisterHotkeys(out var message))
+        {
+            lastHotkeyRegistrationFailure = "";
+            return new HostCommandResult(true);
+        }
+        session.UpdateSettings(HotkeyRevertChanges(oldHotkeys));
+        TryRegisterHotkeys(out _);
+        return new HostCommandResult(false, message);
     }
 
     private object ApplyResult(HostCommandResult result)
@@ -1041,9 +1101,51 @@ public sealed class MainForm : Form
         session.SetWindowSnapshot(Width, Height, Left, Top);
     }
 
+    private void RequestHotkeyRegistrationAfterAttach(bool force = false)
+    {
+        if (IsDisposed || Disposing || !IsHandleCreated || !session.Runtime.IsConnected)
+            return;
+        void RegisterAfterAttach()
+        {
+            if (IsDisposed || Disposing || !IsHandleCreated || !session.Runtime.IsConnected ||
+                (!force && hotkeysRegistered))
+            {
+                return;
+            }
+            if (TryRegisterHotkeys(out var message))
+            {
+                lastHotkeyRegistrationFailure = "";
+                return;
+            }
+            if (!string.Equals(lastHotkeyRegistrationFailure, message, StringComparison.Ordinal))
+            {
+                lastHotkeyRegistrationFailure = message;
+                session.Log.Warn(message);
+            }
+        }
+        try
+        {
+            if (InvokeRequired)
+            {
+                BeginInvoke((MethodInvoker)RegisterAfterAttach);
+                return;
+            }
+            RegisterAfterAttach();
+        }
+        catch (InvalidOperationException) when (IsDisposed || Disposing || !IsHandleCreated)
+        {
+            // The form closed while a background bridge warmup was completing.
+        }
+    }
+
     private bool TryRegisterHotkeys(out string message)
     {
         message = "";
+        if (!IsHandleCreated)
+        {
+            message = "Hotkey registration failed: form handle is unavailable.";
+            return false;
+        }
         UnregisterHotkeys();
         var keys = new[]
         {
@@ -1055,18 +1157,27 @@ public sealed class MainForm : Form
         foreach (var (id, key) in keys)
         {
             var virtualKey = ParseVirtualKey(key);
-            if (virtualKey == 0 || !RegisterHotKey(Handle, id, ModNoRepeat, virtualKey))
+            if (virtualKey == 0)
             {
-                message = $"Hotkey registration failed: {key}";
+                message = $"Hotkey registration failed: {key} (invalid function key).";
+                UnregisterHotkeys();
+                return false;
+            }
+            if (!RegisterHotKey(Handle, id, ModNoRepeat, virtualKey))
+            {
+                var error = Marshal.GetLastWin32Error();
+                message = $"Hotkey registration failed: {key} (Win32 error {error})";
                 UnregisterHotkeys();
                 return false;
             }
         }
+        hotkeysRegistered = true;
         return true;
     }
 
     private void UnregisterHotkeys()
     {
+        hotkeysRegistered = false;
         if (!IsHandleCreated)
             return;
         for (var id = 1; id <= 4; ++id)

@@ -9,11 +9,13 @@ internal static class Program
     {
         var paths = new MecchaCamouflage.Core.AppPaths(VersionInfo.Current);
         DiagnosticsState.Initialize(paths, VersionInfo.Current);
+#if MECCHA_RESEARCH_BUILD
         if (ResearchRunner.IsRequested(args))
         {
             Environment.ExitCode = ResearchRunner.RunAsync(args).GetAwaiter().GetResult();
             return;
         }
+#endif
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
         Application.ThreadException += (_, args) => DiagnosticsState.RecordException("winforms_thread_exception", args.Exception);
         AppDomain.CurrentDomain.UnhandledException += (_, args) =>

@@ -10,9 +10,11 @@ The tools below are for update recovery and profile regeneration, not normal
 app builds.
 
 Runtime bridge probes for multiplayer paint replication are documented in
-`docs/runtime-paint-replication-research.md`. Put repeatable bridge/runtime
-investigation scripts under `scripts/research/`; keep generated output under
-`artifacts/research/` or a local temp directory.
+[`runtime-paint-replication-research.md`](runtime-paint-replication-research.md)
+and their evidence boundary is documented in
+[`runtime-paint-replication-validation.md`](runtime-paint-replication-validation.md).
+Put repeatable bridge/runtime investigation scripts under `scripts/research/`;
+keep generated output under `artifacts/research/` or a local temp directory.
 
 v1.6 uses the mesh-first paint route. The required game-derived mesh profiles
 are tracked under `resources/mesh-profiles/`; `make build` copies the required

@@ -65,6 +65,7 @@ Invoke-VsCommand "cl.exe /nologo /EHsc /O2 `"$InjectorSource`" /Fo:`"$(Join-Path
 
 & dotnet publish $WebHostProject -c Release -r win-x64 --self-contained true -o $RunnerDir `
     "/p:MecchaAppVersion=research-issue87" `
+    "/p:MecchaResearchBuild=true" `
     "/p:MecchaNativeRuntimeDir=$NativeDir" `
     "/p:MecchaMeshProfilesDir=$MeshProfilesDir" `
     "/p:PublishSingleFile=true" `

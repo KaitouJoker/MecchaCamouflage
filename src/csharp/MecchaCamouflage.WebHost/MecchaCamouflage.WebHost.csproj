@@ -10,7 +10,12 @@
     <RootNamespace>MecchaCamouflage.WebHost</RootNamespace>
     <ApplicationIcon>..\..\..\resources\app-icons\icon.ico</ApplicationIcon>
     <MecchaAppVersion Condition="'$(MecchaAppVersion)' == ''">dev</MecchaAppVersion>
+    <MecchaResearchBuild Condition="'$(MecchaResearchBuild)' == ''">false</MecchaResearchBuild>
   </PropertyGroup>
+
+  <ItemGroup Condition="'$(MecchaResearchBuild)' != 'true'">
+    <Compile Remove="ResearchRunner.cs" />
+  </ItemGroup>
 
   <ItemGroup>
     <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">

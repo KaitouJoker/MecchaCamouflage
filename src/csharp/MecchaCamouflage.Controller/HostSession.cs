@@ -8,6 +8,8 @@ public sealed class HostSession
 {
     private const int DefaultPackedBatchLimit = 20;
     private const int DefaultPackedPacingMs = 50;
+    private const int NativeCancelAdmissionRetryAttempts = 40;
+    private static readonly TimeSpan NativeCancelAdmissionRetryDelay = TimeSpan.FromMilliseconds(25);
 
     private static readonly string[] ResetKeys =
     [
@@ -34,6 +36,14 @@ public sealed class HostSession
         "app.stopHotkey"
     ];
 
+    private enum PaintCancelState
+    {
+        None,
+        PreDispatchPending,
+        Sending,
+        AcceptedAwaitingTerminal
+    }
+
     public HostSession(string version)
     {
         Paths = new AppPaths(version);
@@ -52,11 +62,20 @@ public sealed class HostSession
     public AppSettings Settings { get; private set; }
     public bool PaintRunning { get; private set; }
     private readonly SemaphoreSlim bridgeWarmupGate = new(1, 1);
+    private readonly object paintStateGate = new();
     private DateTimeOffset nextBridgeWarmupAttempt;
     private DateTimeOffset currentPaintStartedAt = DateTimeOffset.MinValue;
     private bool finalProgressLogged;
     private bool currentProgressIsServerPaint;
     private bool nativePaintMayBeRunning;
+    private PaintCancelState cancelState;
+    private int nextPaintGeneration;
+    private int activePaintGeneration;
+    private int cancelPaintGeneration;
+    // This becomes non-zero only immediately before the authenticated paint request begins.
+    // A stop during process/bridge attachment must latch locally instead of asking native to
+    // cancel a job which does not exist yet and then allowing the late send to proceed.
+    private int paintRequestDispatchGeneration;
     private readonly object replayPassLogGate = new();
     private readonly HashSet<string> loggedReplayPasses = new(StringComparer.Ordinal);
 
@@ -231,13 +250,22 @@ public sealed class HostSession
 
     public async Task<HostCommandResult> RunPaintAsync(bool previewOnly, bool unpreviewOnly, CancellationToken cancellationToken = default)
     {
-        if (PaintRunning || nativePaintMayBeRunning)
+        int runGeneration;
+        lock (paintStateGate)
         {
-            const string alreadyRunning = "Paint: already running.";
-            Log.Warn(alreadyRunning);
-            return new HostCommandResult(false, alreadyRunning);
+            if (PaintRunning || nativePaintMayBeRunning)
+            {
+                const string alreadyRunning = "Paint: already running.";
+                Log.Warn(alreadyRunning);
+                return new HostCommandResult(false, alreadyRunning);
+            }
+            PaintRunning = true;
+            runGeneration = ++nextPaintGeneration;
+            activePaintGeneration = runGeneration;
+            cancelState = PaintCancelState.None;
+            cancelPaintGeneration = 0;
+            paintRequestDispatchGeneration = 0;
         }
-        PaintRunning = true;
         currentPaintStartedAt = DateTimeOffset.UtcNow;
         currentProgressIsServerPaint = !previewOnly && !unpreviewOnly;
         finalProgressLogged = false;
@@ -252,6 +280,12 @@ public sealed class HostSession
                 return new HostCommandResult(false, "Game process not found.");
             }
             var ready = await Runtime.EnsureReadyAsync(process, cancellationToken);
+            if (IsPreDispatchCancellationPending(runGeneration))
+            {
+                const string canceledBeforeDispatch = "Paint: canceled.";
+                Log.Info(canceledBeforeDispatch);
+                return new HostCommandResult(false, canceledBeforeDispatch);
+            }
             if (!ready)
                 return new HostCommandResult(false, "Bridge is not connected.");
             var startedMessage = previewOnly ? "Preview: started." : (unpreviewOnly ? "UnPreview: started." : "Paint: started.");
@@ -260,78 +294,253 @@ public sealed class HostSession
                 Settings,
                 process.Id,
                 Settings.GameProcessName,
-                new PaintRequestOptions(previewOnly, unpreviewOnly, Environment.GetEnvironmentVariable("MECCHA_RESEARCH_ARTIFACTS") == "1"));
+                new PaintRequestOptions(previewOnly, unpreviewOnly, BuildFeatures.ResearchArtifactsEnabled));
+            if (!TryBeginPaintDispatch(runGeneration))
+            {
+                const string canceledBeforeDispatch = "Paint: canceled.";
+                Log.Info(canceledBeforeDispatch);
+                return new HostCommandResult(false, canceledBeforeDispatch);
+            }
             var response = await Runtime.SendPaintAsync(payload, cancellationToken);
             var message = FriendlyBridgeMessage(response.Message.Length > 0 ? response.Message : response.Stage);
             if (response.Success)
             {
-                nativePaintMayBeRunning = false;
+                message = DescribePaintCompletion(message, serverPaint: !previewOnly && !unpreviewOnly);
+                lock (paintStateGate)
+                {
+                    if (activePaintGeneration == runGeneration)
+                        nativePaintMayBeRunning = false;
+                }
                 LogFinalProgressOnce();
                 Log.Info(message);
                 return new HostCommandResult(true, message);
             }
-            if (message == "Paint: canceled.")
+            if (IsPaintCancellationMessage(message))
             {
-                nativePaintMayBeRunning = false;
+                lock (paintStateGate)
+                {
+                    if (activePaintGeneration == runGeneration)
+                        nativePaintMayBeRunning = false;
+                }
+                LogFinalProgressOnce();
+                Log.Info(message);
                 return new HostCommandResult(false, message);
             }
             if (IsGuardWarning(message))
             {
-                if (message == "Paint: already running.")
-                    nativePaintMayBeRunning = true;
-                else
-                    nativePaintMayBeRunning = false;
+                lock (paintStateGate)
+                {
+                    if (activePaintGeneration == runGeneration)
+                        nativePaintMayBeRunning = message == "Paint: already running.";
+                }
                 Log.Warn(message);
                 return new HostCommandResult(false, message);
             }
-            nativePaintMayBeRunning = false;
+            lock (paintStateGate)
+            {
+                if (activePaintGeneration == runGeneration)
+                    nativePaintMayBeRunning = false;
+            }
             LogFailureProgressOnce();
             Log.Error(message);
             return new HostCommandResult(false, message);
         }
         finally
         {
-            PaintRunning = false;
+            lock (paintStateGate)
+            {
+                if (activePaintGeneration == runGeneration)
+                {
+                    PaintRunning = false;
+                    activePaintGeneration = 0;
+                    cancelState = PaintCancelState.None;
+                    cancelPaintGeneration = 0;
+                    paintRequestDispatchGeneration = 0;
+                }
+            }
             currentProgressIsServerPaint = false;
         }
     }
 
     public async Task<HostCommandResult> StopPaintAsync(CancellationToken cancellationToken = default)
     {
-        if (!PaintRunning && !nativePaintMayBeRunning && !Runtime.IsConnected)
+        int requestedGeneration;
+        bool controllerOwnedPaint;
+        lock (paintStateGate)
         {
-            const string noActivePaint = "Paint: no active paint to cancel.";
-            Log.Warn(noActivePaint);
-            return new HostCommandResult(false, noActivePaint);
+            if (cancelState == PaintCancelState.Sending)
+                return new HostCommandResult(true, "Paint: cancel requested.");
+            if (cancelState == PaintCancelState.PreDispatchPending)
+                return new HostCommandResult(true, "Paint: cancel requested.");
+            if (cancelState == PaintCancelState.AcceptedAwaitingTerminal)
+                return new HostCommandResult(true, "Paint: cancel requested.");
+            if (!PaintRunning && !nativePaintMayBeRunning)
+            {
+                const string noActivePaint = "Paint: no active paint to cancel.";
+                Log.Warn(noActivePaint);
+                return new HostCommandResult(false, noActivePaint);
+            }
+            controllerOwnedPaint = PaintRunning;
+            requestedGeneration = controllerOwnedPaint ? activePaintGeneration : 0;
+            if (controllerOwnedPaint && paintRequestDispatchGeneration != requestedGeneration)
+            {
+                cancelState = PaintCancelState.PreDispatchPending;
+                cancelPaintGeneration = requestedGeneration;
+                const string canceledBeforeDispatch = "Paint: canceled.";
+                Log.Info(canceledBeforeDispatch);
+                return new HostCommandResult(true, canceledBeforeDispatch);
+            }
+            cancelState = PaintCancelState.Sending;
+            cancelPaintGeneration = requestedGeneration;
         }
-        var response = await Runtime.CancelPaintAsync(cancellationToken);
+        BridgeReply response;
+        try
+        {
+            response = await Runtime.CancelPaintAsync(cancellationToken);
+            for (var attempt = 0;
+                 attempt < NativeCancelAdmissionRetryAttempts &&
+                 ShouldRetryCancelAfterEarlyAcknowledgement(requestedGeneration, controllerOwnedPaint, response);
+                 ++attempt)
+            {
+                await Task.Delay(NativeCancelAdmissionRetryDelay, cancellationToken);
+                response = await Runtime.CancelPaintAsync(cancellationToken);
+            }
+        }
+        catch
+        {
+            ClearCancelStateIfOwned(requestedGeneration);
+            throw;
+        }
         var message = FriendlyBridgeMessage(response.Message.Length > 0 ? response.Message : response.Stage);
         var cancelledJobs = CancelledPaintJobCount(response);
-        if (response.Success && cancelledJobs == 0)
+        var nativeCancellationLatched = NativePaintRequestCancellationLatched(response);
+        lock (paintStateGate)
         {
-            const string noActivePaint = "Paint: no active paint to cancel.";
-            nativePaintMayBeRunning = false;
-            Log.Warn(noActivePaint);
-            PaintRunning = false;
-            return new HostCommandResult(false, noActivePaint);
+            // The original command can terminalize while the independent cancel request is in
+            // flight. Never revive a completed generation with a late acknowledgement.
+            var sameControllerPaint = controllerOwnedPaint &&
+                                      PaintRunning &&
+                                      activePaintGeneration == requestedGeneration;
+            var ownsCancelState = cancelState == PaintCancelState.Sending &&
+                                  cancelPaintGeneration == requestedGeneration;
+            if (!ownsCancelState)
+                return new HostCommandResult(response.Success, "Paint: cancellation completed after the paint terminalized.");
+
+            if (!response.Success)
+            {
+                cancelState = PaintCancelState.None;
+                cancelPaintGeneration = 0;
+                if (IsGuardWarning(message))
+                    Log.Warn(message);
+                else
+                    Log.Error("Paint: cancel failed: " + message);
+                return new HostCommandResult(false, message);
+            }
+
+            if (cancelledJobs == 0 && !nativeCancellationLatched)
+            {
+                cancelState = PaintCancelState.None;
+                cancelPaintGeneration = 0;
+                nativePaintMayBeRunning = false;
+                if (sameControllerPaint && paintRequestDispatchGeneration == requestedGeneration)
+                {
+                    const string nativeAdmissionMissed = "Paint: cancel was not observed by the native paint request. Retry stop.";
+                    Log.Warn(nativeAdmissionMissed);
+                    return new HostCommandResult(false, nativeAdmissionMissed);
+                }
+                const string noActivePaint = "Paint: no active paint to cancel.";
+                Log.Warn(noActivePaint);
+                return new HostCommandResult(false, noActivePaint);
+            }
+
+            if (cancelledJobs is null)
+            {
+                cancelState = PaintCancelState.None;
+                cancelPaintGeneration = 0;
+                const string malformed = "Paint: cancel response did not include native job counts.";
+                Log.Error(malformed);
+                return new HostCommandResult(false, malformed);
+            }
+
+            if (!sameControllerPaint)
+            {
+                // A foreign native job has no controller-owned terminal request to clear this
+                // state. Its acknowledgement is terminal from the UI's perspective.
+                cancelState = PaintCancelState.None;
+                cancelPaintGeneration = 0;
+                nativePaintMayBeRunning = false;
+                const string completed = "Paint: cancel requested.";
+                Log.Info(completed);
+                return new HostCommandResult(true, completed);
+            }
+
+            // The original request remains active only long enough to observe the bounded local
+            // queue tail reaching zero.
+            cancelState = PaintCancelState.AcceptedAwaitingTerminal;
+            nativePaintMayBeRunning = true;
+            const string pending = "Paint: cancel requested.";
+            Log.Info(pending);
+            return new HostCommandResult(true, pending);
         }
-        if (response.Success)
-        {
-            nativePaintMayBeRunning = false;
-            LogFinalProgressOnce();
-            Log.Info("Paint: canceled.");
-        }
-        else if (IsGuardWarning(message))
-        {
-            Log.Warn(message);
-        }
-        else
-        {
-            Log.Error("Paint: cancel failed: " + message);
-        }
-        PaintRunning = false;
-        return new HostCommandResult(response.Success, response.Success ? "Paint: canceled." : message);
     }
+
+    private bool ShouldRetryCancelAfterEarlyAcknowledgement(
+        int generation,
+        bool controllerOwnedPaint,
+        BridgeReply response)
+    {
+        if (!controllerOwnedPaint ||
+            !response.Success ||
+            CancelledPaintJobCount(response) is not 0 ||
+            NativePaintRequestCancellationLatched(response))
+        {
+            return false;
+        }
+        lock (paintStateGate)
+        {
+            return PaintRunning &&
+                   activePaintGeneration == generation &&
+                   paintRequestDispatchGeneration == generation &&
+                   cancelState == PaintCancelState.Sending &&
+                   cancelPaintGeneration == generation;
+        }
+    }
+
+    private void ClearCancelStateIfOwned(int generation)
+    {
+        lock (paintStateGate)
+        {
+            if (cancelState == PaintCancelState.Sending && cancelPaintGeneration == generation)
+            {
+                cancelState = PaintCancelState.None;
+                cancelPaintGeneration = 0;
+            }
+        }
+    }
+
+    private bool TryBeginPaintDispatch(int generation)
+    {
+        lock (paintStateGate)
+        {
+            if (!PaintRunning || activePaintGeneration != generation ||
+                IsPreDispatchCancellationPendingLocked(generation))
+            {
+                return false;
+            }
+            paintRequestDispatchGeneration = generation;
+            return true;
+        }
+    }
+
+    private bool IsPreDispatchCancellationPending(int generation)
+    {
+        lock (paintStateGate)
+            return IsPreDispatchCancellationPendingLocked(generation);
+    }
+
+    private bool IsPreDispatchCancellationPendingLocked(int generation) =>
+        cancelState == PaintCancelState.PreDispatchPending &&
+        cancelPaintGeneration == generation;
 
     public static int? CancelledPaintJobCount(BridgeReply response)
     {
@@ -352,6 +561,30 @@ public sealed class HostSession
         catch
         {
             return null;
+        }
+    }
+
+    /// <summary>
+    /// Native reports this when cancel raced with admission: there was not yet a queued/executing
+    /// job to count, but the current paint request owns a cancellation latch and will terminalize
+    /// before it can dispatch work.
+    /// </summary>
+    public static bool NativePaintRequestCancellationLatched(BridgeReply response)
+    {
+        if (string.IsNullOrWhiteSpace(response.Raw))
+            return false;
+        try
+        {
+            using var doc = JsonDocument.Parse(response.Raw);
+            return doc.RootElement.TryGetProperty("metadata", out var metadata) &&
+                   metadata.ValueKind == JsonValueKind.Object &&
+                   metadata.TryGetProperty("cancel_latched_paint_request", out var latched) &&
+                   latched.ValueKind is JsonValueKind.True or JsonValueKind.False &&
+                   latched.GetBoolean();
+        }
+        catch
+        {
+            return false;
         }
     }
 
@@ -415,7 +648,10 @@ public sealed class HostSession
             lower.Contains("mesh-first paint completed") ||
             lower.Contains("sent through serverpaintbatch"))
             return "Paint: completed.";
-        if (lower.Contains("mesh-first paint cancelled") || lower.Contains("mesh-first paint canceled"))
+        if (lower.Contains("paint cancellation") ||
+            lower.Contains("paint canceled") ||
+            lower.Contains("mesh-first paint cancelled") ||
+            lower.Contains("mesh-first paint canceled"))
             return "Paint: canceled.";
         if (lower is "mesh_preview_done" || lower.Contains("local preview material texture imported"))
             return "Preview: applied.";
@@ -462,6 +698,18 @@ public sealed class HostSession
             .Replace("mesh first ", "", StringComparison.OrdinalIgnoreCase)
             .Replace("mesh_first_", "", StringComparison.OrdinalIgnoreCase);
     }
+
+    /// <summary>
+    /// A server-paint terminal reply proves the host's local queue reached its terminal state;
+    /// it cannot prove a joining client's game-owned receiver has presented its final pixels.
+    /// </summary>
+    public static string DescribePaintCompletion(string message, bool serverPaint) =>
+        serverPaint && string.Equals(message, "Paint: completed.", StringComparison.Ordinal)
+            ? "Paint: completed locally; joined clients may still be rendering."
+            : message;
+
+    private static bool IsPaintCancellationMessage(string message) =>
+        message == "Paint: canceled.";
 
     private static bool IsGuardWarning(string message) =>
         message.Equals("Paint: already running.", StringComparison.OrdinalIgnoreCase) ||

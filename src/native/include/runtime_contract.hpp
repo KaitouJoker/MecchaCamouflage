@@ -270,6 +270,33 @@ namespace runtime_contract
         return max_value(1, requested_delay_ms);
     }
 
+    // The paired packed path must never place more than one configured batch
+    // ahead of the painter's exact component queue.  An unavailable queue
+    // observation is unsafe: do not submit another paired server/local batch.
+    constexpr int paired_local_queue_available_capacity(int configured_batch_limit,
+                                                        int queued_strokes)
+    {
+        if (queued_strokes < 0)
+        {
+            return 0;
+        }
+        return max_value(0, max_value(1, configured_batch_limit) - queued_strokes);
+    }
+
+    constexpr int paired_local_queue_commit_count(int requested_strokes,
+                                                  int configured_batch_limit,
+                                                  int queued_strokes)
+    {
+        return min_value(max_value(0, requested_strokes),
+                         paired_local_queue_available_capacity(configured_batch_limit, queued_strokes));
+    }
+
+    constexpr bool paired_local_queue_cancel_needs_drain(bool cancel_requested,
+                                                         int queued_strokes)
+    {
+        return cancel_requested && queued_strokes > 0;
+    }
+
     // The supported manager appends strokes in order and advances one processed
     // cursor.  Once a job owns an initially empty component queue, submitted -
     // queued is therefore a conservative render-queue cursor.  Preserve the

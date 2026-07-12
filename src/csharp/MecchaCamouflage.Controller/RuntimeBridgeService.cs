@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.Security.Cryptography;
 using MecchaCamouflage.Core;
 
@@ -11,6 +12,13 @@ public enum ResearchProbeKind
     Replication,
     ReplicationPressure,
     ReplicationTexture
+}
+
+/// <summary>Explicit target selection for a read-only research texture export.</summary>
+public enum ResearchTextureTarget
+{
+    ResolvedComponent,
+    EventwatchMulticastPackedReceiver
 }
 
 /// <summary>
@@ -151,8 +159,30 @@ public sealed class RuntimeBridgeService
     /// Sends one whitelisted, authenticated research request through the controller-owned bridge.
     /// This does not create a second listener or bypass the per-instance HELLO handshake.
     /// </summary>
-    public Task<BridgeReply> SendResearchProbeAsync(ResearchProbeKind kind, CancellationToken cancellationToken = default) =>
-        RequestActiveAsync(client => client.RequestAsync(ResearchProbePayload(kind), cancellationToken));
+    public Task<BridgeReply> SendResearchProbeAsync(
+        ResearchProbeKind kind,
+        CancellationToken cancellationToken = default) =>
+        SendResearchProbeAsync(kind, ResearchTextureTarget.ResolvedComponent, null, cancellationToken);
+
+    public Task<BridgeReply> SendResearchProbeAsync(
+        ResearchProbeKind kind,
+        ResearchTextureTarget textureTarget,
+        CancellationToken cancellationToken = default) =>
+        SendResearchProbeAsync(kind, textureTarget, null, cancellationToken);
+
+    /// <summary>
+    /// Sends a research probe with an optional exact component pin. The event-watch receiver
+    /// target requires this pin so a later multicast cannot silently replace the receiver that
+    /// discovery observed.
+    /// </summary>
+    public Task<BridgeReply> SendResearchProbeAsync(
+        ResearchProbeKind kind,
+        ResearchTextureTarget textureTarget,
+        string? expectedTextureComponent,
+        CancellationToken cancellationToken = default) =>
+        RequestActiveAsync(client => client.RequestAsync(
+            ResearchProbePayload(kind, textureTarget, expectedTextureComponent),
+            cancellationToken));
 
     public async Task<BridgeReply> ShutdownAsync(CancellationToken cancellationToken = default)
     {
@@ -500,13 +530,45 @@ public sealed class RuntimeBridgeService
         return new ActiveBridgeRequest(instance, reply);
     }
 
-    private static string ResearchProbePayload(ResearchProbeKind kind) => kind switch
+    private static string ResearchProbePayload(
+        ResearchProbeKind kind,
+        ResearchTextureTarget textureTarget,
+        string? expectedTextureComponent) => kind switch
     {
         ResearchProbeKind.Replication => "{\"type\":\"paint_replication_probe\"}",
         ResearchProbeKind.ReplicationPressure => "{\"type\":\"paint_replication_pressure_probe\"}",
-        ResearchProbeKind.ReplicationTexture => "{\"type\":\"paint_replication_texture_probe\"}",
+        ResearchProbeKind.ReplicationTexture => ResearchTextureProbePayload(textureTarget, expectedTextureComponent),
         _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unsupported research probe.")
     };
+
+    private static string ResearchTextureProbePayload(
+        ResearchTextureTarget textureTarget,
+        string? expectedTextureComponent) => textureTarget switch
+    {
+        ResearchTextureTarget.ResolvedComponent when string.IsNullOrWhiteSpace(expectedTextureComponent) =>
+            "{\"type\":\"paint_replication_texture_probe\",\"research_texture_target\":\"resolved\"}",
+        ResearchTextureTarget.ResolvedComponent => throw new ArgumentException(
+            "A texture component pin is only supported for an event-watch multicast receiver.",
+            nameof(expectedTextureComponent)),
+        ResearchTextureTarget.EventwatchMulticastPackedReceiver =>
+            "{\"type\":\"paint_replication_texture_probe\",\"research_texture_target\":\"eventwatch_multicast_packed_receiver\",\"research_texture_expected_component\":\"" +
+            NormalizeNonZeroHexAddress(expectedTextureComponent) + "\"}",
+        _ => throw new ArgumentOutOfRangeException(nameof(textureTarget), textureTarget, "Unsupported research texture target.")
+    };
+
+    private static string NormalizeNonZeroHexAddress(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Length < 3 ||
+            value[0] != '0' || (value[1] != 'x' && value[1] != 'X') ||
+            !ulong.TryParse(value[2..], NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out var address) ||
+            address == 0)
+        {
+            throw new ArgumentException(
+                "The event-watch texture target requires a non-zero hexadecimal component address.",
+                nameof(value));
+        }
+        return "0x" + address.ToString("x", CultureInfo.InvariantCulture);
+    }
 
     private static bool IsBridgeReadyForInstance(BridgeReply reply, BridgeInstance instance) =>
         reply.Ok &&
@@ -673,8 +735,7 @@ public sealed class RuntimeBridgeService
         return message;
     }
 
-    private static bool ResearchArtifactsEnabled() =>
-        string.Equals(Environment.GetEnvironmentVariable("MECCHA_RESEARCH_ARTIFACTS"), "1", StringComparison.Ordinal);
+    private static bool ResearchArtifactsEnabled() => BuildFeatures.ResearchArtifactsEnabled;
 
     private sealed record ActiveBridgeRequest(BridgeInstance? Instance, BridgeReply Reply);
     private sealed record InjectorInvocation(bool Canceled, bool Parsed, InjectorResultV1? Result, string ParseError, string StandardError);

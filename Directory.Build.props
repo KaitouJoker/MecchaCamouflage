@@ -3,4 +3,7 @@
     <BaseOutputPath>$(MSBuildThisFileDirectory).build/dotnet/bin/$(MSBuildProjectName)/</BaseOutputPath>
     <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory).build/dotnet/obj/$(MSBuildProjectName)/</BaseIntermediateOutputPath>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(MecchaResearchBuild)' == 'true'">
+    <DefineConstants>$(DefineConstants);MECCHA_RESEARCH_BUILD</DefineConstants>
+  </PropertyGroup>
 </Project>

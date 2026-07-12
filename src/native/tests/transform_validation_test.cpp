@@ -389,5 +389,20 @@ int main()
     {
         return 23;
     }
+
+    if (runtime_contract::paired_local_queue_available_capacity(20, 0) != 20 ||
+        runtime_contract::paired_local_queue_available_capacity(20, 7) != 13 ||
+        runtime_contract::paired_local_queue_available_capacity(20, 20) != 0 ||
+        runtime_contract::paired_local_queue_available_capacity(20, 21) != 0 ||
+        runtime_contract::paired_local_queue_available_capacity(20, -1) != 0 ||
+        runtime_contract::paired_local_queue_commit_count(20, 20, 7) != 13 ||
+        runtime_contract::paired_local_queue_commit_count(5, 20, 7) != 5 ||
+        runtime_contract::paired_local_queue_commit_count(20, 20, 20) != 0 ||
+        runtime_contract::paired_local_queue_cancel_needs_drain(false, 20) ||
+        runtime_contract::paired_local_queue_cancel_needs_drain(true, 0) ||
+        !runtime_contract::paired_local_queue_cancel_needs_drain(true, 1))
+    {
+        return 24;
+    }
     return 0;
 }

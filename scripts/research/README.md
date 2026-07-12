@@ -21,7 +21,9 @@ An explicitly built diagnostic runner from this checkout has this entry point:
 meccha-camouflage.exe --research-replication --pid <exact-pid> \
   --role host|joining-client --out <local-artifact-directory> [--paint] \
   [--hold-seconds N] [--pressure-sample-ms N] [--texture-snapshot] \
+  [--texture-target resolved|eventwatch-multicast-packed-receiver --texture-discovery-seconds N] \
   [--paint-mode packed-local-queue|combined|combined-no-resend|local-only|packed-only] [--stroke-limit N] \
+  [--replay-stroke-index N] \
   [--front-mode paint|fill|skip] [--side-mode paint|fill|skip] [--back-mode paint|fill|skip] \
   [--batch-limit 1..20] [--batch-pacing-ms 50..500] \
   [--cancel-after-ms N | --shutdown-after-ms N] [--fill-color '#RRGGBB'] \
@@ -53,13 +55,38 @@ game-thread `paint_replication_pressure_probe` snapshots during the hold; it
 does not send paint or texture-sync requests.
 
 `--texture-snapshot` is an explicit, low-frequency diagnostic: it records
-before/after checksums exported from each eligible component's Albedo,
-Metallic, and Roughness channels. For the resolved component it also keeps a
-bridge-instance-scoped baseline and reports changed bytes, changed texels, and
-the changed-texel ratio. It does not call import, texture-sync, or paint
-functions. The export operation can still perform game-side readback, so do not
-combine it with the one-second sampler. Hash inequality alone is not
+before/after checksums for the selected component's Albedo, Metallic, and
+Roughness channels. It also retains a PNG and changed-pixel mask for that
+component's **Albedo only**; do not interpret its zero count as proof that
+Metallic or Roughness did not change. It deliberately does not export unrelated
+components, so the observation adds as little game-thread work as possible.
+The default target is the controller-resolved component. On a joining client,
+`--texture-target eventwatch-multicast-packed-receiver` instead pins the exact
+`MulticastPackedPaintBatch` ProcessEvent receiver. It requires
+`--texture-discovery-seconds N`: send one harmless packed discovery stroke from
+the host while the observer waits, then send the measured stroke after its
+`texture-before.json` appears. The runner fails closed if that receiver is
+missing, stale, or changes before the after probe. It does not freeze multicast
+traffic; instead, each probe must prove that its export target is still the
+discovered receiver. It does not call import, texture-sync, or paint functions.
+The before/after readbacks run outside the pressure-sampling loop, but their
+duration is not receiver-drain evidence. Hash inequality alone is not
 visual-coverage proof: a few tiny dots change the whole-texture hash.
+
+`--texture-snapshot` and `--shutdown-after-ms` are intentionally incompatible:
+a scheduled shutdown cannot safely produce the required after snapshot and
+changed-pixel PNG.
+
+Every successful research paint requests a post-limit UV replay sidecar and
+renders `uv-replay-atlas.png`: Fill, Brush 1, and Brush 2 occupy separate
+columns, with planner and packed-wire radii in separate rows. The atlas is a
+bounded proportional PNG even when the game atlas is large. A crossed marker
+in the packed row means the route had no packed encoding (for example
+`local-only`), not that it used the planner radius on the wire. A cancelled or
+failed paint deliberately does not stage this planning-time sidecar as rendered
+evidence. `--replay-stroke-index N` selects exactly one original post-plan
+stroke for a controlled footprint comparison; its index is the full replay
+order, before the selector reduces the emitted plan to one entry.
 
 `--paint-mode` and `--stroke-limit` are research-only A/B controls.
 `packed-local-queue` is the current production-shaped route: every successful
@@ -119,10 +146,20 @@ request, waits the requested number of milliseconds, then sends `cancel_paint`
 concurrently through the same controller-owned bridge instance and awaits both
 terminal replies. It writes the full replies to `paint-reply.json` and
 `cancel-paint-reply.json`, plus their outcome fields and the native cancelled-job
-count to `run-summary.json`. A cancel response that reaches no active or queued
-job, or a paint reply that does not terminate as cancelled, makes the run fail;
-increase the stroke limit or shorten the delay and repeat as a new run. Omitting
-the option preserves the normal paint behavior.
+count to `run-summary.json`. If cancel initially arrives before the native paint
+handler admits its job, the runner retries briefly while the paint request is
+still in flight. Native may instead report `cancel_latched_paint_request=true`:
+that is accepted as an admission-time cancellation even when both job counts are
+zero. A response with neither a job count nor that latch, or a paint reply that
+does not terminate as cancelled, makes the run fail; increase the stroke limit
+or shorten the delay and repeat as a new run. Omitting the option preserves the
+normal paint behavior. In `packed-local-queue` mode each paired server/local
+commit is additionally capped by the exact local component queue's remaining
+capacity, at most one configured batch. A cancel therefore prevents every later
+paired server RPC and local enqueue; only the already committed bounded local
+tail drains naturally before the terminal cancelled reply. It never clears
+recorded strokes, rewrites queue memory, or claims a joining client has stopped
+rendering previously sent work.
 
 `--shutdown-after-ms` has the same 1-through-60000 range and also requires
 `--paint`; it is mutually exclusive with `--cancel-after-ms`. The runner starts
@@ -149,7 +186,7 @@ does not itself prove pixel/render completion.
 
 The planner uses `Fill`, `CoarsePaint`, then `FinePaint`; each pass retains
 `Back`, `Side`, then `Front`. Fill runs once, Paint regions receive a deduplicated
-Brush 1 pass (15--20, default 20) and then the full Brush 2 pass (5--10, default
+Brush 1 pass (10--30, default 30) and then the full Brush 2 pass (5--10, default
 10), and Skip emits nothing. Pass boundaries never share a packed RPC. Within
 each pass/region partition, bind/reference-pose Z supplies head-to-feet rows and
 camera-right supplies left-to-right order; runtime surface Z is only a fallback.

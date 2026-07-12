@@ -74,6 +74,36 @@
         return wide;
     }
 
+    auto wstring_to_utf8(const std::wstring& text) -> std::string
+    {
+        if (text.empty())
+        {
+            return {};
+        }
+        const int size = WideCharToMultiByte(CP_UTF8,
+                                             WC_ERR_INVALID_CHARS,
+                                             text.data(),
+                                             static_cast<int>(text.size()),
+                                             nullptr,
+                                             0,
+                                             nullptr,
+                                             nullptr);
+        if (size <= 0)
+        {
+            return {};
+        }
+        std::string utf8(static_cast<std::size_t>(size), '\0');
+        const int written = WideCharToMultiByte(CP_UTF8,
+                                                WC_ERR_INVALID_CHARS,
+                                                text.data(),
+                                                static_cast<int>(text.size()),
+                                                utf8.data(),
+                                                size,
+                                                nullptr,
+                                                nullptr);
+        return written == size ? utf8 : std::string{};
+    }
+
     auto bridge_progress_path() -> std::wstring
     {
         const auto configured_sidecar = bridge_sidecar_path(L".progress.path");

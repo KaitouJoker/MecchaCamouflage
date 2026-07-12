@@ -26,6 +26,10 @@ discarded. Use `make clean-all` to remove both `.build/` and `artifacts/`.
 Confirm:
 
 - release artifact is a single EXE under `.build/package/`
+- `ReleaseSingleFile` output and package output contain no `.pdb`, `.dbg`, or
+  `.ilk` files
+- the normal release build excludes the research command runner and cannot
+  enable WebView DevTools through `MECCHA_RESEARCH_ARTIFACTS`
 - app uses the installed shared Evergreen Runtime; no browser runtime files are embedded
 - root directory has no generated `*.dll` or `*.exe`
 - source tree has no generated `bin/` or `obj`
