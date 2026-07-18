@@ -265,13 +265,13 @@ namespace runtime_contract
                 false};
     }
 
-    constexpr bool manual_batch_uses_direct_local(bool auto_adapt,
-                                                  bool normal_paint_requires_packed,
-                                                  bool local_visual_sync_requested,
-                                                  bool research_artifacts)
+    constexpr bool production_paint_uses_direct_local(bool auto_adapt,
+                                                      bool normal_paint_requires_packed,
+                                                      bool local_visual_sync_requested,
+                                                      bool research_artifacts)
     {
-        return !auto_adapt &&
-               normal_paint_requires_packed &&
+        (void)auto_adapt;
+        return normal_paint_requires_packed &&
                local_visual_sync_requested &&
                !research_artifacts;
     }

@@ -16,7 +16,7 @@ var tests = new List<(string Name, Action Run)>
     ("payload sends active brushes", PayloadSendsTwoPassBrushPipeline),
     ("native accepts the Brush 1 configured range", NativeAcceptsBrush1ConfiguredRange),
     ("native local route is signature resolved instead of build gated", NativeLocalRouteIsSignatureResolvedInsteadOfBuildGated),
-    ("native manual direct route is signature resolved instead of build gated", NativeManualDirectRouteIsSignatureResolvedInsteadOfBuildGated),
+    ("native production direct route is signature resolved instead of build gated", NativeProductionDirectRouteIsSignatureResolvedInsteadOfBuildGated),
     ("native local failures use fixed server packed fallback", NativeLocalFailuresUseFixedServerPackedFallback),
     ("native production radius follows each triangle and fill stays fixed", NativeProductionRadiusFollowsEachTriangleAndFillStaysFixed),
     ("native spatial replay follows the current pose and camera", NativeSpatialReplayFollowsCurrentPoseAndCamera),
@@ -50,7 +50,6 @@ var tests = new List<(string Name, Action Run)>
     ("front region defaults to fill", FrontRegionDefaultsToFill),
     ("bridge messages are user friendly", BridgeMessagesAreUserFriendly),
     ("paint fallback warning preserves native reason and fixed pacing", PaintFallbackWarningPreservesNativeReasonAndFixedPacing),
-    ("manual direct fallback warning preserves native reason and effective pacing", ManualDirectFallbackWarningPreservesNativeReasonAndEffectivePacing),
     ("settings detect supported system language", SettingsDetectSupportedSystemLanguage),
     ("ui snapshot exposes two-pass brushes and batch sliders", UiSnapshotExposesTwoPassBrushesAndBatchSliders),
     ("web ui exposes two-pass brush sliders", WebUiExposesTwoPassBrushSliders),
@@ -252,25 +251,25 @@ static void NativeLocalRouteIsSignatureResolvedInsteadOfBuildGated()
         "local route must retain schema validation and require one signature/call-chain candidate");
 }
 
-static void NativeManualDirectRouteIsSignatureResolvedInsteadOfBuildGated()
+static void NativeProductionDirectRouteIsSignatureResolvedInsteadOfBuildGated()
 {
     var bridge = File.ReadAllText(Path.Combine(
         FindRepositoryRoot(),
         "src", "native", "bridge", "bridge.cpp"));
     var start = bridge.LastIndexOf("auto resolve_internal_no_resend_route(", StringComparison.Ordinal);
     var end = bridge.IndexOf("auto sdk_validate_internal_common_no_resend_preconditions(", start, StringComparison.Ordinal);
-    Assert(start >= 0 && end > start, "manual direct resolver should be present");
+    Assert(start >= 0 && end > start, "production direct resolver should be present");
     var resolver = bridge[start..end];
 
     Assert(!resolver.Contains("TimeDateStamp ==", StringComparison.Ordinal) &&
            !resolver.Contains("ExpectedThunkRva", StringComparison.Ordinal) &&
            !resolver.Contains("main_module_build_identity_mismatch", StringComparison.Ordinal) &&
            !resolver.Contains("main_module_text_identity_mismatch", StringComparison.Ordinal),
-        "manual direct route must not reject a build solely because its identity or RVAs changed");
+        "production direct route must not reject a build solely because its identity or RVAs changed");
     Assert(resolver.Contains("PaintAtUVWithBrush_param_layout_mismatch", StringComparison.Ordinal) &&
            resolver.Contains("internal_rel32_call_target", StringComparison.Ordinal) &&
            resolver.Contains("matches.size() != 1", StringComparison.Ordinal),
-        "manual direct route must retain schema, signature, relative-call, and uniqueness validation");
+        "production direct route must retain schema, signature, relative-call, and uniqueness validation");
 }
 
 static void NativeLocalFailuresUseFixedServerPackedFallback()
@@ -733,32 +732,6 @@ static void PaintFallbackWarningPreservesNativeReasonAndFixedPacing()
         "normal paint replies should not emit a fallback warning");
 }
 
-static void ManualDirectFallbackWarningPreservesNativeReasonAndEffectivePacing()
-{
-    const string reason = "manual direct local route unavailable: signature mismatch";
-    var reply = new BridgeReply(
-        true,
-        true,
-        "mesh_first_paint_done",
-        "mesh-first paint completed",
-        $$"""
-        {
-          "success": true,
-          "metadata": {
-            "local_route_mode": "packed_receiver_fallback",
-            "fallback_reason": "{{reason}}",
-            "fallback_batch_limit": 20,
-            "fallback_pacing_ms": 50
-          }
-        }
-        """);
-
-    var warning = HostSession.PaintFallbackWarning(reply);
-
-    Assert(warning == reason + " (packed receiver fallback: 20 strokes / 50 ms)",
-        "manual direct fallback warning should preserve the reason and effective safe pacing");
-}
-
 static void SettingsDetectSupportedSystemLanguage()
 {
     var previous = System.Globalization.CultureInfo.CurrentUICulture;
@@ -861,6 +834,7 @@ static void WebUiKeepsThemeColorOnReadonlyControls()
     var repository = FindRepositoryRoot();
     var app = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "app.js"));
     var styles = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "styles.css"));
+    var normalizedStyles = styles.ReplaceLineEndings("\n");
 
     Assert(app.Contains("isThemeVisibleReadOnlyControl", StringComparison.Ordinal),
         "the UI should distinguish passive themed controls from ordinary disabled inputs");
@@ -868,7 +842,7 @@ static void WebUiKeepsThemeColorOnReadonlyControls()
         "readonly range and checkbox controls should remain paint-enabled for Chromium accent rendering");
     Assert(styles.Contains("input.theme-visible-readonly[type=\"range\"]", StringComparison.Ordinal),
         "readonly sliders need a dedicated themed style");
-    Assert(styles.Contains("input.theme-visible-readonly[type=\"range\"] {\n  opacity: 0.55;", StringComparison.Ordinal),
+    Assert(normalizedStyles.Contains("input.theme-visible-readonly[type=\"range\"] {\n  opacity: 0.55;", StringComparison.Ordinal),
         "readonly sliders should visibly dim outside Edit mode");
     Assert(styles.Contains("input.theme-visible-readonly[type=\"checkbox\"]", StringComparison.Ordinal),
         "readonly checkboxes need a dedicated themed style");
@@ -942,12 +916,13 @@ static void NativeProgressExposesReplayPassState()
     Assert(bridge.Contains("receiver_queue_idle_threshold_reached", StringComparison.Ordinal),
         "receiver drain should invalidate stale ETA and fail closed after an idle timeout");
     Assert(json.Contains("replay_current_pass", StringComparison.Ordinal), "compact progress metadata should retain the current pass");
-    Assert(bridge.Contains("manual_batch_uses_direct_local", StringComparison.Ordinal) &&
+    Assert(bridge.Contains("production_paint_uses_direct_local", StringComparison.Ordinal) &&
            bridge.Contains("local_direct_submission", StringComparison.Ordinal) &&
            bridge.Contains("parallel_lane_eta_ms", StringComparison.Ordinal),
-        "manual paint should expose independent direct-local progress and parallel-lane ETA");
-    Assert(bridge.Contains("!manual_direct_local_requested", StringComparison.Ordinal),
-        "Auto Adapt paint should retain the packed local receiver queue");
+        "production paint should expose independent direct-local progress and parallel-lane ETA");
+    Assert(bridge.Contains("production_direct_local_requested", StringComparison.Ordinal) &&
+           !bridge.Contains("!manual_direct_local_requested", StringComparison.Ordinal),
+        "Auto Adapt and manual paint should both select the bounded direct-local route");
 }
 
 static void SettingsClampBatchSliders()

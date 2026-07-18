@@ -120,11 +120,11 @@ int main()
         return 8;
     }
 
-    if (!runtime_contract::manual_batch_uses_direct_local(false, true, true, false) ||
-        runtime_contract::manual_batch_uses_direct_local(true, true, true, false) ||
-        runtime_contract::manual_batch_uses_direct_local(false, false, true, false) ||
-        runtime_contract::manual_batch_uses_direct_local(false, true, false, false) ||
-        runtime_contract::manual_batch_uses_direct_local(false, true, true, true))
+    if (!runtime_contract::production_paint_uses_direct_local(false, true, true, false) ||
+        !runtime_contract::production_paint_uses_direct_local(true, true, true, false) ||
+        runtime_contract::production_paint_uses_direct_local(false, false, true, false) ||
+        runtime_contract::production_paint_uses_direct_local(false, true, false, false) ||
+        runtime_contract::production_paint_uses_direct_local(false, true, true, true))
     {
         return 8;
     }

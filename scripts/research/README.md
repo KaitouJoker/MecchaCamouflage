@@ -89,12 +89,12 @@ stroke for a controlled footprint comparison; its index is the full replay
 order, before the selector reduces the emitted plan to one entry.
 
 `--paint-mode` and `--stroke-limit` are research-only A/B controls.
-`packed-local-queue` is the current production-shaped route: every successful
-server packed batch is decoded directly into the painter's exact game-owned
-receiver queue with the same stroke boundary and cadence, and is selected when
-`--paint-mode` is omitted. `combined` and
-`combined-no-resend` retain the superseded per-stroke internal-common route for
-controlled comparison. `local-only` keeps the reflected `PaintAtUVWithBrush`
+`combined-no-resend` is the production-shaped local-application comparison:
+server packed submission and bounded internal-common no-resend application use
+independent lanes. `packed-local-queue` remains an explicit receiver-queue A/B
+mode and is selected when `--paint-mode` is omitted by the research runner.
+`combined` retains the superseded reflected local route for controlled
+comparison. `local-only` keeps the reflected `PaintAtUVWithBrush`
 local call but suppresses the runner's explicit packed RPC; `packed-only` keeps
 the packed RPC but suppresses the local call. A positive stroke limit
 truncates the planned replay after planning so small attribution tests do not
@@ -135,11 +135,9 @@ comparison without a special mode, pass `--batch-limit 6 --batch-pacing-ms 75`.
 Research route selection remains explicit: batch overrides alone do not switch
 the runner away from `packed-local-queue`; use `--paint-mode combined-no-resend`
 to measure the same bounded no-resend local primitive selected by production
-manual mode, including one immediate slice repost followed by a deferred wakeup.
-The production-shaped packed local route uses the same batch limit and pacing
-as the server lane. Painter-local receiver backlog is observed but is not used
-as evidence of a remote peer's EOS/game queue and therefore does not slow the
-outgoing lane; the game's own receiver/render budgets drain it asynchronously.
+in both Auto Adapt and manual modes, including one immediate slice repost
+followed by a deferred wakeup. The packed local route uses the same batch limit
+and pacing as the server lane only for its explicit research comparison.
 The legacy `combined` A/B route still has its 6-call/4-ms CPU yield. Deferred
 scheduler wakeups are always delayed by at least 1 ms. These controls change
 neither EOS settings nor game-owned component/manager limits.
@@ -176,19 +174,12 @@ terminate as cancelled, and requires event-watch to reach
 runner skips its normal `finally` shutdown even when the result is
 indeterminate; it does not obscure the evidence with an automatic retry.
 
-Normal production paint keeps the explicit server packed RPC and invokes the
-validated native implementation behind `MulticastPackedPaintBatch` directly,
-without calling the reflected multicast UFunction. A synthetic non-self source
-GUID lets the receiver accept the local copy without changing component state.
-The resolver records the current Shipping PE/text identity and validates the
-reflected payload layout, UFunction thunk, vtable slot, decoder,
-component-to-manager resolver, and enqueue chain. PE/text identity is diagnostic
-rather than a version gate. It pins the exact manager used by the component and requires an exact
-component-queue increase before accepting each paired batch. If local route or
-queue validation fails, local calls stop and the server packed route continues
-at 20 strokes / 50 ms; there is no per-stroke or reflected fallback. Queue
-submission and checksum change are separate evidence: a returned receiver call
-does not itself prove pixel/render completion.
+Normal production paint keeps the explicit server packed RPC and applies the
+painter-local copy through the bounded internal-common no-resend route. It does
+not invoke the packed receiver queue or reflected `PaintAtUVWithBrush`. If the
+no-resend resolver or read-only preflight fails, local calls stop and the server
+packed route continues at 20 strokes / 50 ms. The packed receiver resolver and
+its exact queue checks remain available only in explicit research mode.
 
 The planner uses `Fill`, `CoarsePaint`, then `FinePaint`; each pass retains
 only the enabled Brushes. If any region selects Fill, one 100-texel Fill pass

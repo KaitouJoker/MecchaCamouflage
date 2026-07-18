@@ -10051,9 +10051,7 @@ namespace
                                                       ? "manual"
                                                       : (job->pacing_source == "server_packed_fallback"
                                                              ? "server_packed_fallback"
-                                                             : (job->pacing_source == "packed_receiver_fallback"
-                                                                    ? "packed_receiver_fallback"
-                                                                    : "auto_adapt")));
+                                                             : "auto_adapt"));
         out += ",\"replication_pacing_control\":\"" + pacing_control + "\"";
         out += ",\"replication_pacing_source\":\"" +
                json_escape(job ? job->pacing_source : "game_limits") + "\"";
@@ -10972,20 +10970,18 @@ namespace
                             json_bool_field(request,
                                             "replication_pacing_enabled",
                                             json_bool_field(request, "adaptive_batch_enabled", true)));
-        const bool manual_direct_local_requested = runtime_contract::manual_batch_uses_direct_local(
+        const bool production_direct_local_requested = runtime_contract::production_paint_uses_direct_local(
             tuning_replication_pacing_enabled,
             normal_paint_requires_packed,
             local_visual_sync_requested,
             research_artifacts);
         bool use_packed_local_queue = normal_paint_requires_packed &&
                                       local_visual_sync_requested &&
-                                      (research_packed_local_queue || !research_artifacts) &&
-                                      !manual_direct_local_requested;
+                                      research_artifacts &&
+                                      research_packed_local_queue;
         bool local_visual_sync_enabled = local_visual_sync_requested;
         bool server_packed_fallback = false;
         std::string server_packed_fallback_reason{};
-        bool manual_direct_packed_fallback = false;
-        std::string manual_direct_fallback_reason{};
         bool use_internal_no_resend_local_apply = runtime_contract::requires_internal_no_resend(
             preview_only,
             unpreview_only,
@@ -12826,11 +12822,22 @@ namespace
         metadata += ",\"server_batch_limit_contract_estimate\":" +
                     std::to_string(effective_replay_server_batch_limit);
         metadata += ",\"server_packed_paint_batch_ignored\":\"" + json_escape(packed_ignored_reason) + "\"";
-        auto activate_manual_direct_packed_fallback = [&](const std::string& reason) {
-            manual_direct_packed_fallback = true;
-            manual_direct_fallback_reason = "manual direct local route unavailable: " + reason;
+        auto activate_server_packed_fallback = [&](const std::string& reason) {
+            if (server_packed_fallback)
+            {
+                return;
+            }
+            server_packed_fallback = true;
+            server_packed_fallback_reason = reason;
             use_internal_no_resend_local_apply = false;
-            use_packed_local_queue = true;
+            use_packed_local_queue = false;
+            local_visual_sync_enabled = false;
+            metadata += ",\"local_route_mode\":\"server_packed_fallback\"";
+            metadata += ",\"fallback_reason\":\"" + json_escape(reason) + "\"";
+            metadata += ",\"fallback_batch_limit\":" +
+                        std::to_string(runtime_contract::ServerPackedFallbackBatchLimit);
+            metadata += ",\"fallback_pacing_ms\":" +
+                        std::to_string(runtime_contract::ServerPackedFallbackPacingMs);
         };
         InternalNoResendRoute no_resend_route{};
         if (use_internal_no_resend_local_apply)
@@ -12851,9 +12858,11 @@ namespace
             metadata += ",\"no_resend_common_rva\":\"" + hex_address(rva(no_resend_route.common)) + "\"";
             if (!no_resend_route.resolved)
             {
-                if (manual_direct_local_requested)
+                if (production_direct_local_requested)
                 {
-                    activate_manual_direct_packed_fallback(no_resend_route.failure);
+                    activate_server_packed_fallback(
+                        "the bounded local no-resend route could not be resolved: " +
+                        no_resend_route.failure);
                 }
                 else
                 {
@@ -12865,7 +12874,7 @@ namespace
                                          metadata + ",\"replay_blocked\":true");
                 }
             }
-            else if (manual_direct_local_requested)
+            else if (production_direct_local_requested)
             {
                 std::vector<std::pair<std::uintptr_t, int>> validated_descriptors{};
                 for (const auto& stroke : strokes)
@@ -12887,15 +12896,17 @@ namespace
                             stroke,
                             preflight_failure))
                     {
-                        activate_manual_direct_packed_fallback(preflight_failure);
+                        activate_server_packed_fallback(
+                            "the bounded local no-resend preflight failed: " +
+                            preflight_failure);
                         break;
                     }
                     validated_descriptors.push_back(descriptor);
                 }
-                if (!manual_direct_packed_fallback)
+                if (!server_packed_fallback)
                 {
-                    metadata += ",\"local_route_mode\":\"manual_direct\"";
-                    metadata += ",\"manual_direct_preflight_descriptors\":" +
+                    metadata += ",\"local_route_mode\":\"bounded_no_resend_direct\"";
+                    metadata += ",\"direct_local_preflight_descriptors\":" +
                                 std::to_string(validated_descriptors.size());
                 }
             }
@@ -12910,22 +12921,6 @@ namespace
         }
         metadata += ",\"internal_no_resend_max_calls_per_tick\":" +
                     std::to_string(use_internal_no_resend_local_apply ? InternalNoResendMaxCallsPerTick : 0);
-        auto activate_server_packed_fallback = [&](const std::string& reason) {
-            if (server_packed_fallback)
-            {
-                return;
-            }
-            server_packed_fallback = true;
-            server_packed_fallback_reason = reason;
-            use_packed_local_queue = false;
-            local_visual_sync_enabled = false;
-            metadata += ",\"local_route_mode\":\"server_packed_fallback\"";
-            metadata += ",\"fallback_reason\":\"" + json_escape(reason) + "\"";
-            metadata += ",\"fallback_batch_limit\":" +
-                        std::to_string(runtime_contract::ServerPackedFallbackBatchLimit);
-            metadata += ",\"fallback_pacing_ms\":" +
-                        std::to_string(runtime_contract::ServerPackedFallbackPacingMs);
-        };
         LocalPackedQueueRoute local_packed_queue_route{};
         sdk::FGuid local_packed_queue_source_id{};
         if (use_packed_local_queue)
@@ -13048,8 +13043,8 @@ namespace
         const bool fast_apply_component_strokes = false;
         const bool fast_apply_manager_strokes = false;
         const bool fast_apply_manager_writes = false;
-        const bool manual_direct_local_active =
-            manual_direct_local_requested && use_internal_no_resend_local_apply;
+        const bool production_direct_local_active =
+            production_direct_local_requested && use_internal_no_resend_local_apply;
         metadata += ",\"server_paint_target_channel\":\"all\"";
         if (preview_only)
         {
@@ -13080,7 +13075,7 @@ namespace
                         std::string(use_packed_local_queue
                                         ? "native_packed_receiver_queue"
                                         : (use_internal_no_resend_local_apply
-                                        ? (manual_direct_local_active
+                                        ? (production_direct_local_active
                                                ? "internal_common_no_resend_independent"
                                                : "internal_common_no_resend_lockstep")
                                         : (use_packed_server_batch
@@ -13090,7 +13085,7 @@ namespace
                         std::string(use_packed_local_queue
                                         ? "packed_receiver_same_limit_and_pacing"
                                         : (use_internal_no_resend_local_apply
-                                        ? (manual_direct_local_active
+                                        ? (production_direct_local_active
                                                ? "bounded_internal_no_resend_independent"
                                                : "single_stroke_internal_no_resend_lockstep")
                                         : (use_packed_server_batch ? "single_stroke_lockstep" : "single_stroke_local_only"))) + "\"";
@@ -13100,11 +13095,11 @@ namespace
             metadata += ",\"local_visual_sync_after_each_server_stroke\":" +
                         std::string(json_bool(use_packed_server_batch &&
                                               !use_packed_local_queue &&
-                                              !manual_direct_local_active));
+                                              !production_direct_local_active));
             metadata += ",\"local_visual_sync_after_each_server_batch\":" +
                         std::string(json_bool(use_packed_server_batch && use_packed_local_queue));
             metadata += ",\"local_visual_sync_lockstep_with_server_batch\":" +
-                        std::string(json_bool(use_packed_server_batch && !manual_direct_local_active));
+                        std::string(json_bool(use_packed_server_batch && !production_direct_local_active));
             metadata += ",\"local_texture_import_required\":false";
             metadata += ",\"authoritative_replay\":\"" +
                         std::string(use_packed_local_queue
@@ -13112,7 +13107,7 @@ namespace
                                                ? "research_server_packed_with_native_local_receiver_queue"
                                                : "server_packed_with_native_local_receiver_queue")
                                         : (use_internal_no_resend_local_apply
-                                        ? (manual_direct_local_active
+                                        ? (production_direct_local_active
                                                ? "server_packed_with_internal_no_resend_local_independent"
                                                : "server_packed_with_internal_no_resend_local_lockstep")
                                         : (use_packed_server_batch
@@ -13504,8 +13499,7 @@ namespace
                 replication_before.manager_max_outgoing_network_batches_per_second;
             async_job->replication_manager_coalesce_outgoing_strokes =
                 replication_before.manager_coalesce_outgoing_strokes;
-            const bool effective_auto_adapt =
-                tuning_replication_pacing_enabled || manual_direct_packed_fallback;
+            const bool effective_auto_adapt = tuning_replication_pacing_enabled;
             const int observed_max_replicated_strokes =
                 replication_before.manager_max_replicated_strokes_per_tick > 0
                     ? replication_before.manager_max_replicated_strokes_per_tick
@@ -13523,27 +13517,21 @@ namespace
                 (effective_auto_adapt && effective_pacing_decision.used_contract_fallback);
             async_job->pacing_source = server_packed_fallback
                                            ? "server_packed_fallback"
-                                           : (manual_direct_packed_fallback
-                                                  ? "packed_receiver_fallback"
-                                                  : (!effective_auto_adapt
+                                           : (!effective_auto_adapt
                                                   ? "manual"
                                                   : (effective_pacing_decision.used_contract_fallback
                                                          ? "shipping_contract_fallback"
-                                                         : "game_limits")));
+                                                         : "game_limits"));
             async_job->pacing_fallback_reason = server_packed_fallback
                                                     ? server_packed_fallback_reason
-                                                    : (manual_direct_packed_fallback
-                                                           ? manual_direct_fallback_reason
-                                                           : (effective_auto_adapt &&
+                                                    : (effective_auto_adapt &&
                                                                effective_pacing_decision.used_contract_fallback
                                                            ? "game_limit_property_unavailable"
-                                                           : ""));
+                                                           : "");
             async_job->metadata += ",\"replication_pacing_control\":\"" +
                                    std::string(server_packed_fallback
                                                    ? "server_packed_fallback"
-                                                   : (manual_direct_packed_fallback
-                                                          ? "packed_receiver_fallback"
-                                                          : (effective_auto_adapt ? "auto_adapt" : "manual"))) +
+                                                   : (effective_auto_adapt ? "auto_adapt" : "manual")) +
                                    "\"";
             async_job->metadata += ",\"replication_pacing_source\":\"" +
                                    async_job->pacing_source + "\"";
@@ -13551,16 +13539,6 @@ namespace
                                    std::string(json_bool(async_job->pacing_used_contract_fallback));
             async_job->metadata += ",\"replication_pacing_fallback_reason\":\"" +
                                    async_job->pacing_fallback_reason + "\"";
-            if (manual_direct_packed_fallback && !server_packed_fallback)
-            {
-                async_job->metadata += ",\"local_route_mode\":\"packed_receiver_fallback\"";
-                async_job->metadata += ",\"fallback_reason\":\"" +
-                                       json_escape(manual_direct_fallback_reason) + "\"";
-                async_job->metadata += ",\"fallback_batch_limit\":" +
-                                       std::to_string(effective_pacing_decision.remote_batch_limit);
-                async_job->metadata += ",\"fallback_pacing_ms\":" +
-                                       std::to_string(effective_pacing_decision.remote_delay_ms);
-            }
             async_job->server_batch_limit = effective_pacing_decision.remote_batch_limit;
             async_job->server_batch_delay_ms = effective_pacing_decision.remote_delay_ms;
             async_job->local_visual_sync_batch_limit = use_packed_local_queue
@@ -13583,15 +13561,11 @@ namespace
             async_job->replication_pacing_requested_batch_limit =
                 server_packed_fallback
                     ? runtime_contract::ServerPackedFallbackBatchLimit
-                    : (manual_direct_packed_fallback
-                           ? effective_pacing_decision.remote_batch_limit
-                           : tuning_server_batch_limit);
+                    : tuning_server_batch_limit;
             async_job->replication_pacing_requested_delay_ms =
                 server_packed_fallback
                     ? runtime_contract::ServerPackedFallbackPacingMs
-                    : (manual_direct_packed_fallback
-                           ? effective_pacing_decision.remote_delay_ms
-                           : tuning_server_batch_pacing_ms);
+                    : tuning_server_batch_pacing_ms;
             mesh_first_update_replication_pacing_model(async_job, replication_before);
             if (server_packed_fallback)
             {

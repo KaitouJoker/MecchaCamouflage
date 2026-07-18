@@ -14,15 +14,12 @@ Issue #87 investigation, see
 Normal paint uses the direct component route:
 
 - `RuntimePaintableComponent.ServerPackedPaintBatch`
-- painter-side submission through the native packed receiver implementation
-  behind `MulticastPackedPaintBatch`, called directly rather than through the
-  reflected multicast UFunction
-- Auto Adapt defaults ON and uses identical server/local packed boundaries and
-  pacing derived from readable game limits (fixed 20/50 fallback). When OFF,
-  manual controls accept 1--500 strokes and 1--500 ms for the independent
-  server lane, while painter-local rendering uses the bounded internal-common
-  no-resend direct lane. That lane allows one immediate 4-ms slice repost per
-  deferred wakeup before yielding back to the game message pump
+- painter-side application through the validated internal-common no-resend
+  routine, independently capped at 6 calls and a 4-ms CPU budget per dispatch
+- Auto Adapt defaults ON and derives only the server batch boundary and pacing
+  from readable game limits (fixed 20/50 fallback). When OFF, manual controls
+  accept 1--500 strokes and 1--500 ms for the server lane. Local scheduling is
+  bounded identically in both modes
 - reflected payload layout plus a unique machine-code/call-chain resolution of
   the UFunction thunk, vtable slot, decoder, component-to-manager resolver, and
   enqueue chain before the first local packed submission; PE/text identity is
@@ -36,16 +33,13 @@ Normal paint uses the direct component route:
 - the effective subdivision tail is exactly `level=0`, `pixel-size=0`,
   `template-resolution=0`, allowing receiver preflight to select the component
   defaults. These fields are not brush diameter bytes
-- an exact manager/component queue probe before every server commit and an
-  exact queue-count increase after the paired local receiver call
-- if the local receiver route or exact queue becomes unavailable, local calls
-  stop and `ServerPackedPaintBatch` continues at the fixed 20 strokes / 50 ms
-  fallback rate
+- if the local no-resend resolver or read-only preflight becomes unavailable,
+  local calls stop and `ServerPackedPaintBatch` continues at the fixed
+  20 strokes / 50 ms fallback rate
 - no fallback to old compact/adaptive `SendCustom` path
-- no automatic fallback to the per-stroke internal common or reflected
-  `PaintAtUVWithBrush` routes when Auto Adapt validation fails. Auto Adapt OFF
-  explicitly selects the validated no-resend internal common; if it is
-  unavailable before submission, it returns to packed local pacing with WARN
+- no automatic fallback to the packed receiver queue or reflected
+  `PaintAtUVWithBrush` route. The packed receiver remains an explicit research
+  A/B mode
 - server packed schema/payload/source-ID failure still stops paint with explicit
   metadata
 

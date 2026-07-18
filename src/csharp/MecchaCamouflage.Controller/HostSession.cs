@@ -620,7 +620,6 @@ public sealed class HostSession
             var fallbackLabel = routeMode.GetString() switch
             {
                 "server_packed_fallback" => "server packed fallback",
-                "packed_receiver_fallback" => "packed receiver fallback",
                 _ => null
             };
             return fallbackLabel is null

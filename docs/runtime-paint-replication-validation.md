@@ -25,34 +25,29 @@ research build script when those capabilities are required.
 
 ## Production Route
 
-Normal multiplayer paint uses a paired packed route:
+Normal multiplayer paint uses independent server and painter-local lanes:
 
 - `RuntimePaintableComponent.ServerPackedPaintBatch` sends the server batch.
-- With Auto Adapt ON, the painter's local game-owned packed receiver queue
-  receives the same packed batch boundaries and cadence after its reflected
-  schema and one unique machine-code/call-chain candidate resolve.
+- The painter uses the validated `internal common no-resend` direct lane at
+  most 6 calls and a 4-ms game-thread CPU budget per dispatch.
 - The game module identity and resolved RVAs are diagnostics, not version gates.
-- If that local route or its exact component queue cannot be measured, no local
-  receiver call is made. `ServerPackedPaintBatch` continues at the fixed
+- If the local resolver or its read-only preflight is unavailable, no local
+  call is made. `ServerPackedPaintBatch` continues at the fixed
   fallback rate of 20 strokes / 50 ms.
-- Auto Adapt never falls back automatically to reflected
-  `PaintAtUVWithBrush`, the internal-common route, compact/adaptive routes, or
-  a texture-sync route.
+- Normal paint never falls back automatically to the packed receiver queue,
+  reflected `PaintAtUVWithBrush`, compact/adaptive routes, or a texture-sync
+  route.
 - Auto Adapt defaults ON and derives the fastest safe batch/pacing values from
   readable game-owned limits, falling back to 20 strokes / 50 ms when those
   properties are unavailable. Its controls are disabled while ON. With Auto
-  Adapt OFF, both controls are editable from 1--500. The server lane submits
-  those exact manual values while the painter uses an independent, bounded
-  `internal common no-resend` direct lane (at most 6 calls per dispatch and a
-  4-ms game-thread CPU budget). It permits one immediate repost after each
-  deferred wakeup, then returns to an out-of-thread timer-queue wakeup so the
-  game message pump cannot be held continuously. This is an explicit high-speed mode, not an
-  automatic fallback. Its resolver validates the reflected parameter schema,
+  Adapt OFF, both server controls are editable from 1--500. Local scheduling
+  remains bounded and independent in both modes. It permits one immediate
+  repost after each deferred wakeup, then returns to an out-of-thread
+  timer-queue wakeup. Its resolver validates the reflected parameter schema,
   masked machine-code signatures, relative calls, and a unique candidate;
   PE/text identity and fixed RVAs are diagnostic only. If the direct route or
   its read-only preflight is unavailable before submission, paint continues
-  through Auto-equivalent packed local pacing and emits one WARN with the
-  effective fallback values.
+  server-only at 20/50 and emits one WARN with the fallback values.
 
 Brush 1 and Brush 2 are independently enabled. Brush 1 ranges from 10--50
 texels, defaults to 25, and defaults OFF. Brush 2 ranges from 1--10 texels,
@@ -73,15 +68,15 @@ does not reuse its largest triangle radius. A live Brush 2 size-5 check changed
 for the old uniform 3.5 wire scale. Uniform scale and mesh-average calibration
 remain research-only A/B controls and cannot block normal paint.
 
-On the local route, completion means that the initiating client's local game
-queue drained. In server fallback, completion and progress mean server batch
-submission completed and there is no local queue-drain phase. Neither result
-proves that another client has presented its final pixels. The UI therefore
-says that other clients may still be rendering after local completion.
+On the local route, completion means that every bounded no-resend call returned
+with its dispatch postcondition. It does not prove final pixel presentation. In
+server fallback, completion and progress mean server batch submission completed.
+Neither result proves that another client has presented its final pixels.
 
-## Bounded Cancellation
+## Packed Receiver Research Cancellation
 
-Cancellation is designed to stop future work, not to rewrite game state:
+The explicit `packed-local-queue` research route retains this cancellation
+model; it is not the normal production route:
 
 - Before each paired server/local commit, the exact local component queue is
   read. Only enough strokes to keep `queued + nextBatch <= configuredBatchLimit`

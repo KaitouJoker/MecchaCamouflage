@@ -103,23 +103,20 @@ directory.
 
 ## Paint Replication Rules
 
-Auto Adapt paint uses the packed component route plus the dynamically
-validated native packed receiver queue for painter-local submission. Manual
-batching explicitly selects the independently scheduled, dynamically validated
-internal-common no-resend local route; it must never call reflected
-`PaintAtUVWithBrush`, which can re-enter replication. Do not invoke the
-reflected multicast UFunction for local application, and do not reintroduce
-automatic fallback to per-stroke internal-common, compact/adaptive/send-custom,
-or reflected `PaintAtUVWithBrush` from Auto mode. Manual direct scheduling may
-immediately repost one additional 4-ms slice, but must then use a deferred
-wakeup so the game message pump cannot be held continuously.
+Normal paint always keeps server replication and painter-local application on
+independent lanes. `ServerPackedPaintBatch` uses either Auto Adapt game limits
+or the manual controls. Painter-local application always uses the dynamically
+validated internal-common no-resend route, capped at 6 calls and a 4-ms CPU
+budget per dispatch. It may immediately repost one additional slice, but must
+then use a deferred wakeup so the game message pump cannot be held
+continuously. Never call reflected `PaintAtUVWithBrush`, which can re-enter
+replication. The native packed receiver queue remains research-only.
 
 The server schema, packed payload, and source ID remain fatal requirements. If
-only the local route or exact local queue is unavailable, stop local calls and
-continue `ServerPackedPaintBatch` at 20 strokes / 50 ms. Preserve
+only the local no-resend route is unavailable, stop local calls and continue
+`ServerPackedPaintBatch` at 20 strokes / 50 ms. Preserve
 `local_route_mode`, `fallback_reason`, `fallback_batch_limit`, and
-`fallback_pacing_ms` metadata. A readable nonzero queue from a previous job is
-still a blocking condition.
+`fallback_pacing_ms` metadata.
 
 When changing replication behavior, verify host and joining-client behavior
 separately. Painter-side completion is not enough; a normal other client must
