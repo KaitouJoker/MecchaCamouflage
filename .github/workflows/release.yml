@@ -28,11 +28,11 @@ jobs:
           dotnet-version: 10.0.x
 
       - name: Build runtime
-        shell: pwsh
+        shell: powershell
         run: .\scripts\build.ps1
 
       - name: Package runtime
-        shell: pwsh
+        shell: powershell
         run: .\scripts\release.ps1
 
       - name: Upload artifact

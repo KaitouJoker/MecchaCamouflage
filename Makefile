@@ -14,11 +14,11 @@ MESH_ARGS := $(if $(PAKS),-PaksPath "$(PAKS)",) $(if $(MAPPINGS),-MappingsPath "
 .PHONY: build build-timed build-dev build-dev-timed run dev start package mesh review-dead-code clean clean-artifacts clean-all
 
 define RUN_POWERSHELL
-	@if command -v pwsh >/dev/null 2>&1; then \
-		pwsh -NoProfile -ExecutionPolicy Bypass -File $(1) $(2); \
-	elif command -v powershell.exe >/dev/null 2>&1; then \
+	@if command -v powershell.exe >/dev/null 2>&1; then \
 		PS_SCRIPT_WIN="$$(if command -v wslpath >/dev/null 2>&1; then wslpath -w $(1); else printf '%s' $(1); fi)"; \
 		powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$$PS_SCRIPT_WIN" $(2); \
+	elif command -v pwsh >/dev/null 2>&1; then \
+		pwsh -NoProfile -ExecutionPolicy Bypass -File $(1) $(2); \
 	else \
 		echo "PowerShell runtime not found." >&2; exit 127; \
 	fi
