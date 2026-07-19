@@ -352,6 +352,9 @@ public sealed class HostSession
             }
             LogFailureProgressOnce();
             Log.Error(message);
+            var failureDetail = PaintFailureDetail(response);
+            if (failureDetail is not null)
+                Log.Warn("Paint detail: " + failureDetail);
             return new HostCommandResult(false, message);
         }
         finally
@@ -625,6 +628,48 @@ public sealed class HostSession
             return fallbackLabel is null
                 ? null
                 : $"{reasonElement.GetString()} ({fallbackLabel}: {batchLimit} strokes / {pacingMs} ms)";
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// The friendly failure text is deliberately identical for every cause, which leaves a user
+    /// report with nothing to act on. Carry the native failure fields alongside it in the log.
+    /// </summary>
+    public static string? PaintFailureDetail(BridgeReply response)
+    {
+        if (string.IsNullOrWhiteSpace(response.Raw))
+            return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(response.Raw);
+            if (!doc.RootElement.TryGetProperty("metadata", out var metadata) ||
+                metadata.ValueKind != JsonValueKind.Object)
+            {
+                return null;
+            }
+            string[] fields =
+            [
+                "local_visual_sync_failure",
+                "local_packed_queue_resolver_status",
+                "local_packed_queue_resolver_failure",
+                "server_packed_source_id_failure",
+                "packed_ignored_reason"
+            ];
+            var parts = new List<string>();
+            foreach (var field in fields)
+            {
+                if (!metadata.TryGetProperty(field, out var value) || value.ValueKind != JsonValueKind.String)
+                    continue;
+                var text = value.GetString();
+                if (string.IsNullOrWhiteSpace(text))
+                    continue;
+                parts.Add(field + "=" + text);
+            }
+            return parts.Count == 0 ? null : string.Join(" | ", parts);
         }
         catch
         {

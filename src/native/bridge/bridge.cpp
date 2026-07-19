@@ -6450,9 +6450,8 @@ namespace
             std::memset(canonical.Pad_4A, 0, sizeof(canonical.Pad_4A));
             std::memset(canonical.BrushSettings.Pad_12, 0, sizeof(canonical.BrushSettings.Pad_12));
             std::memset(canonical.BrushSettings.Pad_24, 0, sizeof(canonical.BrushSettings.Pad_24));
-            std::memset(canonical.ChannelData.Pad_1D, 0, sizeof(canonical.ChannelData.Pad_1D));
+            std::memset(canonical.ChannelData.Pad_21, 0, sizeof(canonical.ChannelData.Pad_21));
             std::memset(canonical.Pad_B1, 0, sizeof(canonical.Pad_B1));
-            std::memset(canonical.Pad_DC, 0, sizeof(canonical.Pad_DC));
             append(&canonical, sizeof(canonical));
             append(&has_brush_texture, sizeof(has_brush_texture));
         }
@@ -17672,7 +17671,8 @@ namespace
             out.failure = "PaintAtUVWithBrush_unavailable";
             return out;
         }
-        if (safe_read<int>(paint_at_uv_with_brush_function + OffPropertiesSize, -1) != 0x60)
+        if (safe_read<int>(paint_at_uv_with_brush_function + OffPropertiesSize, -1) !=
+            static_cast<int>(sizeof(sdk::RuntimePaintableComponent_PaintAtUVWithBrush)))
         {
             out.failure = "PaintAtUVWithBrush_params_size_mismatch";
             return out;
@@ -17953,7 +17953,7 @@ namespace
                       "FPaintStroke BrushSettings offset mismatch");
         static_assert(offsetof(sdk::FPaintStroke, ChannelData) == 0x90,
                       "FPaintStroke ChannelData offset mismatch");
-        static_assert(offsetof(sdk::FPaintStroke, TargetChannel) == 0xB0,
+        static_assert(offsetof(sdk::FPaintStroke, TargetChannel) == 0xB4,
                       "FPaintStroke TargetChannel offset mismatch");
         static_assert(std::is_standard_layout_v<sdk::FPaintStroke>,
                       "FPaintStroke must retain a standard layout");

@@ -87,7 +87,9 @@ namespace sdk
         Height = 3,
         All = 4,
         AlbedoMetallicRoughness = 5,
-        Max = 6,
+        Emissive = 6,
+        AlbedoMetallicRoughnessEmissive = 7,
+        Max = 8,
     };
 
     enum class EPaintChannelApplyMode : std::uint8_t
@@ -264,8 +266,11 @@ namespace sdk
         float Metallic{0.0f};
         float Roughness{0.65f};
         float Height{0.0f};
+        // Game 2.9.0 added an Emissive channel and inserted this field ahead of ApplyMode,
+        // growing the struct from 0x20 to 0x24 and shifting everything that embeds it.
+        float EmissiveColor{0.0f};
         EPaintChannelApplyMode ApplyMode{EPaintChannelApplyMode::Override};
-        std::uint8_t Pad_1D[0x3]{};
+        std::uint8_t Pad_21[0x3]{};
     };
 
     struct FPaintStroke
@@ -291,7 +296,6 @@ namespace sdk
         std::int32_t EffectiveMaxGeneratedBrushTriangles{0};
         std::int32_t EffectiveGutterExpandPixels{0};
         FGuid ReplicationSourceId{};
-        std::uint8_t Pad_DC[0x4]{};
     };
 
     struct RuntimePaintableComponent_PaintAtUVWithBrush
@@ -300,7 +304,7 @@ namespace sdk
         FPaintChannelData ChannelData{};
         FRuntimeBrushSettings BrushSettings{};
         EPaintChannel Channel{EPaintChannel::Albedo};
-        std::uint8_t Pad_59[0x7]{};
+        std::uint8_t Pad_61[0x7]{};
     };
 
     struct Controller_K2_GetPawn
@@ -391,15 +395,16 @@ namespace sdk
     static_assert(offsetof(FTransform, Scale3D) == 0x40, "FTransform Scale3D offset mismatch");
     static_assert(sizeof(FRuntimeBrushSettings) == 0x28, "RuntimeBrushSettings layout mismatch");
     static_assert(offsetof(FRuntimeBrushSettings, BrushTexture) == 0x18, "RuntimeBrushSettings BrushTexture offset mismatch");
-    static_assert(sizeof(FPaintChannelData) == 0x20, "PaintChannelData layout mismatch");
+    static_assert(sizeof(FPaintChannelData) == 0x24, "PaintChannelData layout mismatch");
     static_assert(offsetof(FPaintChannelData, Metallic) == 0x10, "PaintChannelData Metallic offset mismatch");
     static_assert(offsetof(FPaintChannelData, Roughness) == 0x14, "PaintChannelData Roughness offset mismatch");
-    static_assert(offsetof(FPaintChannelData, ApplyMode) == 0x1C, "PaintChannelData ApplyMode offset mismatch");
+    static_assert(offsetof(FPaintChannelData, EmissiveColor) == 0x1C, "PaintChannelData EmissiveColor offset mismatch");
+    static_assert(offsetof(FPaintChannelData, ApplyMode) == 0x20, "PaintChannelData ApplyMode offset mismatch");
     static_assert(sizeof(FPaintStroke) == 0xE0, "PaintStroke layout mismatch");
     static_assert(offsetof(FPaintStroke, BrushSettings) == 0x68, "PaintStroke BrushSettings offset mismatch");
     static_assert(offsetof(FPaintStroke, ChannelData) == 0x90, "PaintStroke ChannelData offset mismatch");
-    static_assert(offsetof(FPaintStroke, TargetChannel) == 0xB0, "PaintStroke TargetChannel offset mismatch");
-    static_assert(sizeof(RuntimePaintableComponent_PaintAtUVWithBrush) == 0x60, "PaintAtUVWithBrush params layout mismatch");
+    static_assert(offsetof(FPaintStroke, TargetChannel) == 0xB4, "PaintStroke TargetChannel offset mismatch");
+    static_assert(sizeof(RuntimePaintableComponent_PaintAtUVWithBrush) == 0x68, "PaintAtUVWithBrush params layout mismatch");
     static_assert(sizeof(Actor_K2_GetActorLocation) == 0x18, "K2_GetActorLocation params layout mismatch");
     static_assert(sizeof(KismetRenderingLibrary_CreateRenderTarget2D) == 0x30, "CreateRenderTarget2D params layout mismatch");
     static_assert(offsetof(KismetRenderingLibrary_CreateRenderTarget2D, Format) == 0x10, "CreateRenderTarget2D Format offset mismatch");
