@@ -10480,7 +10480,11 @@ namespace
             metadata += ",\"research_uv_replay_plan_failure\":\"runtime_log_dir_unavailable\"";
             return;
         }
-        if (replay_plan.entries.size() < strokes.size())
+        constexpr auto channel_count =
+            runtime_contract::ProductionMaterialPaintChannels.size();
+        const auto required_replay_entries =
+            (strokes.size() + channel_count - 1) / channel_count;
+        if (replay_plan.entries.size() < required_replay_entries)
         {
             metadata += ",\"research_uv_replay_plan_written\":false";
             metadata += ",\"research_uv_replay_plan_failure\":\"replay_entry_count_underflow\"";
@@ -10505,7 +10509,8 @@ namespace
         document += ",\"strokes\":[";
         for (std::size_t index = 0; index < strokes.size(); ++index)
         {
-            const auto& entry = replay_plan.entries[index];
+            const auto& entry = replay_plan.entries[
+                runtime_contract::production_material_sample_index(index)];
             if (entry.sample_index >= plan_samples.size())
             {
                 metadata += ",\"research_uv_replay_plan_written\":false";
@@ -10542,6 +10547,8 @@ namespace
             document += ",\"planner_radius_uv\":" + std::to_string(stroke.BrushSettings.Radius);
             document += ",\"packed_wire_radius_uv\":" + std::to_string(packed_wire_radius);
             document += ",\"packed_wire_radius_available\":" + std::string(json_bool(packed_wire_radius_available));
+            document += ",\"target_channel\":" +
+                        std::to_string(static_cast<int>(stroke.TargetChannel));
             document += ",\"effective_world_radius\":" + std::to_string(stroke.EffectiveBrushWorldRadius);
             document += ",\"effective_subdivision_level\":" + std::to_string(stroke.EffectiveSubdivisionLevel);
             document += ",\"effective_subdivision_pixel_size\":" + std::to_string(stroke.EffectiveSubdivisionPixelSize);
@@ -12407,6 +12414,8 @@ namespace
                 std::chrono::steady_clock::now() - replay_spatial_sort_started)
                 .count();
 
+        constexpr auto paint_target_channels = runtime_contract::ProductionMaterialPaintChannels;
+        constexpr std::size_t paint_target_channel_count = paint_target_channels.size();
         std::vector<sdk::FPaintStroke> strokes{};
         strokes.reserve(replay_plan.entries.size());
         const bool use_mesh_anchors = runtime_triangle_cache.ok && runtime_uses_profile_component_world;
@@ -12431,9 +12440,8 @@ namespace
         int replay_world_anchors = 0;
         int replay_local_anchors = 0;
         int replay_triangle_anchors = 0;
-        constexpr auto paint_target_channel = sdk::EPaintChannel::All;
-        metadata += ",\"paint_target_channel\":\"all\"";
-        metadata += ",\"paint_target_channel_value\":" + std::to_string(static_cast<int>(paint_target_channel));
+        metadata += ",\"paint_target_channel\":\"albedo_then_emissive_clear\"";
+        metadata += ",\"paint_target_channel_values\":[0,6]";
         MeshFirstMaterialProperties material_properties{};
         if (any_paint_region && tuning_auto_material)
         {
@@ -12542,7 +12550,7 @@ namespace
                                                             sample.v,
                                                             channel,
                                                             stroke_brush,
-                                                            paint_target_channel,
+                                                            sdk::EPaintChannel::Albedo,
                                                             sample.world_position,
                                                             sample.local_position,
                                                             sample.triangle_index,
@@ -12553,7 +12561,7 @@ namespace
                                                    sample.v,
                                                    channel,
                                                    stroke_brush,
-                                                   paint_target_channel);
+                                                   sdk::EPaintChannel::Albedo);
             if (use_triangle_world_radius && stroke.bHasSkeletalTriangleAnchor)
             {
                 if (sample.triangle_index < 0 ||
@@ -12693,8 +12701,25 @@ namespace
         metadata += ",\"research_stroke_limit_applied\":" +
                     std::string(json_bool(research_stroke_limit > 0 &&
                                           research_strokes_before_limit > static_cast<std::size_t>(research_stroke_limit)));
-        const auto effective_fill_end = std::min(replay_plan.fill_end, strokes.size());
-        const auto effective_coarse_end = std::min(replay_plan.coarse_end, strokes.size());
+        const auto base_effective_fill_end = std::min(replay_plan.fill_end, strokes.size());
+        const auto base_effective_coarse_end = std::min(replay_plan.coarse_end, strokes.size());
+        std::vector<sdk::FPaintStroke> channel_strokes{};
+        channel_strokes.reserve(runtime_contract::production_material_stroke_count(strokes.size()));
+        for (const auto& stroke : strokes)
+        {
+            for (const auto target_channel : paint_target_channels)
+            {
+                auto channel_stroke = stroke;
+                channel_stroke.TargetChannel = static_cast<sdk::EPaintChannel>(target_channel);
+                channel_strokes.push_back(std::move(channel_stroke));
+            }
+        }
+        strokes = std::move(channel_strokes);
+        metadata += ",\"production_channel_expanded_strokes\":" + std::to_string(strokes.size());
+        const auto effective_fill_end =
+            runtime_contract::production_material_stroke_count(base_effective_fill_end);
+        const auto effective_coarse_end =
+            runtime_contract::production_material_stroke_count(base_effective_coarse_end);
         metadata += ",\"replay_effective_fill_end\":" + std::to_string(effective_fill_end);
         metadata += ",\"replay_effective_coarse_end\":" + std::to_string(effective_coarse_end);
         metadata += ",\"replay_effective_fine_begin\":" + std::to_string(effective_coarse_end);
@@ -13102,7 +13127,7 @@ namespace
         const bool local_texture_import_available =
             ref.find_function(ctx.component, "ExportChannelToBytes") != 0 &&
             ref.find_function(ctx.component, "ImportChannelFromBytes") != 0;
-        metadata += ",\"server_paint_target_channel\":\"all\"";
+        metadata += ",\"server_paint_target_channel\":\"albedo_then_emissive_clear\"";
         bool production_local_texture_import_prepared = false;
         std::string production_local_texture_import_prepare_failure{"not_requested"};
         if (preview_only)
@@ -13682,7 +13707,7 @@ namespace
             // than treating the receiver write-limit property as stroke units.
             async_job->local_render_target_write_budget =
                 std::max(1, effective_pacing_decision.local_batch_limit) *
-                runtime_contract::paint_channel_write_cost(static_cast<int>(sdk::EPaintChannel::All));
+                runtime_contract::paint_channel_write_cost(static_cast<int>(sdk::EPaintChannel::Albedo));
             async_job->replication_pacing_enabled =
                 normal_paint_requires_packed &&
                 effective_auto_adapt &&
@@ -17192,8 +17217,8 @@ namespace
         // 31 bytes with an emissive RGBA quad between roughness and the channel selector. The
         // game still decodes format 1, but a format 1 record leaves the receiver's emissive
         // input unwritten, so send the current format and clear emissive explicitly.
-        packed.reserve(21 + count * 31);
-        packed.push_back(2);
+        packed.reserve(runtime_contract::packed_paint_payload_size(count));
+        packed.push_back(runtime_contract::PackedPaintFormatVersion);
         const auto* source_bytes = reinterpret_cast<const std::uint8_t*>(&source_id);
         packed.insert(packed.end(), source_bytes, source_bytes + sizeof(source_id));
         sdk_append_i32_le(packed, static_cast<std::int32_t>(count));
@@ -17280,6 +17305,15 @@ namespace
             sdk_append_f32_le(packed, stroke.EffectiveBrushWorldRadius);
             const auto subdivision_tail = runtime_contract::packed_mesh_anchor_auto_subdivision_tail();
             packed.insert(packed.end(), subdivision_tail.begin(), subdivision_tail.end());
+        }
+        const auto expected_size = runtime_contract::packed_paint_payload_size(count);
+        if (packed.size() != expected_size)
+        {
+            failure = "packed_paint_format2_size_mismatch expected=" +
+                      std::to_string(expected_size) + " actual=" +
+                      std::to_string(packed.size());
+            packed.clear();
+            return false;
         }
         return true;
     }
