@@ -487,5 +487,31 @@ int main()
     {
         return 24;
     }
+
+    if (runtime_contract::PackedPaintFormatVersion != 2 ||
+        runtime_contract::PackedPaintHeaderBytes != 21 ||
+        runtime_contract::PackedPaintRecordBytes != 31 ||
+        runtime_contract::PackedPaintRecordAlbedoOffset != 12 ||
+        runtime_contract::PackedPaintRecordMetallicOffset != 16 ||
+        runtime_contract::PackedPaintRecordRoughnessOffset != 17 ||
+        runtime_contract::PackedPaintRecordEmissiveOffset != 18 ||
+        runtime_contract::PackedPaintRecordChannelOffset != 22 ||
+        runtime_contract::PackedPaintRecordWorldRadiusOffset != 23 ||
+        runtime_contract::PackedPaintRecordSubdivisionOffset != 27 ||
+        runtime_contract::packed_paint_payload_size(3) != 114 ||
+        runtime_contract::production_material_stroke_count(3) != 6 ||
+        runtime_contract::production_material_sample_index(0) != 0 ||
+        runtime_contract::production_material_sample_index(1) != 0 ||
+        runtime_contract::production_material_sample_index(2) != 1)
+    {
+        return 25;
+    }
+    if (runtime_contract::ProductionMaterialPaintChannels !=
+        std::array<std::uint8_t, 2>{
+            static_cast<std::uint8_t>(sdk::EPaintChannel::Albedo),
+            static_cast<std::uint8_t>(sdk::EPaintChannel::Emissive)})
+    {
+        return 26;
+    }
     return 0;
 }

@@ -30,6 +30,48 @@ namespace runtime_contract
     constexpr int ServerPackedFallbackPacingMs = 50;
     constexpr std::uint64_t LocalDispatchCpuBudgetUs = 4'000;
 
+    // MECCHA CHAMELEON 2.9.0 packed paint wire contract. Keep these values
+    // centralized so the encoder and native regression test cannot silently
+    // disagree about the format-2 layout.
+    constexpr std::uint8_t PackedPaintFormatVersion = 2;
+    constexpr std::size_t PackedPaintHeaderBytes = 21; // version + FGuid + count
+    constexpr std::size_t PackedPaintRecordBytes = 31;
+    constexpr std::size_t PackedPaintRecordAlbedoOffset = 12;
+    constexpr std::size_t PackedPaintRecordMetallicOffset = 16;
+    constexpr std::size_t PackedPaintRecordRoughnessOffset = 17;
+    constexpr std::size_t PackedPaintRecordEmissiveOffset = 18;
+    constexpr std::size_t PackedPaintRecordChannelOffset = 22;
+    constexpr std::size_t PackedPaintRecordWorldRadiusOffset = 23;
+    constexpr std::size_t PackedPaintRecordSubdivisionOffset = 27;
+
+    // Ordinary color is sent through the verified Albedo route. A second,
+    // explicit Emissive stroke clears glow left by All-channel paint; format-2
+    // data alone does not make All reliably update that target on 2.9.0.
+    constexpr std::array<std::uint8_t, 2> ProductionMaterialPaintChannels{0, 6};
+
+    constexpr std::size_t packed_paint_payload_size(std::size_t stroke_count)
+    {
+        return PackedPaintHeaderBytes + stroke_count * PackedPaintRecordBytes;
+    }
+
+    constexpr std::size_t production_material_stroke_count(std::size_t sample_count)
+    {
+        return sample_count * ProductionMaterialPaintChannels.size();
+    }
+
+    constexpr std::size_t production_material_sample_index(std::size_t stroke_index)
+    {
+        return stroke_index / ProductionMaterialPaintChannels.size();
+    }
+
+    static_assert(PackedPaintRecordEmissiveOffset + 4 == PackedPaintRecordChannelOffset,
+                  "packed paint emissive layout mismatch");
+    static_assert(PackedPaintRecordWorldRadiusOffset + sizeof(float) ==
+                      PackedPaintRecordSubdivisionOffset,
+                  "packed paint world-radius layout mismatch");
+    static_assert(PackedPaintRecordSubdivisionOffset + 4 == PackedPaintRecordBytes,
+                  "packed paint record size mismatch");
+
     // Packed skeletal strokes carry both a UV-space brush radius and an optional
     // world-space radius.  In the supported Shipping build, compact-stroke
     // expansion at RVA 0x50F65A0 calls the skeletal preflight at RVA 0x50F6110.

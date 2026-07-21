@@ -76,7 +76,7 @@ namespace
     constexpr int LocalQueueDrainIdleTimeoutMs = 120000;
     constexpr bool MeshFirstPostImportTextureSyncEnabled = false;
     constexpr double MeshFirstRuntimeCoordinateMaxAvgErrorCm = 50.0;
-    constexpr std::uintptr_t RuntimePaintableComponentPackedSourceIdOffset = 0x2A8;
+    constexpr std::uintptr_t RuntimePaintableComponentPackedSourceIdOffset = 0x2E0;
 
     constexpr std::uintptr_t OffClass = 0x10;
     constexpr std::uintptr_t OffName = 0x18;
@@ -4973,6 +4973,7 @@ namespace
     auto sdk_read_component_packed_source_id(std::uintptr_t component,
                                              sdk::FGuid& id,
                                              std::string& failure) -> bool;
+    auto sdk_packed_source_id_scan_metadata(std::uintptr_t component) -> std::string;
     auto sdk_call_packed_paint_batch_from_strokes(std::uintptr_t component,
                                                   std::uintptr_t relay_component,
                                                   std::uintptr_t component_function,
@@ -6450,9 +6451,8 @@ namespace
             std::memset(canonical.Pad_4A, 0, sizeof(canonical.Pad_4A));
             std::memset(canonical.BrushSettings.Pad_12, 0, sizeof(canonical.BrushSettings.Pad_12));
             std::memset(canonical.BrushSettings.Pad_24, 0, sizeof(canonical.BrushSettings.Pad_24));
-            std::memset(canonical.ChannelData.Pad_1D, 0, sizeof(canonical.ChannelData.Pad_1D));
+            std::memset(canonical.ChannelData.Pad_21, 0, sizeof(canonical.ChannelData.Pad_21));
             std::memset(canonical.Pad_B1, 0, sizeof(canonical.Pad_B1));
-            std::memset(canonical.Pad_DC, 0, sizeof(canonical.Pad_DC));
             append(&canonical, sizeof(canonical));
             append(&has_brush_texture, sizeof(has_brush_texture));
         }
@@ -10480,7 +10480,11 @@ namespace
             metadata += ",\"research_uv_replay_plan_failure\":\"runtime_log_dir_unavailable\"";
             return;
         }
-        if (replay_plan.entries.size() < strokes.size())
+        constexpr auto channel_count =
+            runtime_contract::ProductionMaterialPaintChannels.size();
+        const auto required_replay_entries =
+            (strokes.size() + channel_count - 1) / channel_count;
+        if (replay_plan.entries.size() < required_replay_entries)
         {
             metadata += ",\"research_uv_replay_plan_written\":false";
             metadata += ",\"research_uv_replay_plan_failure\":\"replay_entry_count_underflow\"";
@@ -10505,7 +10509,8 @@ namespace
         document += ",\"strokes\":[";
         for (std::size_t index = 0; index < strokes.size(); ++index)
         {
-            const auto& entry = replay_plan.entries[index];
+            const auto& entry = replay_plan.entries[
+                runtime_contract::production_material_sample_index(index)];
             if (entry.sample_index >= plan_samples.size())
             {
                 metadata += ",\"research_uv_replay_plan_written\":false";
@@ -10542,6 +10547,8 @@ namespace
             document += ",\"planner_radius_uv\":" + std::to_string(stroke.BrushSettings.Radius);
             document += ",\"packed_wire_radius_uv\":" + std::to_string(packed_wire_radius);
             document += ",\"packed_wire_radius_available\":" + std::string(json_bool(packed_wire_radius_available));
+            document += ",\"target_channel\":" +
+                        std::to_string(static_cast<int>(stroke.TargetChannel));
             document += ",\"effective_world_radius\":" + std::to_string(stroke.EffectiveBrushWorldRadius);
             document += ",\"effective_subdivision_level\":" + std::to_string(stroke.EffectiveSubdivisionLevel);
             document += ",\"effective_subdivision_pixel_size\":" + std::to_string(stroke.EffectiveSubdivisionPixelSize);
@@ -12407,6 +12414,8 @@ namespace
                 std::chrono::steady_clock::now() - replay_spatial_sort_started)
                 .count();
 
+        constexpr auto paint_target_channels = runtime_contract::ProductionMaterialPaintChannels;
+        constexpr std::size_t paint_target_channel_count = paint_target_channels.size();
         std::vector<sdk::FPaintStroke> strokes{};
         strokes.reserve(replay_plan.entries.size());
         const bool use_mesh_anchors = runtime_triangle_cache.ok && runtime_uses_profile_component_world;
@@ -12431,9 +12440,8 @@ namespace
         int replay_world_anchors = 0;
         int replay_local_anchors = 0;
         int replay_triangle_anchors = 0;
-        constexpr auto paint_target_channel = sdk::EPaintChannel::All;
-        metadata += ",\"paint_target_channel\":\"all\"";
-        metadata += ",\"paint_target_channel_value\":" + std::to_string(static_cast<int>(paint_target_channel));
+        metadata += ",\"paint_target_channel\":\"albedo_then_emissive_clear\"";
+        metadata += ",\"paint_target_channel_values\":[0,6]";
         MeshFirstMaterialProperties material_properties{};
         if (any_paint_region && tuning_auto_material)
         {
@@ -12542,7 +12550,7 @@ namespace
                                                             sample.v,
                                                             channel,
                                                             stroke_brush,
-                                                            paint_target_channel,
+                                                            sdk::EPaintChannel::Albedo,
                                                             sample.world_position,
                                                             sample.local_position,
                                                             sample.triangle_index,
@@ -12553,7 +12561,7 @@ namespace
                                                    sample.v,
                                                    channel,
                                                    stroke_brush,
-                                                   paint_target_channel);
+                                                   sdk::EPaintChannel::Albedo);
             if (use_triangle_world_radius && stroke.bHasSkeletalTriangleAnchor)
             {
                 if (sample.triangle_index < 0 ||
@@ -12693,8 +12701,25 @@ namespace
         metadata += ",\"research_stroke_limit_applied\":" +
                     std::string(json_bool(research_stroke_limit > 0 &&
                                           research_strokes_before_limit > static_cast<std::size_t>(research_stroke_limit)));
-        const auto effective_fill_end = std::min(replay_plan.fill_end, strokes.size());
-        const auto effective_coarse_end = std::min(replay_plan.coarse_end, strokes.size());
+        const auto base_effective_fill_end = std::min(replay_plan.fill_end, strokes.size());
+        const auto base_effective_coarse_end = std::min(replay_plan.coarse_end, strokes.size());
+        std::vector<sdk::FPaintStroke> channel_strokes{};
+        channel_strokes.reserve(runtime_contract::production_material_stroke_count(strokes.size()));
+        for (const auto& stroke : strokes)
+        {
+            for (const auto target_channel : paint_target_channels)
+            {
+                auto channel_stroke = stroke;
+                channel_stroke.TargetChannel = static_cast<sdk::EPaintChannel>(target_channel);
+                channel_strokes.push_back(std::move(channel_stroke));
+            }
+        }
+        strokes = std::move(channel_strokes);
+        metadata += ",\"production_channel_expanded_strokes\":" + std::to_string(strokes.size());
+        const auto effective_fill_end =
+            runtime_contract::production_material_stroke_count(base_effective_fill_end);
+        const auto effective_coarse_end =
+            runtime_contract::production_material_stroke_count(base_effective_coarse_end);
         metadata += ",\"replay_effective_fill_end\":" + std::to_string(effective_fill_end);
         metadata += ",\"replay_effective_coarse_end\":" + std::to_string(effective_coarse_end);
         metadata += ",\"replay_effective_fine_begin\":" + std::to_string(effective_coarse_end);
@@ -12908,6 +12933,10 @@ namespace
         metadata += ",\"server_packed_source_id_offset\":\"" + hex_address(RuntimePaintableComponentPackedSourceIdOffset) + "\"";
         metadata += ",\"server_packed_source_id_available\":" + std::string(json_bool(packed_source_id_available));
         metadata += ",\"server_packed_source_id_failure\":\"" + json_escape(packed_source_id_failure) + "\"";
+        if (normal_paint_requires_packed && !packed_source_id_available)
+        {
+            metadata += sdk_packed_source_id_scan_metadata(ctx.component);
+        }
         metadata += ",\"server_packed_batch_limit_cap\":" +
                     std::to_string(PackedReplicationMaxBatchLimit);
         metadata += ",\"server_batch_limit_requested\":" + std::to_string(tuning_server_batch_limit);
@@ -13098,7 +13127,7 @@ namespace
         const bool local_texture_import_available =
             ref.find_function(ctx.component, "ExportChannelToBytes") != 0 &&
             ref.find_function(ctx.component, "ImportChannelFromBytes") != 0;
-        metadata += ",\"server_paint_target_channel\":\"all\"";
+        metadata += ",\"server_paint_target_channel\":\"albedo_then_emissive_clear\"";
         bool production_local_texture_import_prepared = false;
         std::string production_local_texture_import_prepare_failure{"not_requested"};
         if (preview_only)
@@ -13678,7 +13707,7 @@ namespace
             // than treating the receiver write-limit property as stroke units.
             async_job->local_render_target_write_budget =
                 std::max(1, effective_pacing_decision.local_batch_limit) *
-                runtime_contract::paint_channel_write_cost(static_cast<int>(sdk::EPaintChannel::All));
+                runtime_contract::paint_channel_write_cost(static_cast<int>(sdk::EPaintChannel::Albedo));
             async_job->replication_pacing_enabled =
                 normal_paint_requires_packed &&
                 effective_auto_adapt &&
@@ -17100,6 +17129,71 @@ namespace
         return true;
     }
 
+    // The packed source ID is a plain C++ member, not a UPROPERTY: the shipping
+    // image carries no FGuid property near this offset, so reflection cannot
+    // recover it when a game update moves the class layout. Report the raw
+    // GUID-shaped candidates around the pinned offset instead, so that one
+    // failing run is enough to identify the new offset from a user report.
+    auto sdk_packed_source_id_scan_metadata(std::uintptr_t component) -> std::string
+    {
+        constexpr std::uintptr_t ScanBegin = 0x100;
+        constexpr std::uintptr_t ScanEnd = 0x600;
+        constexpr int MaxCandidates = 24;
+        constexpr std::uint32_t MinPlausibleWord = 0x00010000u;
+
+        std::string out = ",\"server_packed_source_id_scan_begin\":\"" + hex_address(ScanBegin) + "\"";
+        out += ",\"server_packed_source_id_scan_end\":\"" + hex_address(ScanEnd) + "\"";
+        out += ",\"server_packed_source_id_candidates\":[";
+        int emitted = 0;
+        if (live_uobject(component))
+        {
+            std::vector<std::uint32_t> window((ScanEnd - ScanBegin) / sizeof(std::uint32_t), 0u);
+            if (safe_copy(window.data(),
+                          reinterpret_cast<const void*>(component + ScanBegin),
+                          window.size() * sizeof(std::uint32_t)))
+            {
+                for (std::size_t index = 0; index + 4 <= window.size() && emitted < MaxCandidates; ++index)
+                {
+                    // A generated FGuid has four uniformly random words. Requiring every
+                    // word to be large drops pointer pairs and small integer fields, which
+                    // would otherwise bury the real candidate in noise.
+                    bool plausible = true;
+                    for (std::size_t word = 0; word < 4; ++word)
+                    {
+                        const auto value = window[index + word];
+                        plausible = plausible && value >= MinPlausibleWord && value != 0xFFFFFFFFu;
+                    }
+                    if (!plausible)
+                    {
+                        continue;
+                    }
+                    const auto offset = ScanBegin + index * sizeof(std::uint32_t);
+                    if (emitted > 0)
+                    {
+                        out += ",";
+                    }
+                    out += "{\"offset\":\"" + hex_address(offset) + "\"";
+                    out += ",\"a\":\"" + hex_address(window[index + 0]) + "\"";
+                    out += ",\"b\":\"" + hex_address(window[index + 1]) + "\"";
+                    out += ",\"c\":\"" + hex_address(window[index + 2]) + "\"";
+                    out += ",\"d\":\"" + hex_address(window[index + 3]) + "\"}";
+                    ++emitted;
+                }
+            }
+            else
+            {
+                emitted = -1;
+            }
+        }
+        else
+        {
+            emitted = -1;
+        }
+        out += "]";
+        out += ",\"server_packed_source_id_candidate_count\":" + std::to_string(emitted);
+        return out;
+    }
+
     auto sdk_make_packed_paint_data(const std::vector<sdk::FPaintStroke>& strokes,
                                     std::size_t offset,
                                     std::size_t count,
@@ -17119,8 +17213,12 @@ namespace
             return false;
         }
         packed.clear();
-        packed.reserve(21 + count * 27);
-        packed.push_back(1);
+        // Format 2, as the game itself emits since 2.9.0: the per-stroke record grew from 27 to
+        // 31 bytes with an emissive RGBA quad between roughness and the channel selector. The
+        // game still decodes format 1, but a format 1 record leaves the receiver's emissive
+        // input unwritten, so send the current format and clear emissive explicitly.
+        packed.reserve(runtime_contract::packed_paint_payload_size(count));
+        packed.push_back(runtime_contract::PackedPaintFormatVersion);
         const auto* source_bytes = reinterpret_cast<const std::uint8_t*>(&source_id);
         packed.insert(packed.end(), source_bytes, source_bytes + sizeof(source_id));
         sdk_append_i32_le(packed, static_cast<std::int32_t>(count));
@@ -17198,10 +17296,24 @@ namespace
             packed.push_back(sdk_unit_to_byte(stroke.ChannelData.AlbedoColor.A));
             packed.push_back(sdk_unit_to_byte(stroke.ChannelData.Metallic));
             packed.push_back(sdk_unit_to_byte(stroke.ChannelData.Roughness));
+            const auto emissive = sdk_unit_to_byte(stroke.ChannelData.EmissiveColor);
+            packed.push_back(emissive);
+            packed.push_back(emissive);
+            packed.push_back(emissive);
+            packed.push_back(255);
             packed.push_back(static_cast<std::uint8_t>(static_cast<std::uint8_t>(stroke.TargetChannel) + 1));
             sdk_append_f32_le(packed, stroke.EffectiveBrushWorldRadius);
             const auto subdivision_tail = runtime_contract::packed_mesh_anchor_auto_subdivision_tail();
             packed.insert(packed.end(), subdivision_tail.begin(), subdivision_tail.end());
+        }
+        const auto expected_size = runtime_contract::packed_paint_payload_size(count);
+        if (packed.size() != expected_size)
+        {
+            failure = "packed_paint_format2_size_mismatch expected=" +
+                      std::to_string(expected_size) + " actual=" +
+                      std::to_string(packed.size());
+            packed.clear();
+            return false;
         }
         return true;
     }
@@ -17455,6 +17567,96 @@ namespace
             static_cast<std::intptr_t>(instruction + 5) + static_cast<std::intptr_t>(displacement));
     }
 
+    // A fixed call-site displacement breaks whenever the caller is recompiled: build
+    // 24280866 moved one such call by a single byte. Locate the callee by its own entry
+    // instead, and fail closed when the caller reaches more than one distinct match.
+    auto internal_find_unique_call_target(std::uintptr_t start,
+                                          std::size_t length,
+                                          std::initializer_list<std::uint8_t> entry_pattern) -> std::uintptr_t
+    {
+        if (!address_in_main_module_code(start) || length < 5 || length > 0x1000)
+        {
+            return 0;
+        }
+        std::uintptr_t found = 0;
+        for (std::size_t offset = 0; offset + 5 <= length; ++offset)
+        {
+            const auto target = internal_rel32_call_target(start + offset);
+            if (!address_in_main_module_code(target) || !internal_code_matches(target, entry_pattern))
+            {
+                continue;
+            }
+            if (found && found != target)
+            {
+                return 0;
+            }
+            found = target;
+        }
+        return found;
+    }
+
+    // The decoder is reached through an already verified call site, so this check only has
+    // to prove the target is that function; it does not have to find it. Build 24176442
+    // entered with
+    //   4C 89 4C 24 20 | 44 89 44 24 18 | 53 55 56             | 48 81 EC A0 00 00 00
+    // and build 24280866 with
+    //                    44 89 44 24 18 | 53 55 57 41 55 41 56 | 48 81 EC 90 00 00 00
+    // The argument spill, the push run and the large stack frame survive the recompile.
+    // The exact registers and frame size do not, so match only what both builds share.
+    auto internal_matches_packed_decoder_prologue(std::uintptr_t address) -> bool
+    {
+        if (!address_in_main_module_code(address))
+        {
+            return false;
+        }
+        std::array<std::uint8_t, 0x20> code{};
+        if (!safe_copy(code.data(), reinterpret_cast<const void*>(address), code.size()))
+        {
+            return false;
+        }
+        constexpr std::array<std::uint8_t, 5> spill{0x44, 0x89, 0x44, 0x24, 0x18};
+        std::size_t cursor = code.size();
+        // 24176442 spills at offset 5 (behind a 4C 89 4C 24 20 store), 24280866 at offset 0.
+        for (std::size_t index = 0; index + spill.size() <= 12; ++index)
+        {
+            if (std::equal(spill.begin(), spill.end(), code.begin() + static_cast<std::ptrdiff_t>(index)))
+            {
+                cursor = index + spill.size();
+                break;
+            }
+        }
+        if (cursor == code.size())
+        {
+            return false;
+        }
+        int pushes = 0;
+        while (cursor < code.size())
+        {
+            const auto opcode = code[cursor];
+            if (opcode >= 0x50 && opcode <= 0x57)
+            {
+                ++pushes;
+                ++cursor;
+                continue;
+            }
+            if (opcode == 0x41 && cursor + 1 < code.size() && code[cursor + 1] >= 0x50 && code[cursor + 1] <= 0x57)
+            {
+                ++pushes;
+                cursor += 2;
+                continue;
+            }
+            break;
+        }
+        if (pushes < 3 || cursor + 7 > code.size())
+        {
+            return false;
+        }
+        // sub rsp, imm32 with a frame large enough to be this decoder rather than a stub.
+        return code[cursor] == 0x48 && code[cursor + 1] == 0x81 && code[cursor + 2] == 0xEC &&
+               code[cursor + 3] >= 0x40 && code[cursor + 4] == 0x00 &&
+               code[cursor + 5] == 0x00 && code[cursor + 6] == 0x00;
+    }
+
     auto resolve_local_packed_queue_route(Reflection& ref,
                                           std::uintptr_t component,
                                           std::uintptr_t multicast_packed_paint_batch_function) -> LocalPackedQueueRoute
@@ -17595,22 +17797,23 @@ namespace
             }
 
             const auto decoder = internal_rel32_call_target(implementation + 0x1E);
-            const auto enqueue_inner = internal_rel32_call_target(implementation + 0x14D);
-            if (!address_in_main_module_code(decoder) ||
-                !internal_code_matches(decoder,
-                                       {0x4C, 0x89, 0x4C, 0x24, 0x20,
-                                        0x44, 0x89, 0x44, 0x24, 0x18,
-                                        0x53, 0x55, 0x56,
-                                        0x48, 0x81, 0xEC, 0xA0, 0x00, 0x00, 0x00}) ||
+            // Build 24176442 called this at implementation+0x14D and build 24280866 at
+            // implementation+0x14C, so search the caller for the callee's entry instead.
+            const auto enqueue_inner = internal_find_unique_call_target(
+                implementation,
+                0x400,
+                {0x48, 0x89, 0x74, 0x24, 0x10,
+                 0x57, 0x48, 0x81, 0xEC, 0x20, 0x01, 0x00, 0x00});
+            if (!internal_matches_packed_decoder_prologue(decoder) ||
                 !address_in_main_module_code(enqueue_inner) ||
-                !internal_code_matches(enqueue_inner,
-                                       {0x48, 0x89, 0x74, 0x24, 0x10,
-                                        0x57, 0x48, 0x81, 0xEC, 0x20, 0x01, 0x00, 0x00}) ||
+                // The queue probe kept its shape across both builds but switched base
+                // register (rdi -> rsi), so the two register bytes are wildcards.
                 !internal_code_matches(enqueue_inner + 0x166,
                                        {0x48, 0x8B, 0x87, 0xA8, 0x00, 0x00, 0x00,
                                         0x48, 0x85, 0xC0,
                                         0x75, 0x0D,
-                                        0x48, 0x8B, 0xCF}))
+                                        0x48, 0x8B, 0xCF},
+                                       "xx?xxxxxxxxxxx?"))
             {
                 continue;
             }
@@ -17672,7 +17875,8 @@ namespace
             out.failure = "PaintAtUVWithBrush_unavailable";
             return out;
         }
-        if (safe_read<int>(paint_at_uv_with_brush_function + OffPropertiesSize, -1) != 0x60)
+        if (safe_read<int>(paint_at_uv_with_brush_function + OffPropertiesSize, -1) !=
+            static_cast<int>(sizeof(sdk::RuntimePaintableComponent_PaintAtUVWithBrush)))
         {
             out.failure = "PaintAtUVWithBrush_params_size_mismatch";
             return out;
@@ -17953,7 +18157,7 @@ namespace
                       "FPaintStroke BrushSettings offset mismatch");
         static_assert(offsetof(sdk::FPaintStroke, ChannelData) == 0x90,
                       "FPaintStroke ChannelData offset mismatch");
-        static_assert(offsetof(sdk::FPaintStroke, TargetChannel) == 0xB0,
+        static_assert(offsetof(sdk::FPaintStroke, TargetChannel) == 0xB4,
                       "FPaintStroke TargetChannel offset mismatch");
         static_assert(std::is_standard_layout_v<sdk::FPaintStroke>,
                       "FPaintStroke must retain a standard layout");

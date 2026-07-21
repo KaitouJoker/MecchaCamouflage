@@ -352,6 +352,9 @@ public sealed class HostSession
             }
             LogFailureProgressOnce();
             Log.Error(message);
+            var failureDetail = PaintFailureDetail(response);
+            if (failureDetail is not null)
+                Log.Warn("Paint detail: " + failureDetail);
             return new HostCommandResult(false, message);
         }
         finally
@@ -632,6 +635,48 @@ public sealed class HostSession
         }
     }
 
+    /// <summary>
+    /// The friendly failure text is deliberately identical for every cause, which leaves a user
+    /// report with nothing to act on. Carry the native failure fields alongside it in the log.
+    /// </summary>
+    public static string? PaintFailureDetail(BridgeReply response)
+    {
+        if (string.IsNullOrWhiteSpace(response.Raw))
+            return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(response.Raw);
+            if (!doc.RootElement.TryGetProperty("metadata", out var metadata) ||
+                metadata.ValueKind != JsonValueKind.Object)
+            {
+                return null;
+            }
+            string[] fields =
+            [
+                "local_visual_sync_failure",
+                "local_packed_queue_resolver_status",
+                "local_packed_queue_resolver_failure",
+                "server_packed_source_id_failure",
+                "packed_ignored_reason"
+            ];
+            var parts = new List<string>();
+            foreach (var field in fields)
+            {
+                if (!metadata.TryGetProperty(field, out var value) || value.ValueKind != JsonValueKind.String)
+                    continue;
+                var text = value.GetString();
+                if (string.IsNullOrWhiteSpace(text))
+                    continue;
+                parts.Add(field + "=" + text);
+            }
+            return parts.Count == 0 ? null : string.Join(" | ", parts);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     public void OpenLogs()
     {
         Directory.CreateDirectory(Paths.DiagnosticsDirectory);
@@ -735,7 +780,16 @@ public sealed class HostSession
         if (lower is "mesh_server_packed_batch_incompatible" || lower.Contains("serverpackedpaintbatch requires"))
             return "Paint failed because strokes could not be packed.";
         if (lower is "mesh_server_packed_source_id_unavailable" || lower.Contains("source id is unavailable"))
-            return "Packed multiplayer paint source id is unavailable.";
+        {
+            // The bridge distinguishes paint_component_unavailable, source_id_read_failed,
+            // and source_id_zero. Dropping that suffix made every user report identical and
+            // undiagnosable, so keep it alongside the friendly text.
+            var separator = value.LastIndexOf(": ", StringComparison.Ordinal);
+            var reason = separator < 0 ? string.Empty : value[(separator + 2)..].Trim();
+            return reason.Length == 0
+                ? "Packed multiplayer paint source id is unavailable."
+                : "Packed multiplayer paint source id is unavailable (" + reason + ").";
+        }
         if (lower is "mesh_internal_no_resend_resolver_failed" ||
             (lower.Contains("internal no-resend route") && lower.Contains("failed")))
             return "Paint: this game build is not supported.";
