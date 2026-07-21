@@ -14,9 +14,9 @@ Issue #87 investigation, see
 Normal paint uses the direct component route:
 
 - `RuntimePaintableComponent.ServerPackedPaintBatch`
-- painter-side application by coalescing successfully submitted strokes into
-  working Albedo, Metallic, and Roughness bytes, then importing those channels
-  no more often than every 100 ms
+- painter-side application of successfully submitted AMR and explicit Emissive
+  strokes through reflected `PaintAtUVWithBrush`; texture export/import is
+  limited to preview and restore
 - Auto Adapt defaults ON and derives the server batch boundary and pacing
   from readable game limits (fixed 20/50 fallback). When OFF, manual controls
   accept 1--500 strokes and 1--500 ms. Local imports use at least 40 strokes,
@@ -34,6 +34,10 @@ Normal paint uses the direct component route:
 - normal painter-local rendering uses reflected `PaintAtUVWithBrush` after the
   corresponding packed server submission; preview/restore alone use texture
   export/import
+- Auto Material uses `GetDominantPaintMaterialPatterns` for Metallic/Roughness.
+  That API has no Emissive field, so Auto Detect reads the Emissive channel only
+  for Auto requests and accepts its grayscale mode; unavailable or non-grayscale
+  data is reported as a manual fallback, not treated as a zero value
 - no fallback to old compact/adaptive `SendCustom` path
 - no automatic fallback to internal-common no-resend, the packed receiver
   queue, or texture-sync transport; those remain explicit research A/B modes

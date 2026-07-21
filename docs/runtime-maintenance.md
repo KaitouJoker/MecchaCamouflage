@@ -106,7 +106,11 @@ directory.
 Normal paint sends planned batches through `ServerPackedPaintBatch`, then
 replays those submitted strokes through the painter's reflected
 `PaintAtUVWithBrush` route. This keeps painter-side rendering on the game's
-paint path and applies the explicit Albedo/Emissive stroke pairs in order.
+paint path and applies the explicit Albedo/Metallic/Roughness and Emissive
+stroke pairs in order. Auto Detect obtains Metallic/Roughness from the
+dominant-material API and Emissive from the mode of the exported Emissive
+channel; an unavailable or non-grayscale Emissive export remains an explicit
+manual-value fallback in metadata.
 `ImportChannelFromBytes` remains the preview/restore transport. Internal-common
 no-resend and the native packed receiver queue remain research-only.
 

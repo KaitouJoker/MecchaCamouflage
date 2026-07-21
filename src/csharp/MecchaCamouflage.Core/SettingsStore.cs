@@ -86,10 +86,12 @@ public sealed class SettingsStore
         paint.AutoMaterial = ReadBool(root, "auto_material", paint.AutoMaterial);
         paint.Metallic = ReadDouble(root, "metallic", paint.Metallic);
         paint.Roughness = ReadDouble(root, "roughness", paint.Roughness);
+        paint.Emissive = ReadDouble(root, "emissive", paint.Emissive);
         if (RgbColor.TryParse(ReadString(root, "fill_color", paint.FillColor.ToHex()), out var fill))
             paint.FillColor = fill;
         paint.FillMetallic = ReadDouble(root, "fill_metallic", paint.FillMetallic);
         paint.FillRoughness = ReadDouble(root, "fill_roughness", paint.FillRoughness);
+        paint.FillEmissive = ReadDouble(root, "fill_emissive", paint.FillEmissive);
 
         return Clamp(settings);
     }
@@ -137,8 +139,10 @@ public sealed class SettingsStore
         settings.Paint.FrontBackSourceMaxUv = Math.Clamp(settings.Paint.FrontBackSourceMaxUv, 0.001, 2.00);
         settings.Paint.Metallic = Math.Clamp(settings.Paint.Metallic, 0.0, 1.0);
         settings.Paint.Roughness = Math.Clamp(settings.Paint.Roughness, 0.0, 1.0);
+        settings.Paint.Emissive = Math.Clamp(settings.Paint.Emissive, 0.0, 1.0);
         settings.Paint.FillMetallic = Math.Clamp(settings.Paint.FillMetallic, 0.0, 1.0);
         settings.Paint.FillRoughness = Math.Clamp(settings.Paint.FillRoughness, 0.0, 1.0);
+        settings.Paint.FillEmissive = Math.Clamp(settings.Paint.FillEmissive, 0.0, 1.0);
         return settings;
     }
 
@@ -175,9 +179,11 @@ public sealed class SettingsStore
         auto_material = settings.Paint.AutoMaterial,
         metallic = settings.Paint.Metallic,
         roughness = settings.Paint.Roughness,
+        emissive = settings.Paint.Emissive,
         fill_color = settings.Paint.FillColor.ToHex(),
         fill_metallic = settings.Paint.FillMetallic,
-        fill_roughness = settings.Paint.FillRoughness
+        fill_roughness = settings.Paint.FillRoughness,
+        fill_emissive = settings.Paint.FillEmissive
     };
 
     public static double CoverageStepFor(PaintSettings paint)

@@ -45,12 +45,14 @@ public sealed record PaintSnapshot(
     bool AutoMaterial,
     double Metallic,
     double Roughness,
+    double Emissive,
     string FrontRegionMode,
     string SideRegionMode,
     string BackRegionMode,
     string FillColor,
     double FillMetallic,
     double FillRoughness,
+    double FillEmissive,
     bool UsesFill);
 
 public sealed record AppSnapshot(

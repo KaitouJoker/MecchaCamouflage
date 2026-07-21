@@ -508,7 +508,7 @@ int main()
     }
     if (runtime_contract::ProductionMaterialPaintChannels !=
         std::array<std::uint8_t, 2>{
-            static_cast<std::uint8_t>(sdk::EPaintChannel::Albedo),
+            static_cast<std::uint8_t>(sdk::EPaintChannel::AlbedoMetallicRoughness),
             static_cast<std::uint8_t>(sdk::EPaintChannel::Emissive)})
     {
         return 26;

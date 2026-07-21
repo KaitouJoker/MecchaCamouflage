@@ -23,12 +23,14 @@ public sealed class HostSession
         "paint.autoMaterial",
         "paint.metallic",
         "paint.roughness",
+        "paint.emissive",
         "paint.frontRegionMode",
         "paint.sideRegionMode",
         "paint.backRegionMode",
         "paint.fillColor",
         "paint.fillMetallic",
         "paint.fillRoughness",
+        "paint.fillEmissive",
         "app.processName",
         "app.alwaysOnTop",
         "app.opacity",
@@ -199,6 +201,7 @@ public sealed class HostSession
                 next.Paint.AutoMaterial = defaults.Paint.AutoMaterial;
                 next.Paint.Metallic = defaults.Paint.Metallic;
                 next.Paint.Roughness = defaults.Paint.Roughness;
+                next.Paint.Emissive = defaults.Paint.Emissive;
                 break;
             case "regions":
                 next.Paint.FrontRegionMode = defaults.Paint.FrontRegionMode;
@@ -210,6 +213,7 @@ public sealed class HostSession
                 next.Paint.FillColor = defaults.Paint.FillColor;
                 next.Paint.FillMetallic = defaults.Paint.FillMetallic;
                 next.Paint.FillRoughness = defaults.Paint.FillRoughness;
+                next.Paint.FillEmissive = defaults.Paint.FillEmissive;
                 break;
             case "app":
                 next.GameProcessName = defaults.GameProcessName;
@@ -877,12 +881,14 @@ public sealed class HostSession
                 paint.AutoMaterial,
                 paint.Metallic,
                 paint.Roughness,
+                paint.Emissive,
                 SettingsStore.RegionModeText(paint.FrontRegionMode),
                 SettingsStore.RegionModeText(paint.SideRegionMode),
                 SettingsStore.RegionModeText(paint.BackRegionMode),
                 paint.FillColor.ToHex(),
                 paint.FillMetallic,
                 paint.FillRoughness,
+                paint.FillEmissive,
                 paint.UsesFill),
             new AppSnapshot(
                 settings.GameProcessName,
@@ -964,9 +970,9 @@ public sealed class HostSession
                                  map["paint.brush2Enabled"] || map["paint.brush2SizeTexels"] ||
                                  map["paint.batchAutoAdapt"] || map["paint.packedBatchLimit"] ||
                                  map["paint.packedBatchPacingMs"],
-            ["paint.material"] = map["paint.autoMaterial"] || map["paint.metallic"] || map["paint.roughness"],
+            ["paint.material"] = map["paint.autoMaterial"] || map["paint.metallic"] || map["paint.roughness"] || map["paint.emissive"],
             ["regions"] = map["paint.frontRegionMode"] || map["paint.sideRegionMode"] || map["paint.backRegionMode"],
-            ["fill.material"] = map["paint.fillColor"] || map["paint.fillMetallic"] || map["paint.fillRoughness"],
+            ["fill.material"] = map["paint.fillColor"] || map["paint.fillMetallic"] || map["paint.fillRoughness"] || map["paint.fillEmissive"],
             ["app"] = map["app.processName"] || map["app.alwaysOnTop"] || map["app.opacity"] || map["app.themeColor"] ||
                     map["app.startHotkey"] || map["app.previewHotkey"] || map["app.unpreviewHotkey"] || map["app.stopHotkey"]
         };
@@ -985,12 +991,14 @@ public sealed class HostSession
         "paint.autoMaterial" => left.Paint.AutoMaterial == right.Paint.AutoMaterial,
         "paint.metallic" => Nearly(left.Paint.Metallic, right.Paint.Metallic),
         "paint.roughness" => Nearly(left.Paint.Roughness, right.Paint.Roughness),
+        "paint.emissive" => Nearly(left.Paint.Emissive, right.Paint.Emissive),
         "paint.frontRegionMode" => left.Paint.FrontRegionMode == right.Paint.FrontRegionMode,
         "paint.sideRegionMode" => left.Paint.SideRegionMode == right.Paint.SideRegionMode,
         "paint.backRegionMode" => left.Paint.BackRegionMode == right.Paint.BackRegionMode,
         "paint.fillColor" => left.Paint.FillColor == right.Paint.FillColor,
         "paint.fillMetallic" => Nearly(left.Paint.FillMetallic, right.Paint.FillMetallic),
         "paint.fillRoughness" => Nearly(left.Paint.FillRoughness, right.Paint.FillRoughness),
+        "paint.fillEmissive" => Nearly(left.Paint.FillEmissive, right.Paint.FillEmissive),
         "app.processName" => left.GameProcessName == right.GameProcessName,
         "app.alwaysOnTop" => left.AlwaysOnTop == right.AlwaysOnTop,
         "app.opacity" => Nearly(left.Opacity, right.Opacity),
@@ -1019,12 +1027,14 @@ public sealed class HostSession
             case "paint.autoMaterial": settings.Paint.AutoMaterial = defaults.Paint.AutoMaterial; break;
             case "paint.metallic": settings.Paint.Metallic = defaults.Paint.Metallic; break;
             case "paint.roughness": settings.Paint.Roughness = defaults.Paint.Roughness; break;
+            case "paint.emissive": settings.Paint.Emissive = defaults.Paint.Emissive; break;
             case "paint.frontRegionMode": settings.Paint.FrontRegionMode = defaults.Paint.FrontRegionMode; break;
             case "paint.sideRegionMode": settings.Paint.SideRegionMode = defaults.Paint.SideRegionMode; break;
             case "paint.backRegionMode": settings.Paint.BackRegionMode = defaults.Paint.BackRegionMode; break;
             case "paint.fillColor": settings.Paint.FillColor = defaults.Paint.FillColor; break;
             case "paint.fillMetallic": settings.Paint.FillMetallic = defaults.Paint.FillMetallic; break;
             case "paint.fillRoughness": settings.Paint.FillRoughness = defaults.Paint.FillRoughness; break;
+            case "paint.fillEmissive": settings.Paint.FillEmissive = defaults.Paint.FillEmissive; break;
             case "app.processName": settings.GameProcessName = defaults.GameProcessName; break;
             case "app.alwaysOnTop": settings.AlwaysOnTop = defaults.AlwaysOnTop; break;
             case "app.opacity": settings.Opacity = defaults.Opacity; break;
@@ -1054,6 +1064,7 @@ public sealed class HostSession
             case "paint.autoMaterial": settings.Paint.AutoMaterial = value.GetBoolean(); break;
             case "paint.metallic": settings.Paint.Metallic = value.GetDouble(); break;
             case "paint.roughness": settings.Paint.Roughness = value.GetDouble(); break;
+            case "paint.emissive": settings.Paint.Emissive = value.GetDouble(); break;
             case "paint.frontRegionMode": settings.Paint.FrontRegionMode = ParseRegionMode(value.GetString()); break;
             case "paint.sideRegionMode": settings.Paint.SideRegionMode = ParseRegionMode(value.GetString()); break;
             case "paint.backRegionMode": settings.Paint.BackRegionMode = ParseRegionMode(value.GetString()); break;
@@ -1064,6 +1075,7 @@ public sealed class HostSession
                 break;
             case "paint.fillMetallic": settings.Paint.FillMetallic = value.GetDouble(); break;
             case "paint.fillRoughness": settings.Paint.FillRoughness = value.GetDouble(); break;
+            case "paint.fillEmissive": settings.Paint.FillEmissive = value.GetDouble(); break;
             case "app.language": settings.Language = value.GetString() ?? settings.Language; break;
             case "app.processName": settings.GameProcessName = value.GetString() ?? settings.GameProcessName; break;
             case "app.alwaysOnTop": settings.AlwaysOnTop = value.GetBoolean(); break;

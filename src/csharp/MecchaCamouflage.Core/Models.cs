@@ -53,9 +53,11 @@ public sealed class PaintSettings
     public bool AutoMaterial { get; set; } = false;
     public double Metallic { get; set; } = 0.0;
     public double Roughness { get; set; } = 1.0;
+    public double Emissive { get; set; } = 0.0;
     public RgbColor FillColor { get; set; } = RgbColor.White;
     public double FillMetallic { get; set; } = 1.0;
     public double FillRoughness { get; set; } = 0.0;
+    public double FillEmissive { get; set; } = 0.0;
 
     public bool UsesFill =>
         FrontRegionMode == RegionMode.Fill ||

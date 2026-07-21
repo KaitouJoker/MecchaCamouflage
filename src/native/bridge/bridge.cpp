@@ -4898,6 +4898,7 @@ namespace
                           double b,
                           double metallic,
                           double roughness,
+                          double emissive,
                           sdk::EPaintChannelApplyMode apply_mode) -> sdk::FPaintChannelData;
     auto sdk_make_uv_stroke(double u,
                             double v,
@@ -6178,6 +6179,7 @@ namespace
         std::vector<std::uint8_t> albedo_bytes{};
         std::vector<std::uint8_t> metallic_bytes{};
         std::vector<std::uint8_t> roughness_bytes{};
+        std::vector<std::uint8_t> emissive_bytes{};
     };
 
     struct MeshFirstResearchTextureSnapshot
@@ -6237,6 +6239,19 @@ namespace
         std::string failure{"not_run"};
     };
 
+    // The dominant-pattern API exposes only Albedo/Metallic/Roughness.  The
+    // Emissive render target is separate in 2.9.0, so Auto Detect obtains its
+    // representative scalar from the exported Emissive channel instead.
+    struct MeshFirstEmissiveProperties
+    {
+        bool ok{false};
+        double emissive{0.0};
+        int pixel_count{0};
+        int dominant_pixel_count{0};
+        std::string source{"not_run"};
+        std::string failure{"not_run"};
+    };
+
     // =============================================================================
     // Section: Preview/unpreview texture channel IO
     // Risk: high. Snapshot state is local-only but affects paint preview recovery.
@@ -6257,9 +6272,11 @@ namespace
                                            int texture_size,
                                            const std::vector<std::uint8_t>& albedo_bytes,
                                            const std::vector<std::uint8_t>& metallic_bytes,
-                                           const std::vector<std::uint8_t>& roughness_bytes) -> void
+                                           const std::vector<std::uint8_t>& roughness_bytes,
+                                           const std::vector<std::uint8_t>& emissive_bytes) -> void
     {
-        if (!component || albedo_bytes.empty() || metallic_bytes.empty() || roughness_bytes.empty())
+        if (!component || albedo_bytes.empty() || metallic_bytes.empty() ||
+            roughness_bytes.empty() || emissive_bytes.empty())
         {
             return;
         }
@@ -6283,10 +6300,16 @@ namespace
             hash ^= static_cast<std::uint64_t>(value);
             hash *= 1099511628211ULL;
         }
+        for (const auto value : emissive_bytes)
+        {
+            hash ^= static_cast<std::uint64_t>(value);
+            hash *= 1099511628211ULL;
+        }
         g_mesh_first_preview_snapshot.hash = hash;
         g_mesh_first_preview_snapshot.albedo_bytes = albedo_bytes;
         g_mesh_first_preview_snapshot.metallic_bytes = metallic_bytes;
         g_mesh_first_preview_snapshot.roughness_bytes = roughness_bytes;
+        g_mesh_first_preview_snapshot.emissive_bytes = emissive_bytes;
     }
 
     auto mesh_first_clear_preview_snapshot() -> void
@@ -6545,6 +6568,60 @@ namespace
         return out;
     }
 
+    auto mesh_first_get_dominant_emissive_properties(Reflection& ref,
+                                                      std::uintptr_t component) -> MeshFirstEmissiveProperties
+    {
+        MeshFirstEmissiveProperties out{};
+        const auto channel = mesh_first_export_channel_bytes(ref, component, sdk::EPaintChannel::Emissive);
+        if (!channel.ok)
+        {
+            out.failure = "ExportChannelToBytes_emissive_failed:" + channel.failure;
+            return out;
+        }
+        if (channel.bytes.empty() || (channel.bytes.size() % 4U) != 0U)
+        {
+            out.failure = "ExportChannelToBytes_emissive_layout_invalid";
+            return out;
+        }
+
+        std::array<int, 256> histogram{};
+        const std::size_t pixel_count = channel.bytes.size() / 4U;
+        for (std::size_t pixel = 0; pixel < pixel_count; ++pixel)
+        {
+            const auto offset = pixel * 4U;
+            const auto r = channel.bytes[offset + 0U];
+            const auto g = channel.bytes[offset + 1U];
+            const auto b = channel.bytes[offset + 2U];
+            if (r != g || r != b)
+            {
+                out.failure = "ExportChannelToBytes_emissive_not_grayscale";
+                return out;
+            }
+            ++histogram[static_cast<std::size_t>(r)];
+        }
+
+        int dominant_value = 0;
+        int dominant_pixel_count = -1;
+        for (int value = 0; value <= 255; ++value)
+        {
+            const int count = histogram[static_cast<std::size_t>(value)];
+            if (count > dominant_pixel_count)
+            {
+                dominant_value = value;
+                dominant_pixel_count = count;
+            }
+        }
+        out.ok = dominant_pixel_count >= 0;
+        out.emissive = static_cast<double>(dominant_value) / 255.0;
+        out.pixel_count = static_cast<int>(std::min<std::size_t>(
+            pixel_count,
+            static_cast<std::size_t>(std::numeric_limits<int>::max())));
+        out.dominant_pixel_count = std::max(0, dominant_pixel_count);
+        out.source = "emissive_channel_mode";
+        out.failure = out.ok ? "ok" : "ExportChannelToBytes_emissive_no_pixels";
+        return out;
+    }
+
     auto mesh_first_export_channel_checksum(Reflection& ref,
                                             std::uintptr_t component,
                                             sdk::EPaintChannel channel) -> MeshFirstChannelChecksum
@@ -6777,6 +6854,7 @@ namespace
         std::vector<std::uint8_t>& albedo_bytes,
         std::vector<std::uint8_t>& metallic_bytes,
         std::vector<std::uint8_t>& roughness_bytes,
+        std::vector<std::uint8_t>& emissive_bytes,
         bool capture_before_hash = false,
         bool capture_after_hash = false) -> MeshFirstLocalTextureImportResult
     {
@@ -6787,7 +6865,8 @@ namespace
         const std::size_t expected_bytes = static_cast<std::size_t>(size) * static_cast<std::size_t>(size) * 4U;
         if (albedo_bytes.size() != expected_bytes ||
             metallic_bytes.size() != expected_bytes ||
-            roughness_bytes.size() != expected_bytes)
+            roughness_bytes.size() != expected_bytes ||
+            emissive_bytes.size() != expected_bytes)
         {
             out.failure = "incremental_texture_buffer_size_mismatch";
             return out;
@@ -6802,7 +6881,8 @@ namespace
         out.export_ok = true;
         out.source_bytes = static_cast<int>(albedo_bytes.size() +
                                             metallic_bytes.size() +
-                                            roughness_bytes.size());
+                                            roughness_bytes.size() +
+                                            emissive_bytes.size());
         if (capture_before_hash)
         {
             out.before_hash = mesh_first_hash_channel_bytes(albedo_bytes);
@@ -6810,19 +6890,27 @@ namespace
             out.before_hash *= 1099511628211ULL;
             out.before_hash ^= mesh_first_hash_channel_bytes(roughness_bytes);
             out.before_hash *= 1099511628211ULL;
+            out.before_hash ^= mesh_first_hash_channel_bytes(emissive_bytes);
+            out.before_hash *= 1099511628211ULL;
         }
 
         const auto compose_started = std::chrono::steady_clock::now();
         for (std::size_t stroke_index = stroke_offset; stroke_index < stroke_end; ++stroke_index)
         {
             const auto& stroke = strokes[stroke_index];
+            const bool paint_albedo_metallic_roughness =
+                stroke.TargetChannel == sdk::EPaintChannel::AlbedoMetallicRoughness ||
+                stroke.TargetChannel == sdk::EPaintChannel::All ||
+                stroke.TargetChannel == sdk::EPaintChannel::AlbedoMetallicRoughnessEmissive;
             const bool paint_albedo = stroke.TargetChannel == sdk::EPaintChannel::Albedo ||
-                                      stroke.TargetChannel == sdk::EPaintChannel::All;
+                                      paint_albedo_metallic_roughness;
             const bool paint_metallic = stroke.TargetChannel == sdk::EPaintChannel::Metallic ||
-                                        stroke.TargetChannel == sdk::EPaintChannel::All;
+                                        paint_albedo_metallic_roughness;
             const bool paint_roughness = stroke.TargetChannel == sdk::EPaintChannel::Roughness ||
-                                         stroke.TargetChannel == sdk::EPaintChannel::All;
-            if (!paint_albedo && !paint_metallic && !paint_roughness)
+                                         paint_albedo_metallic_roughness;
+            const bool paint_emissive = stroke.TargetChannel == sdk::EPaintChannel::Emissive ||
+                                        stroke.TargetChannel == sdk::EPaintChannel::AlbedoMetallicRoughnessEmissive;
+            if (!paint_albedo && !paint_metallic && !paint_roughness && !paint_emissive)
             {
                 continue;
             }
@@ -6838,6 +6926,7 @@ namespace
             const auto b = static_cast<std::uint8_t>(std::lround(clamp01(stroke.ChannelData.AlbedoColor.B) * 255.0));
             const auto m = static_cast<std::uint8_t>(std::lround(clamp01(stroke.ChannelData.Metallic) * 255.0));
             const auto ro = static_cast<std::uint8_t>(std::lround(clamp01(stroke.ChannelData.Roughness) * 255.0));
+            const auto e = static_cast<std::uint8_t>(std::lround(clamp01(stroke.ChannelData.EmissiveColor) * 255.0));
             bool painted = false;
             const int min_y = std::max(0, cy - radius);
             const int max_y = std::min(size - 1, cy + radius);
@@ -6892,6 +6981,18 @@ namespace
                         roughness_bytes[offset + 2] = ro;
                         roughness_bytes[offset + 3] = 255;
                     }
+                    if (paint_emissive)
+                    {
+                        changed = changed ||
+                                  emissive_bytes[offset + 0] != e ||
+                                  emissive_bytes[offset + 1] != e ||
+                                  emissive_bytes[offset + 2] != e ||
+                                  emissive_bytes[offset + 3] != 255;
+                        emissive_bytes[offset + 0] = e;
+                        emissive_bytes[offset + 1] = e;
+                        emissive_bytes[offset + 2] = e;
+                        emissive_bytes[offset + 3] = 255;
+                    }
                     ++out.pixels_touched;
                     if (changed)
                     {
@@ -6915,6 +7016,8 @@ namespace
             out.preview_hash ^= mesh_first_hash_channel_bytes(metallic_bytes);
             out.preview_hash *= 1099511628211ULL;
             out.preview_hash ^= mesh_first_hash_channel_bytes(roughness_bytes);
+            out.preview_hash *= 1099511628211ULL;
+            out.preview_hash ^= mesh_first_hash_channel_bytes(emissive_bytes);
             out.preview_hash *= 1099511628211ULL;
         }
         if (out.pixels_changed <= 0)
@@ -6942,7 +7045,8 @@ namespace
         out.import_ok =
             import_channel(sdk::EPaintChannel::Albedo, albedo_bytes, "albedo") &&
             import_channel(sdk::EPaintChannel::Metallic, metallic_bytes, "metallic") &&
-            import_channel(sdk::EPaintChannel::Roughness, roughness_bytes, "roughness");
+            import_channel(sdk::EPaintChannel::Roughness, roughness_bytes, "roughness") &&
+            import_channel(sdk::EPaintChannel::Emissive, emissive_bytes, "emissive");
         out.channel_import_elapsed_ms = std::chrono::duration<double, std::milli>(
                                             std::chrono::steady_clock::now() - channel_import_started)
                                             .count();
@@ -6963,7 +7067,8 @@ namespace
                                                         int texture_size,
                                                         const std::vector<std::uint8_t>* base_albedo_bytes = nullptr,
                                                         const std::vector<std::uint8_t>* base_metallic_bytes = nullptr,
-                                                        const std::vector<std::uint8_t>* base_roughness_bytes = nullptr) -> MeshFirstLocalTextureImportResult
+                                                        const std::vector<std::uint8_t>* base_roughness_bytes = nullptr,
+                                                        const std::vector<std::uint8_t>* base_emissive_bytes = nullptr) -> MeshFirstLocalTextureImportResult
     {
         MeshFirstLocalTextureImportResult out{};
         out.texture_size = texture_size;
@@ -6972,6 +7077,7 @@ namespace
         MeshFirstChannelBytes albedo{};
         MeshFirstChannelBytes metallic{};
         MeshFirstChannelBytes roughness{};
+        MeshFirstChannelBytes emissive{};
         auto prepare_channel = [&](sdk::EPaintChannel paint_channel,
                                    const std::vector<std::uint8_t>* base_bytes,
                                    const char* label,
@@ -7000,7 +7106,8 @@ namespace
         };
         if (!prepare_channel(sdk::EPaintChannel::Albedo, base_albedo_bytes, "albedo", albedo) ||
             !prepare_channel(sdk::EPaintChannel::Metallic, base_metallic_bytes, "metallic", metallic) ||
-            !prepare_channel(sdk::EPaintChannel::Roughness, base_roughness_bytes, "roughness", roughness))
+            !prepare_channel(sdk::EPaintChannel::Roughness, base_roughness_bytes, "roughness", roughness) ||
+            !prepare_channel(sdk::EPaintChannel::Emissive, base_emissive_bytes, "emissive", emissive))
         {
             return out;
         }
@@ -7013,6 +7120,7 @@ namespace
                                                                  albedo.bytes,
                                                                  metallic.bytes,
                                                                  roughness.bytes,
+                                                                 emissive.bytes,
                                                                  true,
                                                                  true);
     }
@@ -9482,6 +9590,7 @@ namespace
         std::vector<std::uint8_t> local_texture_albedo_bytes{};
         std::vector<std::uint8_t> local_texture_metallic_bytes{};
         std::vector<std::uint8_t> local_texture_roughness_bytes{};
+        std::vector<std::uint8_t> local_texture_emissive_bytes{};
         bool server_texture_sync_started{false};
         bool server_texture_sync_request_full_available{false};
         bool server_texture_sync_server_request_available{false};
@@ -9595,6 +9704,44 @@ namespace
                ",\"automatic_retry_safe\":false";
     }
 
+    // These counters are maintained by every local route.  Keep them outside
+    // the research-only no-resend block so normal PaintAtUV work can be
+    // measured before reducing a cadence that must never reach 0 ms.
+    auto mesh_first_local_dispatch_metadata(const std::shared_ptr<MeshFirstServerBatchAsyncJob>& job) -> std::string
+    {
+        if (!job)
+        {
+            return {};
+        }
+        return ",\"local_render_target_write_budget\":" +
+                   std::to_string(job->local_render_target_write_budget) +
+               ",\"local_render_target_writes_scheduled\":" +
+                   std::to_string(job->local_render_target_writes_scheduled) +
+               ",\"local_write_budget_yields\":" +
+                   std::to_string(job->local_write_budget_yields) +
+               ",\"local_cpu_budget_us\":" +
+                   std::to_string(runtime_contract::LocalDispatchCpuBudgetUs) +
+               ",\"local_cpu_budget_yields\":" +
+                   std::to_string(job->local_cpu_budget_yields) +
+               ",\"local_dispatch_wakeup\":\"bounded_immediate_repost_then_timer_queue\"" +
+               ",\"local_direct_fast_wakeup_count\":" +
+                   std::to_string(job->direct_fast_wakeup_count) +
+               ",\"local_direct_fast_wakeup_fallback_count\":" +
+                   std::to_string(job->direct_fast_wakeup_fallback_count) +
+               ",\"local_direct_immediate_repost_count\":" +
+                   std::to_string(job->direct_immediate_repost_count) +
+               ",\"local_direct_immediate_reposts_per_deferred_wakeup\":" +
+                   std::to_string(runtime_contract::DirectLocalImmediateRepostsPerDeferredWakeup) +
+               ",\"local_common_call_total_ms\":" +
+                   std::to_string(job->local_common_call_total_ms) +
+               ",\"local_common_call_max_ms\":" +
+                   std::to_string(job->local_common_call_max_ms) +
+               ",\"local_dispatch_total_ms\":" +
+                   std::to_string(job->local_dispatch_total_ms) +
+               ",\"local_dispatch_max_ms\":" +
+                   std::to_string(job->local_dispatch_max_ms);
+    }
+
     auto mesh_first_internal_no_resend_metadata(const std::shared_ptr<MeshFirstServerBatchAsyncJob>& job) -> std::string
     {
         if (!job)
@@ -9662,11 +9809,7 @@ namespace
                    ",\"local_packed_queue_raw_i64_170_delta\":" +
                        std::to_string(raw_i64_170_delta) +
                    ",\"local_packed_queue_last_thread_id\":" +
-                       std::to_string(job->local_packed_queue_last_thread_id) +
-                   ",\"local_dispatch_total_ms\":" +
-                       std::to_string(job->local_dispatch_total_ms) +
-                   ",\"local_dispatch_max_ms\":" +
-                       std::to_string(job->local_dispatch_max_ms);
+                       std::to_string(job->local_packed_queue_last_thread_id);
         }
         if (!job->internal_no_resend_local_apply_enabled)
         {
@@ -9688,33 +9831,6 @@ namespace
                    std::to_string(job->internal_no_resend_preflight_descriptors_validated) +
                ",\"local_apply_preflight_descriptors_total\":" +
                    std::to_string(job->internal_no_resend_preflight_descriptors.size()) +
-               ",\"local_render_target_write_budget\":" +
-                   std::to_string(job->local_render_target_write_budget) +
-               ",\"local_render_target_writes_scheduled\":" +
-                   std::to_string(job->local_render_target_writes_scheduled) +
-               ",\"local_write_budget_yields\":" +
-                   std::to_string(job->local_write_budget_yields) +
-               ",\"local_cpu_budget_us\":" +
-                   std::to_string(runtime_contract::LocalDispatchCpuBudgetUs) +
-               ",\"local_cpu_budget_yields\":" +
-                   std::to_string(job->local_cpu_budget_yields) +
-               ",\"local_dispatch_wakeup\":\"bounded_immediate_repost_then_timer_queue\"" +
-               ",\"local_direct_fast_wakeup_count\":" +
-                   std::to_string(job->direct_fast_wakeup_count) +
-               ",\"local_direct_fast_wakeup_fallback_count\":" +
-                   std::to_string(job->direct_fast_wakeup_fallback_count) +
-               ",\"local_direct_immediate_repost_count\":" +
-                   std::to_string(job->direct_immediate_repost_count) +
-               ",\"local_direct_immediate_reposts_per_deferred_wakeup\":" +
-                   std::to_string(runtime_contract::DirectLocalImmediateRepostsPerDeferredWakeup) +
-               ",\"local_common_call_total_ms\":" +
-                   std::to_string(job->local_common_call_total_ms) +
-               ",\"local_common_call_max_ms\":" +
-                   std::to_string(job->local_common_call_max_ms) +
-               ",\"local_dispatch_total_ms\":" +
-                   std::to_string(job->local_dispatch_total_ms) +
-               ",\"local_dispatch_max_ms\":" +
-                   std::to_string(job->local_dispatch_max_ms) +
                ",\"local_apply_preflight_failure\":\"" +
                    json_escape(job->internal_no_resend_preflight_failure) + "\"";
     }
@@ -10984,6 +11100,7 @@ namespace
             out += ",\"cancel_reason\":\"" +
                    json_escape(paint_cancel_reason_name(cancel_reason)) + "\"";
         }
+        out += mesh_first_local_dispatch_metadata(job);
         out += mesh_first_internal_no_resend_metadata(job);
         if (terminal &&
             (phase == MeshFirstBatchPhase::Cancelled || phase == MeshFirstBatchPhase::Failed))
@@ -11106,11 +11223,13 @@ namespace
         const bool tuning_auto_material = json_bool_field(request, "auto_material", false);
         const double tuning_metallic = clamp_range(json_number_field(request, "metallic", 0.0), 0.0, 1.0);
         const double tuning_roughness = clamp_range(json_number_field(request, "roughness", 1.0), 0.0, 1.0);
+        const double tuning_emissive = clamp_range(json_number_field(request, "emissive", 0.0), 0.0, 1.0);
         const double fill_color_r = clamp_range(json_number_field(request, "fill_color_r", 1.0), 0.0, 1.0);
         const double fill_color_g = clamp_range(json_number_field(request, "fill_color_g", 1.0), 0.0, 1.0);
         const double fill_color_b = clamp_range(json_number_field(request, "fill_color_b", 1.0), 0.0, 1.0);
         const double fill_metallic = clamp_range(json_number_field(request, "fill_metallic", 1.0), 0.0, 1.0);
         const double fill_roughness = clamp_range(json_number_field(request, "fill_roughness", 0.0), 0.0, 1.0);
+        const double fill_emissive = clamp_range(json_number_field(request, "fill_emissive", 0.0), 0.0, 1.0);
         const bool research_force_paint_color =
             research_artifacts && !preview_only && !unpreview_only &&
             json_bool_field(request, "research_force_paint_color", false);
@@ -11239,12 +11358,14 @@ namespace
         metadata += ",\"material_properties_mode\":\"" + std::string(tuning_auto_material ? "auto" : "manual") + "\"";
         metadata += ",\"metallic\":" + std::to_string(tuning_metallic);
         metadata += ",\"roughness\":" + std::to_string(tuning_roughness);
+        metadata += ",\"emissive\":" + std::to_string(tuning_emissive);
         metadata += ",\"fill_color_space\":\"srgb\"";
         metadata += ",\"fill_color_r\":" + std::to_string(fill_color_r);
         metadata += ",\"fill_color_g\":" + std::to_string(fill_color_g);
         metadata += ",\"fill_color_b\":" + std::to_string(fill_color_b);
         metadata += ",\"fill_metallic\":" + std::to_string(fill_metallic);
         metadata += ",\"fill_roughness\":" + std::to_string(fill_roughness);
+        metadata += ",\"fill_emissive\":" + std::to_string(fill_emissive);
         metadata += ",\"replication_pacing_requested_enabled\":" + std::string(json_bool(tuning_replication_pacing_enabled));
         metadata += ",\"replication_pacing_enabled\":" +
                     std::string(json_bool(normal_paint_requires_packed && tuning_replication_pacing_enabled));
@@ -11395,9 +11516,11 @@ namespace
             metadata += ",\"unpreview_snapshot_albedo_bytes\":" + std::to_string(snapshot.albedo_bytes.size());
             metadata += ",\"unpreview_snapshot_metallic_bytes\":" + std::to_string(snapshot.metallic_bytes.size());
             metadata += ",\"unpreview_snapshot_roughness_bytes\":" + std::to_string(snapshot.roughness_bytes.size());
+            metadata += ",\"unpreview_snapshot_emissive_bytes\":" + std::to_string(snapshot.emissive_bytes.size());
             metadata += ",\"unpreview_snapshot_texture_size\":" + std::to_string(snapshot.texture_size);
             metadata += ",\"unpreview_snapshot_hash\":\"" + std::to_string(snapshot.hash) + "\"";
-            if (!snapshot.available || snapshot.albedo_bytes.empty() || snapshot.metallic_bytes.empty() || snapshot.roughness_bytes.empty())
+            if (!snapshot.available || snapshot.albedo_bytes.empty() || snapshot.metallic_bytes.empty() ||
+                snapshot.roughness_bytes.empty() || snapshot.emissive_bytes.empty())
             {
                 return response_json(false,
                                      "mesh_unpreview_snapshot_unavailable",
@@ -11427,6 +11550,7 @@ namespace
             auto restore_albedo_bytes = snapshot.albedo_bytes;
             auto restore_metallic_bytes = snapshot.metallic_bytes;
             auto restore_roughness_bytes = snapshot.roughness_bytes;
+            auto restore_emissive_bytes = snapshot.emissive_bytes;
             auto restore_channel = [&](sdk::EPaintChannel channel,
                                        std::vector<std::uint8_t>& bytes,
                                        const char* label) -> bool {
@@ -11441,7 +11565,8 @@ namespace
             const bool restored =
                 restore_channel(sdk::EPaintChannel::Albedo, restore_albedo_bytes, "albedo") &&
                 restore_channel(sdk::EPaintChannel::Metallic, restore_metallic_bytes, "metallic") &&
-                restore_channel(sdk::EPaintChannel::Roughness, restore_roughness_bytes, "roughness");
+                restore_channel(sdk::EPaintChannel::Roughness, restore_roughness_bytes, "roughness") &&
+                restore_channel(sdk::EPaintChannel::Emissive, restore_emissive_bytes, "emissive");
             const double elapsed_ms =
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
             if (restored)
@@ -12440,12 +12565,14 @@ namespace
         int replay_world_anchors = 0;
         int replay_local_anchors = 0;
         int replay_triangle_anchors = 0;
-        metadata += ",\"paint_target_channel\":\"albedo_then_emissive_clear\"";
-        metadata += ",\"paint_target_channel_values\":[0,6]";
+        metadata += ",\"paint_target_channel\":\"albedo_metallic_roughness_then_emissive\"";
+        metadata += ",\"paint_target_channel_values\":[5,6]";
         MeshFirstMaterialProperties material_properties{};
+        MeshFirstEmissiveProperties emissive_properties{};
         if (any_paint_region && tuning_auto_material)
         {
             material_properties = mesh_first_get_dominant_material_properties(ref, ctx.component);
+            emissive_properties = mesh_first_get_dominant_emissive_properties(ref, ctx.component);
         }
         metadata += ",\"material_properties_source\":\"" +
                     std::string(!any_paint_region
@@ -12463,8 +12590,29 @@ namespace
         metadata += ",\"material_properties_coverage_ratio\":" + std::to_string(material_properties.coverage_ratio);
         metadata += ",\"material_properties_metallic\":" + std::to_string(material_properties.metallic);
         metadata += ",\"material_properties_roughness\":" + std::to_string(material_properties.roughness);
+        metadata += ",\"material_properties_emissive_source\":\"" +
+                    std::string(!any_paint_region
+                                    ? "fill_material_only"
+                                    : (!tuning_auto_material
+                                           ? "manual_tuning"
+                                           : (emissive_properties.ok
+                                                  ? emissive_properties.source
+                                                  : "manual_fallback"))) +
+                    "\"";
+        metadata += ",\"material_properties_emissive_auto_ok\":" +
+                    std::string(json_bool(emissive_properties.ok));
+        metadata += ",\"material_properties_emissive_failure\":\"" +
+                    json_escape(emissive_properties.failure) + "\"";
+        metadata += ",\"material_properties_emissive\":" +
+                    std::to_string(emissive_properties.emissive);
+        metadata += ",\"material_properties_emissive_pixel_count\":" +
+                    std::to_string(emissive_properties.pixel_count);
+        metadata += ",\"material_properties_emissive_dominant_pixel_count\":" +
+                    std::to_string(emissive_properties.dominant_pixel_count);
         int material_properties_auto_samples = 0;
         int material_properties_source_sample_fallbacks = 0;
+        int material_properties_emissive_auto_samples = 0;
+        int material_properties_emissive_manual_fallbacks = 0;
         int replay_spatial_sort_partitions = 0;
         int replay_spatial_order_violations = 0;
         int replay_triangle_world_radius_derived = 0;
@@ -12512,12 +12660,14 @@ namespace
                                            sdk_srgb_to_linear_unit(fill_color_b),
                                            fill_metallic,
                                            fill_roughness,
+                                           fill_emissive,
                                            sdk::EPaintChannelApplyMode::Override);
             }
             else
             {
                 double stroke_metallic = tuning_metallic;
                 double stroke_roughness = tuning_roughness;
+                double stroke_emissive = tuning_emissive;
                 if (tuning_auto_material)
                 {
                     if (material_properties.ok)
@@ -12532,12 +12682,22 @@ namespace
                         stroke_roughness = clamp01(sample.roughness);
                         ++material_properties_source_sample_fallbacks;
                     }
+                    if (emissive_properties.ok)
+                    {
+                        stroke_emissive = emissive_properties.emissive;
+                        ++material_properties_emissive_auto_samples;
+                    }
+                    else
+                    {
+                        ++material_properties_emissive_manual_fallbacks;
+                    }
                 }
                 channel = sdk_make_channel(sdk_srgb_to_linear_unit(sample.r),
                                            sdk_srgb_to_linear_unit(sample.g),
                                            sdk_srgb_to_linear_unit(sample.b),
                                            stroke_metallic,
                                            stroke_roughness,
+                                           stroke_emissive,
                                            sdk::EPaintChannelApplyMode::Override);
             }
             const auto& stroke_brush = fill_mode
@@ -12550,7 +12710,7 @@ namespace
                                                             sample.v,
                                                             channel,
                                                             stroke_brush,
-                                                            sdk::EPaintChannel::Albedo,
+                                                            sdk::EPaintChannel::AlbedoMetallicRoughness,
                                                             sample.world_position,
                                                             sample.local_position,
                                                             sample.triangle_index,
@@ -12561,7 +12721,7 @@ namespace
                                                    sample.v,
                                                    channel,
                                                    stroke_brush,
-                                                   sdk::EPaintChannel::Albedo);
+                                                   sdk::EPaintChannel::AlbedoMetallicRoughness);
             if (use_triangle_world_radius && stroke.bHasSkeletalTriangleAnchor)
             {
                 if (sample.triangle_index < 0 ||
@@ -12662,6 +12822,10 @@ namespace
         metadata += ",\"replay_spatial_sort_elapsed_ms\":" + std::to_string(replay_spatial_sort_elapsed_ms);
         metadata += ",\"material_properties_auto_samples\":" + std::to_string(material_properties_auto_samples);
         metadata += ",\"material_properties_source_sample_fallbacks\":" + std::to_string(material_properties_source_sample_fallbacks);
+        metadata += ",\"material_properties_emissive_auto_samples\":" +
+                    std::to_string(material_properties_emissive_auto_samples);
+        metadata += ",\"material_properties_emissive_manual_fallbacks\":" +
+                    std::to_string(material_properties_emissive_manual_fallbacks);
         metadata += ",\"replay_triangle_world_radius_derived\":" +
                     std::to_string(replay_triangle_world_radius_derived);
         metadata += ",\"replay_triangle_world_units_per_uv_min\":" +
@@ -13128,15 +13292,15 @@ namespace
             production_texture_import_requested &&
             ref.find_function(ctx.component, "ExportChannelToBytes") != 0 &&
             ref.find_function(ctx.component, "ImportChannelFromBytes") != 0;
-        metadata += ",\"server_paint_target_channel\":\"albedo_then_emissive_clear\"";
+        metadata += ",\"server_paint_target_channel\":\"albedo_metallic_roughness_then_emissive\"";
         bool production_local_texture_import_prepared = false;
         std::string production_local_texture_import_prepare_failure{"not_requested"};
         if (preview_only)
         {
             metadata += ",\"local_paint_rpc\":\"ImportChannelFromBytes\"";
-            metadata += ",\"local_visual_sync_mode\":\"local_albedo_channel_import_preview\"";
-            metadata += ",\"local_batch_strategy\":\"single_channel_import_preview\"";
-            metadata += ",\"local_paint_target_channel\":\"albedo\"";
+            metadata += ",\"local_visual_sync_mode\":\"local_material_channels_import_preview\"";
+            metadata += ",\"local_batch_strategy\":\"four_channel_import_preview\"";
+            metadata += ",\"local_paint_target_channel\":\"albedo_metallic_roughness_then_emissive\"";
             metadata += ",\"local_texture_import_byte_order\":\"rgba\"";
             metadata += ",\"local_visual_sync_required\":false";
             metadata += ",\"local_visual_sync_after_server_success\":false";
@@ -13150,8 +13314,8 @@ namespace
             metadata += ",\"local_paint_available\":" +
                         std::string(json_bool(local_texture_import_available));
             metadata += ",\"local_visual_sync_mode\":\"coalesced_incremental_local_texture_import\"";
-            metadata += ",\"local_batch_strategy\":\"three_channel_texture_import_coalesced\"";
-            metadata += ",\"local_paint_target_channel\":\"all\"";
+            metadata += ",\"local_batch_strategy\":\"four_channel_texture_import_coalesced\"";
+            metadata += ",\"local_paint_target_channel\":\"albedo_metallic_roughness_then_emissive\"";
             metadata += ",\"local_texture_import_byte_order\":\"rgba\"";
             metadata += ",\"local_visual_sync_required\":true";
             metadata += ",\"local_visual_sync_after_server_success\":true";
@@ -13196,7 +13360,7 @@ namespace
                                         : (use_internal_no_resend_local_apply
                                         ? "single_stroke_internal_no_resend_lockstep"
                                         : (use_packed_server_batch ? "single_stroke_lockstep" : "single_stroke_local_only"))) + "\"";
-            metadata += ",\"local_paint_target_channel\":\"all\"";
+            metadata += ",\"local_paint_target_channel\":\"albedo_metallic_roughness_then_emissive\"";
             metadata += ",\"local_visual_sync_required\":true";
             metadata += ",\"local_visual_sync_after_server_success\":" + std::string(json_bool(use_packed_server_batch));
             metadata += ",\"local_visual_sync_after_each_server_stroke\":" +
@@ -13337,6 +13501,7 @@ namespace
         MeshFirstChannelBytes albedo_before_bytes{};
         MeshFirstChannelBytes metallic_before_bytes{};
         MeshFirstChannelBytes roughness_before_bytes{};
+        MeshFirstChannelBytes emissive_before_bytes{};
         MeshFirstChannelChecksum albedo_before{};
         MeshFirstPreviewSnapshot existing_preview_snapshot{};
         bool preview_snapshot_reused = false;
@@ -13349,6 +13514,7 @@ namespace
             if (existing_preview_snapshot.available && !existing_preview_snapshot.albedo_bytes.empty() &&
                 !existing_preview_snapshot.metallic_bytes.empty() &&
                 !existing_preview_snapshot.roughness_bytes.empty() &&
+                !existing_preview_snapshot.emissive_bytes.empty() &&
                 existing_preview_snapshot.component == ctx.component)
             {
                 albedo_before_bytes.ok = true;
@@ -13360,6 +13526,9 @@ namespace
                 roughness_before_bytes.ok = true;
                 roughness_before_bytes.bytes = existing_preview_snapshot.roughness_bytes;
                 roughness_before_bytes.failure = "ok";
+                emissive_before_bytes.ok = true;
+                emissive_before_bytes.bytes = existing_preview_snapshot.emissive_bytes;
+                emissive_before_bytes.failure = "ok";
                 preview_snapshot_reused = true;
             }
             else
@@ -13369,12 +13538,14 @@ namespace
                 albedo_before_bytes = mesh_first_export_channel_bytes(ref, ctx.component, sdk::EPaintChannel::Albedo);
                 metallic_before_bytes = mesh_first_export_channel_bytes(ref, ctx.component, sdk::EPaintChannel::Metallic);
                 roughness_before_bytes = mesh_first_export_channel_bytes(ref, ctx.component, sdk::EPaintChannel::Roughness);
+                emissive_before_bytes = mesh_first_export_channel_bytes(ref, ctx.component, sdk::EPaintChannel::Emissive);
             }
         }
         if (local_texture_base_required &&
             albedo_before_bytes.ok &&
             metallic_before_bytes.ok &&
-            roughness_before_bytes.ok)
+            roughness_before_bytes.ok &&
+            emissive_before_bytes.ok)
         {
             albedo_before.ok = true;
             albedo_before.bytes = static_cast<int>(albedo_before_bytes.bytes.size());
@@ -13383,6 +13554,8 @@ namespace
             albedo_before.hash *= 1099511628211ULL;
             albedo_before.hash ^= mesh_first_hash_channel_bytes(roughness_before_bytes.bytes);
             albedo_before.hash *= 1099511628211ULL;
+            albedo_before.hash ^= mesh_first_hash_channel_bytes(emissive_before_bytes.bytes);
+            albedo_before.hash *= 1099511628211ULL;
             albedo_before.failure.clear();
         }
         else
@@ -13390,7 +13563,8 @@ namespace
             albedo_before.failure = local_texture_base_required
                                         ? ("albedo:" + albedo_before_bytes.failure +
                                            ";metallic:" + metallic_before_bytes.failure +
-                                           ";roughness:" + roughness_before_bytes.failure)
+                                           ";roughness:" + roughness_before_bytes.failure +
+                                           ";emissive:" + emissive_before_bytes.failure)
                                         : "skipped_for_server_stroke_stream";
         }
         metadata += ",\"albedo_export_before_ok\":" + std::string(json_bool(albedo_before.ok));
@@ -13400,6 +13574,8 @@ namespace
         metadata += ",\"metallic_export_before_bytes\":" + std::to_string(metallic_before_bytes.bytes.size());
         metadata += ",\"roughness_export_before_ok\":" + std::string(json_bool(roughness_before_bytes.ok));
         metadata += ",\"roughness_export_before_bytes\":" + std::to_string(roughness_before_bytes.bytes.size());
+        metadata += ",\"emissive_export_before_ok\":" + std::string(json_bool(emissive_before_bytes.ok));
+        metadata += ",\"emissive_export_before_bytes\":" + std::to_string(emissive_before_bytes.bytes.size());
         metadata += ",\"preview_snapshot_available_before\":" + std::string(json_bool(existing_preview_snapshot.available));
         metadata += ",\"preview_snapshot_reused\":" + std::string(json_bool(preview_snapshot_reused));
         metadata += ",\"preview_snapshot_component_mismatch_before\":" + std::string(json_bool(preview_snapshot_component_mismatch));
@@ -13451,20 +13627,24 @@ namespace
             const auto* base_bytes = albedo_before_bytes.ok ? &albedo_before_bytes.bytes : nullptr;
             const auto* base_metallic_bytes = metallic_before_bytes.ok ? &metallic_before_bytes.bytes : nullptr;
             const auto* base_roughness_bytes = roughness_before_bytes.ok ? &roughness_before_bytes.bytes : nullptr;
+            const auto* base_emissive_bytes = emissive_before_bytes.ok ? &emissive_before_bytes.bytes : nullptr;
             const auto result = mesh_first_apply_local_material_import_preview(ref,
                                                                                ctx.component,
                                                                                strokes,
                                                                                active_texture_size,
                                                                                base_bytes,
                                                                                base_metallic_bytes,
-                                                                               base_roughness_bytes);
-            if (result.ok && albedo_before_bytes.ok && metallic_before_bytes.ok && roughness_before_bytes.ok)
+                                                                               base_roughness_bytes,
+                                                                               base_emissive_bytes);
+            if (result.ok && albedo_before_bytes.ok && metallic_before_bytes.ok &&
+                roughness_before_bytes.ok && emissive_before_bytes.ok)
             {
                 mesh_first_store_preview_snapshot(ctx.component,
                                                   active_texture_size,
                                                   albedo_before_bytes.bytes,
                                                   metallic_before_bytes.bytes,
-                                                  roughness_before_bytes.bytes);
+                                                  roughness_before_bytes.bytes,
+                                                  emissive_before_bytes.bytes);
             }
             const double preview_elapsed_ms =
                 std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - preview_started).count();
@@ -13487,7 +13667,8 @@ namespace
             metadata += ",\"unpreview_snapshot_stored\":" + std::string(json_bool(result.ok &&
                                                                                   albedo_before_bytes.ok &&
                                                                                   metallic_before_bytes.ok &&
-                                                                                  roughness_before_bytes.ok));
+                                                                                  roughness_before_bytes.ok &&
+                                                                                  emissive_before_bytes.ok));
             metadata += ",\"total_replay_elapsed_ms\":" + std::to_string(preview_elapsed_ms);
             metadata += ",\"paint_elapsed_ms\":" + std::to_string(preview_elapsed_ms);
             metadata += mesh_first_replication_snapshot_metadata("mesh_rep_before", replication_before);
@@ -13515,9 +13696,11 @@ namespace
                 albedo_before_bytes.ok &&
                 metallic_before_bytes.ok &&
                 roughness_before_bytes.ok &&
+                emissive_before_bytes.ok &&
                 albedo_before_bytes.bytes.size() == expected_texture_bytes &&
                 metallic_before_bytes.bytes.size() == expected_texture_bytes &&
-                roughness_before_bytes.bytes.size() == expected_texture_bytes;
+                roughness_before_bytes.bytes.size() == expected_texture_bytes &&
+                emissive_before_bytes.bytes.size() == expected_texture_bytes;
             if (production_local_texture_import_prepared)
             {
                 production_local_texture_import_prepare_failure.clear();
@@ -13602,10 +13785,12 @@ namespace
                 async_job->local_texture_import_source_bytes = static_cast<int>(
                     albedo_before_bytes.bytes.size() +
                     metallic_before_bytes.bytes.size() +
-                    roughness_before_bytes.bytes.size());
+                    roughness_before_bytes.bytes.size() +
+                    emissive_before_bytes.bytes.size());
                 async_job->local_texture_albedo_bytes = std::move(albedo_before_bytes.bytes);
                 async_job->local_texture_metallic_bytes = std::move(metallic_before_bytes.bytes);
                 async_job->local_texture_roughness_bytes = std::move(roughness_before_bytes.bytes);
+                async_job->local_texture_emissive_bytes = std::move(emissive_before_bytes.bytes);
             }
             if (async_job->internal_no_resend_local_apply_enabled)
             {
@@ -13701,19 +13886,32 @@ namespace
                                    async_job->pacing_fallback_reason + "\"";
             async_job->server_batch_limit = effective_pacing_decision.remote_batch_limit;
             async_job->server_batch_delay_ms = effective_pacing_decision.remote_delay_ms;
+            const int local_sample_batch_limit = std::max(1, effective_pacing_decision.local_batch_limit);
             async_job->local_visual_sync_batch_limit = use_packed_local_queue
                                                            ? effective_pacing_decision.remote_batch_limit
-                                                           : effective_pacing_decision.local_batch_limit;
+                                                           : (async_job->internal_no_resend_local_apply_enabled
+                                                                  ? local_sample_batch_limit
+                                                                  : local_sample_batch_limit *
+                                                                        static_cast<int>(paint_target_channel_count));
             async_job->local_visual_sync_delay_ms = use_packed_local_queue
                                                         ? effective_pacing_decision.remote_delay_ms
                                                         : effective_pacing_decision.local_delay_ms;
-            // This lane invokes the local anti-echo common routine, not the
-            // receiver's replicated-paint queue.  Track channel fan-out, but
-            // use the measured CPU budget as the hard yield condition rather
-            // than treating the receiver write-limit property as stroke units.
+            // Production uses reflected PaintAtUVWithBrush (the anti-echo
+            // common routine is research-only). Keep AMR/Emissive fan-out at
+            // the prior six logical samples per cadence and yield by measured
+            // CPU time; receiver write-limit properties are not stroke units.
             async_job->local_render_target_write_budget =
-                std::max(1, effective_pacing_decision.local_batch_limit) *
-                runtime_contract::paint_channel_write_cost(static_cast<int>(sdk::EPaintChannel::Albedo));
+                async_job->internal_no_resend_local_apply_enabled
+                    ? local_sample_batch_limit *
+                          runtime_contract::paint_channel_write_cost(
+                              static_cast<int>(sdk::EPaintChannel::AlbedoMetallicRoughness))
+                    : local_sample_batch_limit *
+                          (runtime_contract::paint_channel_write_cost(
+                               static_cast<int>(sdk::EPaintChannel::AlbedoMetallicRoughness)) +
+                           runtime_contract::paint_channel_write_cost(
+                               static_cast<int>(sdk::EPaintChannel::Emissive)));
+            async_job->metadata += ",\"local_logical_sample_batch_limit\":" +
+                                   std::to_string(local_sample_batch_limit);
             async_job->replication_pacing_enabled =
                 normal_paint_requires_packed &&
                 effective_auto_adapt &&
@@ -14840,7 +15038,10 @@ namespace
                                                                                job->component,
                                                                                job->strokes,
                                                                                job->texture_size,
-                                                                               &job->albedo_before_bytes);
+                                                                               &job->albedo_before_bytes,
+                                                                               nullptr,
+                                                                               nullptr,
+                                                                               nullptr);
             job->albedo_before_bytes.clear();
             job->albedo_before_bytes.shrink_to_fit();
             job->local_texture_import_ok = result.ok;
@@ -15456,6 +15657,7 @@ namespace
                             job->local_texture_albedo_bytes,
                             job->local_texture_metallic_bytes,
                             job->local_texture_roughness_bytes,
+                            job->local_texture_emissive_bytes,
                             job->local_texture_import_calls == 0,
                             job->local_offset + local_count_cap >= job->strokes.size());
                     }
@@ -15493,6 +15695,7 @@ namespace
                         job->local_texture_albedo_bytes.clear();
                         job->local_texture_metallic_bytes.clear();
                         job->local_texture_roughness_bytes.clear();
+                        job->local_texture_emissive_bytes.clear();
                     }
                     else
                     {
@@ -16970,6 +17173,7 @@ namespace
                           double b,
                           double metallic,
                           double roughness,
+                          double emissive,
                           sdk::EPaintChannelApplyMode apply_mode) -> sdk::FPaintChannelData
     {
         sdk::FPaintChannelData data{};
@@ -16980,6 +17184,7 @@ namespace
         data.Metallic = static_cast<float>(clamp01(metallic));
         data.Roughness = static_cast<float>(clamp01(roughness));
         data.Height = 0.0f;
+        data.EmissiveColor = static_cast<float>(clamp01(emissive));
         data.ApplyMode = apply_mode;
         return data;
     }

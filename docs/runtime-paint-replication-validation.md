@@ -30,8 +30,8 @@ Normal multiplayer paint uses independent server and painter-local lanes:
 - `RuntimePaintableComponent.ServerPackedPaintBatch` sends the server batch.
 - The painter applies successfully submitted strokes through
   `PaintAtUVWithBrush`, respecting the server/local cursor and the local
-  render-target write budget. The adjacent Albedo and Emissive-clear strokes
-  stay in order.
+  render-target write budget. The adjacent Albedo/Metallic/Roughness and
+  explicit Emissive strokes stay in order.
 - The game module identity and resolved RVAs are diagnostics, not version gates.
 - If local paint cannot be called, paint fails with the native reason; it does
   not substitute texture import after server submission.
@@ -63,10 +63,11 @@ does not reuse its largest triangle radius. A live Brush 2 size-5 check changed
 for the old uniform 3.5 wire scale. Uniform scale and mesh-average calibration
 remain research-only A/B controls and cannot block normal paint.
 
-On the local route, completion means all three channel imports succeeded and
-server batch submission completed. In server fallback, completion and progress
-mean server batch submission completed. Neither result proves that another
-client has presented its final pixels.
+On the local route, completion means the planned AMR/Emissive stroke pairs
+were submitted locally and server batch submission completed. Preview and
+unpreview alone use channel export/import. In server fallback, completion and
+progress mean server batch submission completed. Neither result proves that
+another client has presented its final pixels.
 
 ## Packed Receiver Research Cancellation
 

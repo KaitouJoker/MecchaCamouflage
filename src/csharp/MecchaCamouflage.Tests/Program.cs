@@ -22,6 +22,8 @@ var tests = new List<(string Name, Action Run)>
     ("native spatial replay follows the current pose and camera", NativeSpatialReplayFollowsCurrentPoseAndCamera),
     ("native async paint tolerates freecam pawn transitions", NativeAsyncPaintToleratesFreecamPawnTransitions),
     ("native production local sync uses per-stroke paint", NativeProductionLocalSyncUsesPerStrokePaint),
+    ("native preview applies PBR and emissive channels", NativePreviewAppliesPbrAndEmissiveChannels),
+    ("native auto material detects emissive and reports local pacing", NativeAutoMaterialDetectsEmissiveAndReportsLocalPacing),
     ("payload includes packed route and fill material", PayloadIncludesPackedRouteAndFillMaterial),
     ("payload sends batch slider values", PayloadSendsBatchSliderValues),
     ("pre-mode pacing preserves saved delay", PreModePacingPreservesSavedDelay),
@@ -375,6 +377,36 @@ static void NativeProductionLocalSyncUsesPerStrokePaint()
         "production metadata must identify the local per-stroke paint route");
 }
 
+static void NativePreviewAppliesPbrAndEmissiveChannels()
+{
+    var bridge = File.ReadAllText(Path.Combine(
+        FindRepositoryRoot(),
+        "src", "native", "bridge", "bridge.cpp"));
+
+    Assert(bridge.Contains("paint_albedo_metallic_roughness", StringComparison.Ordinal) &&
+           bridge.Contains("paint_emissive", StringComparison.Ordinal) &&
+           bridge.Contains("sdk::EPaintChannel::Emissive, emissive_bytes", StringComparison.Ordinal) &&
+           bridge.Contains("unpreview_snapshot_emissive_bytes", StringComparison.Ordinal) &&
+           bridge.Contains("restore_channel(sdk::EPaintChannel::Emissive", StringComparison.Ordinal),
+        "preview and unpreview must preserve the AMR and Emissive channels produced by normal paint strokes");
+}
+
+static void NativeAutoMaterialDetectsEmissiveAndReportsLocalPacing()
+{
+    var bridge = File.ReadAllText(Path.Combine(
+        FindRepositoryRoot(),
+        "src", "native", "bridge", "bridge.cpp"));
+
+    Assert(bridge.Contains("mesh_first_get_dominant_emissive_properties", StringComparison.Ordinal) &&
+           bridge.Contains("sdk::EPaintChannel::Emissive", StringComparison.Ordinal) &&
+           bridge.Contains("material_properties_emissive_source", StringComparison.Ordinal),
+        "Auto Detect must derive Emissive from the game channel and report its source or fallback");
+    Assert(bridge.Contains("local_cpu_budget_us", StringComparison.Ordinal) &&
+           bridge.Contains("local_render_target_write_budget", StringComparison.Ordinal) &&
+           bridge.Contains("local_logical_sample_batch_limit", StringComparison.Ordinal),
+        "normal local paint must report its CPU and write-budget pacing for live performance checks");
+}
+
 static void PayloadIncludesPackedRouteAndFillMaterial()
 {
     var settings = new AppSettings();
@@ -386,6 +418,8 @@ static void PayloadIncludesPackedRouteAndFillMaterial()
     settings.Paint.FillColor = new RgbColor(241, 17, 17);
     settings.Paint.FillMetallic = 1.0;
     settings.Paint.FillRoughness = 0.0;
+    settings.Paint.Emissive = 0.35;
+    settings.Paint.FillEmissive = 0.7;
 
     var payload = BridgePayloadBuilder.BuildPaintPayload(settings, 42, "Game.exe", new PaintRequestOptions());
     using var doc = JsonDocument.Parse(payload);
@@ -399,6 +433,8 @@ static void PayloadIncludesPackedRouteAndFillMaterial()
     Assert(tuning.GetProperty("server_batch_pacing_ms").GetInt32() == 88, "server batch pacing should be sent");
     Assert(tuning.GetProperty("fill_color").GetString() == "#F11111", "fill color missing");
     Assert(Math.Abs(tuning.GetProperty("fill_color_r").GetDouble() - (241.0 / 255.0)) < 0.00001, "fill red not normalized");
+    Assert(Math.Abs(tuning.GetProperty("emissive").GetDouble() - 0.35) < 0.00001, "paint emissive missing");
+    Assert(Math.Abs(tuning.GetProperty("fill_emissive").GetDouble() - 0.7) < 0.00001, "fill emissive missing");
     Assert(!tuning.TryGetProperty("enable_front_paint", out _), "legacy front bool must not be sent");
     Assert(!tuning.TryGetProperty("enable_side_paint", out _), "legacy side bool must not be sent");
     Assert(!tuning.TryGetProperty("enable_back_paint", out _), "legacy back bool must not be sent");
@@ -798,11 +834,13 @@ static void UiSnapshotExposesTwoPassBrushesAndBatchSliders()
         false,
         0.0,
         1.0,
+        0.0,
         "fill",
         "paint",
         "paint",
         "#FFFFFF",
         1.0,
+        0.0,
         0.0,
         true);
     var json = JsonSerializer.Serialize(snapshot, new JsonSerializerOptions

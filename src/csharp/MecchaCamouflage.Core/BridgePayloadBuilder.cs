@@ -40,6 +40,7 @@ public static class BridgePayloadBuilder
                 ["auto_material"] = paint.AutoMaterial,
                 ["metallic"] = paint.Metallic,
                 ["roughness"] = paint.Roughness,
+                ["emissive"] = paint.Emissive,
                 ["front_region_mode"] = SettingsStore.RegionModeText(paint.FrontRegionMode),
                 ["side_region_mode"] = SettingsStore.RegionModeText(paint.SideRegionMode),
                 ["back_region_mode"] = SettingsStore.RegionModeText(paint.BackRegionMode),
@@ -48,7 +49,8 @@ public static class BridgePayloadBuilder
                 ["fill_color_g"] = ToUnit(paint.FillColor.G),
                 ["fill_color_b"] = ToUnit(paint.FillColor.B),
                 ["fill_metallic"] = paint.FillMetallic,
-                ["fill_roughness"] = paint.FillRoughness
+                ["fill_roughness"] = paint.FillRoughness,
+                ["fill_emissive"] = paint.FillEmissive
             }
         };
         return JsonSerializer.Serialize(payload) + "\n";

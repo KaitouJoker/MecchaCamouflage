@@ -275,12 +275,14 @@ function renderSettings(snapshot) {
   setChecked("auto-material", paint.autoMaterial);
   setNumberPair("metallic", "metallic-number", paint.metallic);
   setNumberPair("roughness", "roughness-number", paint.roughness);
+  setNumberPair("emissive", "emissive-number", paint.emissive);
   renderRegionButtons(document.querySelector('[data-region="paint.frontRegionMode"]'), "paint.frontRegionMode", paint.frontRegionMode);
   renderRegionButtons(document.querySelector('[data-region="paint.sideRegionMode"]'), "paint.sideRegionMode", paint.sideRegionMode);
   renderRegionButtons(document.querySelector('[data-region="paint.backRegionMode"]'), "paint.backRegionMode", paint.backRegionMode);
   setColor(paint.fillColor);
   setNumberPair("fill-metallic", "fill-metallic-number", paint.fillMetallic);
   setNumberPair("fill-roughness", "fill-roughness-number", paint.fillRoughness);
+  setNumberPair("fill-emissive", "fill-emissive-number", paint.fillEmissive);
 
   const app = snapshot.settings.app;
   applyThemeColor(app.themeColor);
@@ -311,7 +313,7 @@ function renderSettings(snapshot) {
   }
 
   const materialLocked = paint.autoMaterial || !editing;
-  setDisabled(["metallic", "metallic-number", "roughness", "roughness-number"], materialLocked);
+  setDisabled(["metallic", "metallic-number", "roughness", "roughness-number", "emissive", "emissive-number"], materialLocked);
 
   setDisabled([
     "brush-1-size",
@@ -337,7 +339,9 @@ function renderSettings(snapshot) {
     "fill-metallic",
     "fill-metallic-number",
     "fill-roughness",
-    "fill-roughness-number"
+    "fill-roughness-number",
+    "fill-emissive",
+    "fill-emissive-number"
   ], fillLocked);
 }
 
@@ -563,12 +567,14 @@ function diffSnapshots(before, after) {
     "paint.autoMaterial",
     "paint.metallic",
     "paint.roughness",
+    "paint.emissive",
     "paint.frontRegionMode",
     "paint.sideRegionMode",
     "paint.backRegionMode",
     "paint.fillColor",
     "paint.fillMetallic",
     "paint.fillRoughness",
+    "paint.fillEmissive",
     "app.alwaysOnTop",
     "app.opacity",
     "app.themeColor",
@@ -776,9 +782,11 @@ document.addEventListener("DOMContentLoaded", () => {
   bindCheckbox("auto-material", "paint.autoMaterial");
   bindRangePair("metallic", "metallic-number", "paint.metallic");
   bindRangePair("roughness", "roughness-number", "paint.roughness");
+  bindRangePair("emissive", "emissive-number", "paint.emissive");
   bindColorPair("fill-color-picker", "fill-color", "paint.fillColor");
   bindRangePair("fill-metallic", "fill-metallic-number", "paint.fillMetallic");
   bindRangePair("fill-roughness", "fill-roughness-number", "paint.fillRoughness");
+  bindRangePair("fill-emissive", "fill-emissive-number", "paint.fillEmissive");
   bindCheckbox("always-on-top", "app.alwaysOnTop");
   bindRangePair("opacity", "opacity-number", "app.opacity", value => value / 100);
   bindColorPair("theme-color-picker", "theme-color", "app.themeColor");

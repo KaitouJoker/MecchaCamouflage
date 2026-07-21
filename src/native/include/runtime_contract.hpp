@@ -44,10 +44,11 @@ namespace runtime_contract
     constexpr std::size_t PackedPaintRecordWorldRadiusOffset = 23;
     constexpr std::size_t PackedPaintRecordSubdivisionOffset = 27;
 
-    // Ordinary color is sent through the verified Albedo route. A second,
-    // explicit Emissive stroke clears glow left by All-channel paint; format-2
-    // data alone does not make All reliably update that target on 2.9.0.
-    constexpr std::array<std::uint8_t, 2> ProductionMaterialPaintChannels{0, 6};
+    // Material color and PBR values are sent through the verified
+    // Albedo/Metallic/Roughness route. A second, explicit Emissive stroke keeps
+    // glow independent; format-2 data alone does not make All reliably update
+    // that target on 2.9.0.
+    constexpr std::array<std::uint8_t, 2> ProductionMaterialPaintChannels{5, 6};
 
     constexpr std::size_t packed_paint_payload_size(std::size_t stroke_count)
     {

@@ -65,6 +65,13 @@ These require MECCHA CHAMELEON.
 - Start the app in a valid paintable match.
   - preview applies.
   - unpreview restores.
+  - preview and unpreview preserve Albedo, Metallic, Roughness, and Emissive;
+    a manual Metallic `0` / Roughness `1` preview must not appear metallic or
+    mirror-like.
+  - with Auto Detect enabled, record
+    `material_properties_emissive_source`. It must be
+    `emissive_channel_mode`, or the explicit `manual_fallback` reason must be
+    retained in metadata rather than silently guessing a value.
   - repeated unpreview shows a guard warning.
   - cancel with no active paint shows a guard warning.
   - normal paint completes.
@@ -128,6 +135,10 @@ Collect these separately for painter-as-host and painter-as-joining-client:
     - `local_paint_rpc == "PaintAtUVWithBrush"`
     - `local_strokes_synced` equals the planned stroke count
     - `local_texture_import_started == false`
+    - `local_render_target_write_budget`, `local_cpu_budget_yields`, and
+      `local_dispatch_total_ms` are captured with the run. Do not lower the
+      recurring scheduler below its 1 ms safety floor merely to improve this
+      measurement.
   - for fallback:
     - `fallback_reason` preserves the triggering local error
     - `fallback_batch_limit == 20`
@@ -152,7 +163,9 @@ Collect these separately for painter-as-host and painter-as-joining-client:
   painter visibly progresses through Fill and enabled Brush passes. Confirm
   `local_texture_import_started == false`; it is reserved for preview/restore,
   not normal paint. When investigating FPS drops, record the local
-  `PaintAtUVWithBrush` event rate rather than texture-import timings.
+  `PaintAtUVWithBrush` event rate together with `local_dispatch_total_ms`,
+  `local_cpu_budget_yields`, and `local_write_budget_yields`, rather than
+  texture-import timings.
 
 Do not release if joining-client paint crashes the server, or if other clients
 finish closer to the old multi-minute replication drain path than to the new
