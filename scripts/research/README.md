@@ -55,10 +55,10 @@ game-thread `paint_replication_pressure_probe` snapshots during the hold; it
 does not send paint or texture-sync requests.
 
 `--texture-snapshot` is an explicit, low-frequency diagnostic: it records
-before/after checksums for the selected component's Albedo, Metallic, and
-Roughness channels. It also retains a PNG and changed-pixel mask for that
+before/after checksums for the selected component's Albedo and packed
+Metallic/Roughness/Emissive channels. It also retains a PNG and changed-pixel mask for that
 component's **Albedo only**; do not interpret its zero count as proof that
-Metallic or Roughness did not change. It deliberately does not export unrelated
+Metallic, Roughness, or Emissive did not change. It deliberately does not export unrelated
 components, so the observation adds as little game-thread work as possible.
 The default target is the controller-resolved component. On a joining client,
 `--texture-target eventwatch-multicast-packed-receiver` instead pins the exact
@@ -89,9 +89,8 @@ stroke for a controlled footprint comparison; its index is the full replay
 order, before the selector reduces the emitted plan to one entry.
 
 `--paint-mode` and `--stroke-limit` are research-only A/B controls.
-`combined-no-resend` preserves the former per-stroke production local primitive
-for comparison with the current texture-import route. `packed-local-queue`
-remains an explicit receiver-queue A/B
+`combined-no-resend` exercises the production-shaped internal no-resend renderer
+under explicit research controls. `packed-local-queue` remains an explicit receiver-queue A/B
 mode and is selected when `--paint-mode` is omitted by the research runner.
 `combined` retains the superseded reflected local route for controlled
 comparison. `local-only` keeps the reflected `PaintAtUVWithBrush`
@@ -173,13 +172,12 @@ terminate as cancelled, and requires event-watch to reach
 runner skips its normal `finally` shutdown even when the result is
 indeterminate; it does not obscure the evidence with an automatic retry.
 
-Normal production paint submits packed server batches, coalesces already
-submitted strokes into the painter's working Albedo, Metallic, and Roughness
-bytes, then imports the three channels at most every 100 ms. It does not invoke
-internal-common no-resend, the packed receiver queue, or reflected
-`PaintAtUVWithBrush`. If local texture import fails, the server packed route
-continues at 20 strokes / 50 ms. Per-stroke and packed receiver paths remain
-available only in explicit research modes.
+Normal production paint submits packed AMRE batches through
+`ServerPackedPaintBatch`, then applies the submitted strokes through the
+validated internal no-resend renderer. It does not use texture import,
+`PaintAtUVWithBrush`, or the packed receiver queue for normal painter-side
+rendering. Texture export/import is reserved for Preview and Unpreview. The
+reflected and packed-receiver alternatives remain explicit research modes.
 
 The planner uses `Fill`, `CoarsePaint`, then `FinePaint`; each pass retains
 only the enabled Brushes. If any region selects Fill, one 100-texel Fill pass

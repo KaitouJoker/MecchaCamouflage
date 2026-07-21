@@ -28,21 +28,23 @@ research build script when those capabilities are required.
 Normal multiplayer paint uses independent server and painter-local lanes:
 
 - `RuntimePaintableComponent.ServerPackedPaintBatch` sends the server batch.
-- The painter applies successfully submitted strokes through
-  `PaintAtUVWithBrush`, respecting the server/local cursor and the local
-  render-target write budget. The adjacent Albedo/Metallic/Roughness and
-  explicit Emissive strokes stay in order.
+- The painter applies successfully submitted AMRE strokes through the validated
+  internal no-resend renderer. M/R/E are one packed material-properties
+  texture (`R/G/B`); production does not split them into separate strokes.
 - The game module identity and resolved RVAs are diagnostics, not version gates.
-- If local paint cannot be called, paint fails with the native reason; it does
-  not substitute texture import after server submission.
-- Normal paint never falls back automatically to internal-common no-resend,
-  the packed receiver queue, compact/adaptive routes, or a texture-sync
-  transport.
+- A missing packed schema, source ID, or internal no-resend resolver fails with
+  its native reason; it does not substitute texture import, reflected local
+  paint, a receiver queue, compact/adaptive routes, or texture-sync transport.
 - Auto Adapt defaults ON and derives the fastest safe batch/pacing values from
   readable game-owned limits, falling back to 20 strokes / 50 ms when those
   properties are unavailable. Its controls are disabled while ON. With Auto
-  Adapt OFF, both server controls are editable from 1--500. The local paint
-  lane remains bounded by its render-target write budget in both modes.
+  Adapt OFF, both server controls are editable from 1--500. The local renderer
+  remains bounded by its render-target write and CPU budgets in both modes.
+
+Auto Detect is a global material-pattern selection, not a per-stroke material
+sampler. It uses the game-provided dominant pattern including M/R/E for Paint
+regions and records the candidates, selection, and first-stroke values. Fill
+always uses its explicit manual PBR controls.
 
 Brush 1 and Brush 2 are independently enabled. Brush 1 ranges from 10--50
 texels, defaults to 25, and defaults OFF. Brush 2 ranges from 1--10 texels,
@@ -63,11 +65,10 @@ does not reuse its largest triangle radius. A live Brush 2 size-5 check changed
 for the old uniform 3.5 wire scale. Uniform scale and mesh-average calibration
 remain research-only A/B controls and cannot block normal paint.
 
-On the local route, completion means the planned AMR/Emissive stroke pairs
-were submitted locally and server batch submission completed. Preview and
-unpreview alone use channel export/import. In server fallback, completion and
-progress mean server batch submission completed. Neither result proves that
-another client has presented its final pixels.
+On the production route, completion means server batch submission and the
+internal painter-local renderer completed their bounded work. Preview and
+Unpreview alone use channel export/import. Neither result proves that another
+client has presented its final pixels.
 
 ## Packed Receiver Research Cancellation
 
@@ -94,7 +95,11 @@ local queue cap, and terminalized only after two zero-queue observations. This
 verifies host-local cancellation behavior. It does not retroactively stop work
 already delivered to a joining client.
 
-## Joining-Client Throughput
+## Historical Joining-Client Throughput
+
+The following Issue #87 measurements predate the v1.6.2 internal no-resend
+production route. They remain useful as an investigation baseline only; do not
+use them as v1.6.2 performance acceptance criteria.
 
 In a host plus Hyper-V joining-client comparison with variable colors and 400
 planned strokes:

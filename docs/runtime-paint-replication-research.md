@@ -14,14 +14,12 @@ Issue #87 investigation, see
 Normal paint uses the direct component route:
 
 - `RuntimePaintableComponent.ServerPackedPaintBatch`
-- painter-side application of successfully submitted AMR and explicit Emissive
-  strokes through reflected `PaintAtUVWithBrush`; texture export/import is
-  limited to preview and restore
+- painter-side application of successfully submitted packed AMRE strokes through
+  the validated internal no-resend renderer; texture export/import is limited
+  to Preview and Unpreview
 - Auto Adapt defaults ON and derives the server batch boundary and pacing
   from readable game limits (fixed 20/50 fallback). When OFF, manual controls
-  accept 1--500 strokes and 1--500 ms. Local imports use at least 40 strokes,
-  or one larger configured server batch, to avoid a full texture upload per
-  small network batch
+  accept 1--500 strokes and 1--500 ms
 - packed-wire UV radius scale `1.0`; each Fill/Brush 1/Brush 2 anchor derives a
   world radius from that triangle's UV-to-world Jacobian and serializes it per
   stroke, without sharing the batch maximum
@@ -31,16 +29,16 @@ Normal paint uses the direct component route:
 - the effective subdivision tail is exactly `level=0`, `pixel-size=0`,
   `template-resolution=0`, allowing receiver preflight to select the component
   defaults. These fields are not brush diameter bytes
-- normal painter-local rendering uses reflected `PaintAtUVWithBrush` after the
-  corresponding packed server submission; preview/restore alone use texture
+- normal painter-local rendering uses the internal no-resend renderer after the
+  corresponding packed server submission; Preview/Unpreview alone use texture
   export/import
-- Auto Material uses `GetDominantPaintMaterialPatterns` for Metallic/Roughness.
-  That API has no Emissive field, so Auto Detect reads the Emissive channel only
-  for Auto requests and accepts its grayscale mode; unavailable or non-grayscale
-  data is reported as a manual fallback, not treated as a zero value
+- Auto Material uses `GetDominantPaintMaterialPatterns` for M/R/E. It is a
+  global pattern choice for Paint regions, and reports its candidates and
+  selection. Fill stays on the explicit manual PBR values even with Auto Detect
+  enabled
 - no fallback to old compact/adaptive `SendCustom` path
-- no automatic fallback to internal-common no-resend, the packed receiver
-  queue, or texture-sync transport; those remain explicit research A/B modes
+- no automatic fallback to a reflected local route, packed receiver queue, or
+  texture-sync transport; those remain explicit research A/B modes
 - server packed schema/payload/source-ID failure still stops paint with explicit
   metadata
 

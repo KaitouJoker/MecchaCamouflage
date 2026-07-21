@@ -152,7 +152,7 @@ game restart.
 
 ## Verification gates
 
-Before v1.6 release, run the direct-injection tests and Windows 10/11 smoke
+Before a release, run the direct-injection tests and Windows 10/11 smoke
 matrix from [`release-checklist.md`](release-checklist.md), including 25
 sequential injections into one game process, same-name processes, target exit
 during each stage, concurrent hosts, old direct bridges, and resident modules.

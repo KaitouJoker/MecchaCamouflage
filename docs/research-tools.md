@@ -16,10 +16,9 @@ and their evidence boundary is documented in
 Put repeatable bridge/runtime investigation scripts under `scripts/research/`;
 keep generated output under `artifacts/research/` or a local temp directory.
 
-v1.6 uses the mesh-first paint route. The required game-derived mesh profiles
-are tracked under `resources/mesh-profiles/`; `make build` copies the required
-profile assets into the local build output for package/debug runs. After game
-updates, initialize the research-tool
+The current mesh-first paint route uses game-derived mesh profiles tracked under
+`resources/mesh-profiles/`; `make build` copies the required profile assets into
+the local build output for package/debug runs. After game updates, initialize the research-tool
 submodules and run `make mesh MAPPINGS=<path-to-usmap>` to regenerate the
 reviewed shipping profile.
 
@@ -85,12 +84,16 @@ When a game update breaks painting, use this order:
 
 1. Run the app once and keep `%LOCALAPPDATA%\MecchaCamouflage\runtime\` logs.
 2. Check runtime reflection metadata first: function availability, reflected
-   offsets, `RuntimePaintable` state, and mesh profile identity.
-3. Use UnrealMappingsDumper only when runtime reflection cannot resolve a
+   offsets, `RuntimePaintable` state, mesh profile identity, packed paint
+   format, and `FPaintChannelData`/`FPaintStroke` field layouts.
+3. Build one authenticated research run with one stroke and distinct PBR values
+   before changing production code. Compare numeric packed texture values; do
+   not infer a channel layout from a screenshot or a texture hash alone.
+4. Use UnrealMappingsDumper only when runtime reflection cannot resolve a
    trustworthy layout or the engine-side mapping changed.
-4. Generate a current `.usmap` locally if the previous mapping no longer works.
-5. Run `make mesh MAPPINGS=<path-to-current.usmap>` to regenerate the profile.
-6. Review and commit regenerated shipping profiles in `resources/mesh-profiles/`.
+5. Generate a current `.usmap` locally if the previous mapping no longer works.
+6. Run `make mesh MAPPINGS=<path-to-current.usmap>` to regenerate the profile.
+7. Review and commit regenerated shipping profiles in `resources/mesh-profiles/`.
    `scripts/build.ps1` copies profiles into `.build/bin/mesh-profiles/` for
    package/debug runs.
 
