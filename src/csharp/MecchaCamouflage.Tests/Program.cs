@@ -13,13 +13,16 @@ var tests = new List<(string Name, Action Run)>
     ("single brush settings clamp to supported range", SingleBrushSettingsClampToSupportedRange),
     ("app defaults use 99 percent opacity", AppDefaultsUse99PercentOpacity),
     ("payload sends a single brush and compression tolerance", PayloadSendsSingleBrushPipeline),
+    ("custom freecam surface is absent", CustomFreecamSurfaceIsAbsent),
+    ("spectator paint resolution requires local controller identity", SpectatorPaintResolutionRequiresLocalControllerIdentity),
     ("diagnostic stroke limit requires explicit option", DiagnosticStrokeLimitRequiresExplicitOption),
     ("native accepts the single brush configured range", NativeAcceptsSingleBrushConfiguredRange),
     ("native direct radius uses game defaults and fill stays fixed", NativeDirectRadiusUsesGameDefaultsAndFillStaysFixed),
     ("native spatial replay follows the current pose and camera", NativeSpatialReplayFollowsCurrentPoseAndCamera),
-    ("native async paint tolerates freecam pawn transitions", NativeAsyncPaintToleratesFreecamPawnTransitions),
+    ("native async paint retains captured component identity", NativeAsyncPaintRetainsCapturedComponentIdentity),
     ("native production local sync uses per-stroke paint", NativeProductionLocalSyncUsesPerStrokePaint),
     ("native preview applies PBR and emissive channels", NativePreviewAppliesPbrAndEmissiveChannels),
+    ("native preview returns before recorded-stroke dispatch", NativePreviewReturnsBeforeRecordedStrokeDispatch),
     ("native auto material detects emissive and reports local pacing", NativeAutoMaterialDetectsEmissiveAndReportsLocalPacing),
     ("payload uses native paint route and includes fill material", PayloadUsesNativePaintRouteAndFillMaterial),
     ("legacy mirror-like Fill PBR defaults migrate to manual material", LegacyFillPbrDefaultsMigrateToManualMaterial),
@@ -191,6 +194,42 @@ static void PayloadSendsSingleBrushPipeline()
         "payload should not send retired two-brush keys");
 }
 
+static void CustomFreecamSurfaceIsAbsent()
+{
+    var root = FindRepositoryRoot();
+    var bridge = File.ReadAllText(Path.Combine(root, "src", "native", "bridge", "bridge.cpp"));
+    var productSources = Directory
+        .EnumerateFiles(Path.Combine(root, "src", "csharp"), "*.cs", SearchOption.AllDirectories)
+        .Where(path => !path.Contains("MecchaCamouflage.Tests", StringComparison.Ordinal))
+        .Select(File.ReadAllText)
+        .ToArray();
+
+    Assert(productSources.All(source => !source.Contains("Freecam", StringComparison.OrdinalIgnoreCase)) &&
+           !bridge.Contains("freecam_toggle", StringComparison.Ordinal) &&
+           !bridge.Contains("ToggleDebugCamera", StringComparison.Ordinal),
+        "the application must not expose or invoke its own freecam implementation");
+}
+
+static void SpectatorPaintResolutionRequiresLocalControllerIdentity()
+{
+    var bridge = File.ReadAllText(Path.Combine(
+        FindRepositoryRoot(),
+        "src", "native", "bridge", "bridge.cpp"));
+    var start = bridge.IndexOf("auto find_component", StringComparison.Ordinal);
+    var end = bridge.IndexOf("struct SdkContext", start, StringComparison.Ordinal);
+    Assert(start >= 0 && end > start, "native local-body component resolver must exist");
+    var resolver = bridge[start..end];
+
+    Assert(resolver.Contains("AcknowledgedPawn", StringComparison.Ordinal) &&
+           resolver.Contains("local_body_unavailable", StringComparison.Ordinal) &&
+           resolver.Contains("owner_controller == controller", StringComparison.Ordinal) &&
+           resolver.Contains("owner_player_state == local_player_state", StringComparison.Ordinal) &&
+           !resolver.Contains("controller_view_target", StringComparison.Ordinal) &&
+           !resolver.Contains("camera_view_target", StringComparison.Ordinal) &&
+           !resolver.Contains("playercontroller\"", StringComparison.Ordinal),
+        "spectator paint must require the local controller and player-state identity, never a camera target or another controller");
+}
+
 static void DiagnosticStrokeLimitRequiresExplicitOption()
 {
     var settings = new AppSettings();
@@ -252,14 +291,14 @@ static void NativeSpatialReplayFollowsCurrentPoseAndCamera()
         "replay order must not use the mesh profile reference pose");
 }
 
-static void NativeAsyncPaintToleratesFreecamPawnTransitions()
+static void NativeAsyncPaintRetainsCapturedComponentIdentity()
 {
     var bridge = File.ReadAllText(Path.Combine(
         FindRepositoryRoot(),
         "src", "native", "bridge", "bridge.cpp"));
     Assert(bridge.Contains("safe_read<std::uintptr_t>(job->component + OffClass)", StringComparison.Ordinal) &&
            !bridge.Contains("current_pawn != job->pawn", StringComparison.Ordinal),
-        "a valid captured paint component must remain paintable when freecam replaces the controller pawn");
+        "a valid captured paint component must remain paintable while its own queued job drains");
 }
 
 static void NativeProductionLocalSyncUsesPerStrokePaint()
@@ -318,6 +357,21 @@ static void NativePreviewAppliesPbrAndEmissiveChannels()
            bridge.Contains("unpreview_snapshot_emissive_bytes", StringComparison.Ordinal) &&
            bridge.Contains("mesh_unpreview_packed_pbr_mismatch", StringComparison.Ordinal),
         "preview and unpreview must preserve packed Metallic/Roughness/Emissive data without successive imports overwriting it");
+}
+
+static void NativePreviewReturnsBeforeRecordedStrokeDispatch()
+{
+    var bridge = File.ReadAllText(Path.Combine(
+        FindRepositoryRoot(),
+        "src", "native", "bridge", "bridge.cpp"));
+    var asyncDispatch = bridge.IndexOf("auto async_job = std::make_shared<MeshFirstServerBatchAsyncJob>", StringComparison.Ordinal);
+    var previewBranch = bridge.LastIndexOf("if (preview_only)", asyncDispatch, StringComparison.Ordinal);
+
+    Assert(asyncDispatch >= 0 && previewBranch >= 0, "preview and direct dispatch branches must exist");
+    var previewRoute = bridge[previewBranch..asyncDispatch];
+    Assert(previewRoute.Contains("mesh_first_apply_local_material_import_preview", StringComparison.Ordinal) &&
+           previewRoute.Contains("return response_json", StringComparison.Ordinal),
+        "preview must complete via local texture import before a recorded-stroke async job is created");
 }
 
 static void NativeAutoMaterialDetectsEmissiveAndReportsLocalPacing()
@@ -618,6 +672,7 @@ static void BridgeMessagesAreUserFriendly()
     var contextChanged = HostSession.FriendlyBridgeMessage("mesh_paint_context_changed");
     var componentUnavailable = HostSession.FriendlyBridgeMessage("PaintAtUVWithBrush failed: paint_component_unavailable");
     var pawnUnavailable = HostSession.FriendlyBridgeMessage("Paint stopped because the local pawn is no longer available");
+    var unprovenSpectatorBody = HostSession.FriendlyBridgeMessage("paintable_body_unavailable: local_body_unavailable");
     var nativeRouteUnavailable = HostSession.FriendlyBridgeMessage("mesh_native_paint_unavailable");
     var cancelledAfterSubmission = HostSession.FriendlyBridgeMessage(
         "paint cancellation arrived after submission; the committed local queue drained");
@@ -638,6 +693,8 @@ static void BridgeMessagesAreUserFriendly()
     Assert(contextChanged == "Paint: stopped because the game paint component changed.", "paint context change should be friendly");
     Assert(componentUnavailable == "Paint: stopped because the game paint component is unavailable.", "paint component unavailable should be friendly");
     Assert(pawnUnavailable == "Paint: stopped because the local pawn is no longer available.", "pawn unavailable should be friendly");
+    Assert(unprovenSpectatorBody == "Paint: blocked because the current spectator state cannot prove a local paint body.",
+        "an unproven spectator body must produce an explicit safe error");
     Assert(nativeRouteUnavailable == "Paint: the game-native paint route is unavailable.", "missing native route should be friendly");
     Assert(cancelledAfterSubmission == "Paint: canceled.",
         "a late cancel that waited for the committed queue must remain a concise cancellation");

@@ -771,6 +771,8 @@ public sealed class HostSession
             return "Paint: stopped because the local pawn is no longer available.";
         if (lower.Contains("local pawn changed"))
             return "Paint: stopped because the local pawn changed.";
+        if (lower.Contains("paintable_body_unavailable") || lower.Contains("local_body_unavailable"))
+            return "Paint: blocked because the current spectator state cannot prove a local paint body.";
         if (lower.Contains("paint_component_unavailable"))
             return "Paint: stopped because the game paint component is unavailable.";
         if (lower.Contains("unsafe color-transfer candidates"))
