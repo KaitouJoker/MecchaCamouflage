@@ -117,9 +117,9 @@ static void PaintDefaultsExposeSingleBrush()
 {
     var paint = new AppSettings().Paint;
 
-    Assert(Math.Abs(paint.BrushSizeTexels - 4.0) < 0.000001, "the single brush should default to 4 texels");
-    Assert(Math.Abs(paint.ColorCompressionTolerance - 4.0) < 0.000001,
-        "color compression should default to 4");
+    Assert(Math.Abs(paint.BrushSizeTexels - 5.0) < 0.000001, "the single brush should default to 5 texels");
+    Assert(Math.Abs(paint.ColorCompressionTolerance - 5.0) < 0.000001,
+        "color compression should default to 5");
     Assert(paint.FrontRegionMode == RegionMode.Skip, "front should default to skip");
     Assert(paint.SideRegionMode == RegionMode.Paint, "side should default to paint");
     Assert(paint.BackRegionMode == RegionMode.Paint, "back should default to paint");
@@ -756,8 +756,8 @@ static void WebUiExposesSingleBrushSliderAndCompressionTolerance()
     Assert(index.Contains("id=\"brush-size\"", StringComparison.Ordinal), "web UI should include the single brush slider");
     Assert(index.Contains("id=\"color-compression-tolerance\"", StringComparison.Ordinal), "web UI should include compression tolerance");
     Assert(index.Contains("min=\"1\" max=\"10\" step=\"0.5\"", StringComparison.Ordinal), "single brush should expose the 1-10 range");
-    Assert(index.Contains("id=\"color-compression-tolerance\" class=\"setting-control\" disabled type=\"range\" min=\"0\" max=\"10\" step=\"1\"", StringComparison.Ordinal),
-        "compression tolerance should expose the 0-10 range");
+    Assert(index.Contains("id=\"color-compression-tolerance\" class=\"setting-control\" disabled type=\"range\" min=\"0\" max=\"10\" step=\"0.5\"", StringComparison.Ordinal),
+        "compression tolerance should expose the 0-10 range in half-step increments");
     Assert(app.Contains("paint.brushSizeTexels", StringComparison.Ordinal), "web UI should bind the single brush");
     Assert(app.Contains("paint.colorCompressionTolerance", StringComparison.Ordinal), "web UI should bind compression tolerance");
     Assert(!app.Contains("paint.brush1", StringComparison.Ordinal) && !app.Contains("paint.brush2", StringComparison.Ordinal),

@@ -37,7 +37,7 @@ public sealed record RgbColor(byte R, byte G, byte B)
 
 public sealed class PaintSettings
 {
-    public double BrushSizeTexels { get; set; } = 4.0;
+    public double BrushSizeTexels { get; set; } = 5.0;
     public double SideSourceMaxUv { get; set; } = 0.08;
     public double FrontBackSourceMaxUv { get; set; } = 0.45;
     public RegionMode FrontRegionMode { get; set; } = RegionMode.Skip;
@@ -51,7 +51,7 @@ public sealed class PaintSettings
     public double FillMetallic { get; set; } = 1.0;
     public double FillRoughness { get; set; } = 0.0;
     public double FillEmissive { get; set; } = 0.0;
-    public double ColorCompressionTolerance { get; set; } = 4.0;
+    public double ColorCompressionTolerance { get; set; } = 5.0;
 
     public bool UsesFill =>
         FrontRegionMode == RegionMode.Fill ||
