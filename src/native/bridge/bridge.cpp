@@ -2417,27 +2417,28 @@ namespace
         {
             controller_offset = ref.resolve_property_offset("LocalPlayer", "PlayerController");
         }
-        int pawn_offset = ref.resolve_property_offset("PlayerController", "AcknowledgedPawn");
-        if (pawn_offset < 0)
-        {
-            pawn_offset = ref.resolve_property_offset("Controller", "Pawn");
-        }
+        const int acknowledged_pawn_offset =
+            ref.resolve_property_offset("PlayerController", "AcknowledgedPawn");
+        const int controller_pawn_offset = ref.resolve_property_offset("Controller", "Pawn");
         const auto viewport = viewport_offset >= 0 ? safe_read<std::uintptr_t>(engine + viewport_offset) : 0;
         const auto world = world_offset >= 0 ? safe_read<std::uintptr_t>(viewport + world_offset) : 0;
         const auto game_instance = game_instance_offset >= 0 ? safe_read<std::uintptr_t>(world + game_instance_offset) : 0;
         const auto local_players_data = local_players_offset >= 0 ? safe_read<std::uintptr_t>(game_instance + local_players_offset) : 0;
         const auto local_players_count = local_players_offset >= 0 ? safe_read<int>(game_instance + local_players_offset + 8) : 0;
         const auto local_player = local_players_data && local_players_count > 0 ? safe_read<std::uintptr_t>(local_players_data) : 0;
-        auto controller = controller_offset >= 0 ? safe_read<std::uintptr_t>(local_player + controller_offset) : 0;
-        auto pawn = pawn_offset >= 0 ? safe_read<std::uintptr_t>(controller + pawn_offset) : 0;
+        const auto controller = controller_offset >= 0 ? safe_read<std::uintptr_t>(local_player + controller_offset) : 0;
+        auto pawn = acknowledged_pawn_offset >= 0
+                        ? safe_read<std::uintptr_t>(controller + acknowledged_pawn_offset)
+                        : 0;
+        const char* pawn_source = "acknowledged_local_body";
         auto read_controller_pawn = [&](std::uintptr_t candidate_controller) -> std::uintptr_t {
             if (!live_uobject(candidate_controller))
             {
                 return 0;
             }
-            if (pawn_offset >= 0)
+            if (controller_pawn_offset >= 0)
             {
-                if (const auto candidate_pawn = safe_read<std::uintptr_t>(candidate_controller + pawn_offset); live_uobject(candidate_pawn))
+                if (const auto candidate_pawn = safe_read<std::uintptr_t>(candidate_controller + controller_pawn_offset); live_uobject(candidate_pawn))
                 {
                     return candidate_pawn;
                 }
@@ -2448,32 +2449,17 @@ namespace
         if (!live_uobject(pawn))
         {
             pawn = read_controller_pawn(controller);
+            pawn_source = "local_controller_pawn";
         }
         if (!live_uobject(pawn))
         {
-            ref.for_each_object([&](std::uintptr_t obj) {
-                if (!live_uobject(obj))
-                {
-                    return false;
-                }
-                const auto cls = lower_copy(ref.class_name(obj));
-                if (!contains_text(cls, "playercontroller"))
-                {
-                    return false;
-                }
-                if (const auto candidate_pawn = read_controller_pawn(obj))
-                {
-                    controller = obj;
-                    pawn = candidate_pawn;
-                    return true;
-                }
-                return false;
-            });
+            failure = "local_body_unavailable local_player=" + hex_address(local_player) +
+                      " controller=" + hex_address(controller) +
+                      " acknowledged_pawn_offset=" + std::to_string(acknowledged_pawn_offset) +
+                      " controller_pawn_offset=" + std::to_string(controller_pawn_offset);
+            return selected;
         }
         selected.pawn = pawn;
-        const auto controller_view_target = live_uobject(controller) ? call_no_params_return_object(ref, controller, "GetViewTarget") : 0;
-        const auto camera = live_uobject(controller) ? call_no_params_return_object(ref, controller, "GetPlayerCameraManager") : 0;
-        const auto camera_view_target = live_uobject(camera) ? call_no_params_return_object(ref, camera, "GetViewTarget") : 0;
         std::vector<std::pair<std::uintptr_t, const char*>> targets{};
         auto add_target = [&](std::uintptr_t object, const char* source) {
             if (!live_uobject(object))
@@ -2489,9 +2475,7 @@ namespace
             }
             targets.push_back({object, source});
         };
-        add_target(controller_view_target, "controller_view_target");
-        add_target(camera_view_target, "camera_view_target");
-        add_target(pawn, "controller_pawn");
+        add_target(pawn, pawn_source);
 
         auto read_owner = [&](std::uintptr_t obj) -> std::uintptr_t {
             if (owner_offset >= 0)
@@ -2696,10 +2680,27 @@ namespace
 
         int candidate_count = 0;
         int owner_match_count = 0;
+        int local_identity_match_count = 0;
         int outer_match_count = 0;
         int ref_match_count = 0;
         int mesh_match_count = 0;
-        int any_owner_candidate_count = 0;
+        const auto local_player_state = read_object_property_by_names(ref, controller, {"PlayerState"});
+        auto owner_matches_local_identity = [&](std::uintptr_t owner) -> bool {
+            if (!live_uobject(owner) || !live_uobject(controller) || !live_uobject(local_player_state))
+            {
+                return false;
+            }
+            const auto owner_controller = read_object_property_by_names(
+                ref,
+                owner,
+                {"Controller", "PlayerController_cLeon", "FirstPersonPlayerController", "MyController"});
+            const auto owner_player_state = read_object_property_by_names(
+                ref,
+                owner,
+                {"PlayerState", "LastMyPlayerState"});
+            return owner_controller == controller &&
+                   owner_player_state == local_player_state;
+        };
         auto check_component = [&](std::uintptr_t obj, const char* source, bool require_owner) -> bool {
             if (!live_object(obj))
             {
@@ -2713,6 +2714,7 @@ namespace
                 ++candidate_count;
                 const auto owner = read_owner(obj);
                 const bool owner_match = owner_matches_target(owner);
+                const bool local_identity_match = owner_matches_local_identity(owner);
                 std::uintptr_t matched_outer_target = 0;
                 const char* matched_outer_source = "";
                 const bool outer_match = outer_matches_target(obj, matched_outer_target, matched_outer_source);
@@ -2727,6 +2729,10 @@ namespace
                 {
                     ++owner_match_count;
                 }
+                if (local_identity_match)
+                {
+                    ++local_identity_match_count;
+                }
                 if (outer_match)
                 {
                     ++outer_match_count;
@@ -2739,17 +2745,25 @@ namespace
                 {
                     ++mesh_match_count;
                 }
-                if (require_owner && !owner_match && !outer_match && !ref_match && !mesh_match)
+                if (require_owner && !owner_match && !local_identity_match && !outer_match && !ref_match && !mesh_match)
                 {
                     return false;
                 }
                 selected.component = obj;
                 selected.owner = owner;
-                selected.target = owner_match ? owner : (outer_match ? matched_outer_target : matched_ref_target);
-                selected.target_source = owner_match ? target_source_for_owner(owner) : (outer_match ? matched_outer_source : matched_ref_target_source);
+                selected.target = owner_match ? owner :
+                                  (local_identity_match ? owner :
+                                   (outer_match ? matched_outer_target : matched_ref_target));
+                selected.target_source = owner_match ? target_source_for_owner(owner) :
+                                         (local_identity_match ? "local_controller_identity" :
+                                          (outer_match ? matched_outer_source : matched_ref_target_source));
                 selected.target_mesh = matched_mesh;
                 selected.mesh_source = matched_mesh ? matched_mesh_source : "";
                 selected.source = source ? source : "unknown";
+                if (local_identity_match)
+                {
+                    selected.pawn = owner;
+                }
                 return true;
             }
             return false;
@@ -2766,10 +2780,13 @@ namespace
                 {
                     for (int i = 0; i < count; ++i)
                     {
-                        if (check_component(safe_read<std::uintptr_t>(data + static_cast<std::uintptr_t>(i) * 8), "root_attach_children", false))
+                        if (check_component(safe_read<std::uintptr_t>(data + static_cast<std::uintptr_t>(i) * 8), "root_attach_children", true))
                         {
-                            selected.target = target.first;
-                            selected.target_source = target.second;
+                            if (selected.pawn == pawn)
+                            {
+                                selected.target = target.first;
+                                selected.target_source = target.second;
+                            }
                             return selected;
                         }
                     }
@@ -2783,92 +2800,18 @@ namespace
                 {
                     for (int i = 0; i < count; ++i)
                     {
-                        if (check_component(safe_read<std::uintptr_t>(data + static_cast<std::uintptr_t>(i) * 8), "owned_components", false))
+                        if (check_component(safe_read<std::uintptr_t>(data + static_cast<std::uintptr_t>(i) * 8), "owned_components", true))
                         {
-                            selected.target = target.first;
-                            selected.target_source = target.second;
+                            if (selected.pawn == pawn)
+                            {
+                                selected.target = target.first;
+                                selected.target_source = target.second;
+                            }
                             return selected;
                         }
                     }
                 }
             }
-        }
-
-        struct OwnedComponentCandidate
-        {
-            std::uintptr_t component{0};
-            std::uintptr_t owner{0};
-            std::uintptr_t mesh{0};
-            std::string mesh_source{};
-            int score{-1000000};
-        };
-        OwnedComponentCandidate best_owned{};
-        ref.for_each_object([&](std::uintptr_t obj) {
-            if (!live_object(obj))
-            {
-                return false;
-            }
-            const auto cls = lower_copy(ref.class_name(obj));
-            if (!(contains_text(cls, "runtimepaint") || contains_text(cls, "paint")) ||
-                !ref.find_function(obj, "PaintAtUVWithBrush"))
-            {
-                return false;
-            }
-            const auto owner = read_owner(obj);
-            if (!live_uobject(owner))
-            {
-                return false;
-            }
-            ++any_owner_candidate_count;
-            const auto owner_cls = lower_copy(ref.class_name(owner));
-            int score = 10;
-            if (owner_matches_target(owner))
-            {
-                score += 1000;
-            }
-            if (call_no_params_return_bool(ref, owner, "IsPlayerControlled"))
-            {
-                score += 250;
-            }
-            if (contains_text(owner_cls, "character"))
-            {
-                score += 80;
-            }
-            if (contains_text(owner_cls, "pawn"))
-            {
-                score += 60;
-            }
-            if (call_no_params_return_object(ref, owner, "GetController"))
-            {
-                score += 25;
-            }
-            std::uintptr_t matched_mesh = 0;
-            const char* matched_mesh_source = "";
-            if (component_matches_target_mesh(obj, matched_mesh, matched_mesh_source))
-            {
-                score += 40;
-            }
-            if (score > best_owned.score)
-            {
-                best_owned.component = obj;
-                best_owned.owner = owner;
-                best_owned.mesh = matched_mesh;
-                best_owned.mesh_source = matched_mesh_source ? matched_mesh_source : "";
-                best_owned.score = score;
-            }
-            return false;
-        });
-        if (best_owned.component && best_owned.score >= 10)
-        {
-            selected.component = best_owned.component;
-            selected.owner = best_owned.owner;
-            selected.target = best_owned.owner;
-            selected.target_source = owner_matches_target(best_owned.owner) ? target_source_for_owner(best_owned.owner) : "owned_runtimepaint_owner_scan";
-            selected.target_mesh = best_owned.mesh;
-            selected.mesh_source = best_owned.mesh_source;
-            selected.source = "owned_runtimepaint_owner_scan";
-            selected.pawn = best_owned.owner;
-            return selected;
         }
 
         ref.for_each_object([&](std::uintptr_t obj) {
@@ -2880,13 +2823,11 @@ namespace
         }
         if (!selected.component)
         {
-            failure = "runtime_paint_component_unavailable pawn=" + hex_address(pawn) +
-                      " view_target=" + hex_address(controller_view_target) +
-                      " camera_view_target=" + hex_address(camera_view_target) +
+            failure = "local_body_unavailable class=" + ref.class_name(pawn) +
                       " meshes=" + std::to_string(target_meshes.size()) +
                       " candidates=" + std::to_string(candidate_count) +
-                      " any_owner_candidates=" + std::to_string(any_owner_candidate_count) +
                       " owner_matches=" + std::to_string(owner_match_count) +
+                      " local_identity_matches=" + std::to_string(local_identity_match_count) +
                       " outer_matches=" + std::to_string(outer_match_count) +
                       " ref_matches=" + std::to_string(ref_match_count) +
                       " mesh_matches=" + std::to_string(mesh_match_count);
@@ -4156,60 +4097,46 @@ namespace
             ctx.message = "LocalPlayers[0].PlayerController unavailable";
             return ctx;
         }
+        // The active controller may own a spectator pawn.  Resolve paint only
+        // through the local player's acknowledged body, then require the
+        // RuntimePaintableComponent to prove an owner, outer, reference, or
+        // mesh relationship to that body.  Camera targets and other player
+        // controllers are never candidates.
+        std::string component_failure{};
+        const auto selected = find_component(ref, component_failure);
+        if (!live_uobject(selected.component) || !live_uobject(selected.pawn))
+        {
+            ctx.stage = "paintable_body_unavailable";
+            ctx.message = component_failure.empty()
+                              ? "No RuntimePaintableComponent could be proven to belong to the acknowledged local body."
+                              : component_failure;
+            return ctx;
+        }
         ctx.k2_get_pawn_function = ref.find_function(ctx.controller, "K2_GetPawn");
-        if (!ctx.k2_get_pawn_function)
+        ctx.pawn = selected.pawn;
+        ctx.local_pawn_from_controller = selected.pawn;
+        ctx.component = selected.component;
+        const auto component_class = lower_copy(ref.class_name(ctx.component));
+        if (!contains_text(component_class, "runtimepaint"))
         {
-            ctx.stage = "local_pawn_unavailable";
-            ctx.message = "PlayerController.K2_GetPawn unavailable";
+            ctx.stage = "paint_component_unavailable";
+            ctx.message = "The acknowledged local body has no RuntimePaintableComponent.";
             return ctx;
         }
-        sdk::Controller_K2_GetPawn pawn_params{};
-        std::string process_failure{};
-        if (!process_event(ctx.controller, ctx.k2_get_pawn_function, reinterpret_cast<std::uint8_t*>(&pawn_params), process_failure))
-        {
-            ctx.stage = "local_pawn_unavailable";
-            ctx.message = "K2_GetPawn ProcessEvent failed: " + process_failure;
-            return ctx;
-        }
-        ctx.pawn = reinterpret_cast<std::uintptr_t>(pawn_params.ReturnValue);
-        if (!live_uobject(ctx.pawn))
-        {
-            ctx.stage = "local_pawn_unavailable";
-            ctx.message = "K2_GetPawn returned null or invalid pawn";
-            return ctx;
-        }
-        ctx.local_pawn_from_controller = ctx.pawn;
+        // Planning and replay use the same owned body's transform whenever the
+        // component resolver refreshes the local body.
         ctx.k2_get_actor_location_function = ref.find_function(ctx.pawn, "K2_GetActorLocation");
         if (ctx.k2_get_actor_location_function)
         {
             sdk::Actor_K2_GetActorLocation location_params{};
             std::string location_failure{};
-            if (process_event(ctx.pawn, ctx.k2_get_actor_location_function, reinterpret_cast<std::uint8_t*>(&location_params), location_failure))
+            if (process_event(ctx.pawn,
+                              ctx.k2_get_actor_location_function,
+                              reinterpret_cast<std::uint8_t*>(&location_params),
+                              location_failure))
             {
                 ctx.body_world_position = location_params.ReturnValue;
             }
-        }
-        ctx.component = safe_read<std::uintptr_t>(ctx.pawn + sdk::FieldOffsets::BP_FirstPersonCharacter_RuntimePaintable);
-        auto component_class = lower_copy(ref.class_name(ctx.component));
-        if (!live_uobject(ctx.component) || !contains_text(component_class, "runtimepaint"))
-        {
-            std::string component_failure{};
-            const auto selected = find_component(ref, component_failure);
-            if (live_uobject(selected.component))
-            {
-                ctx.component = selected.component;
-                if (live_uobject(selected.pawn))
-                {
-                    ctx.pawn = selected.pawn;
-                }
-                component_class = lower_copy(ref.class_name(ctx.component));
-            }
-        }
-        if (!live_uobject(ctx.component) || !contains_text(component_class, "runtimepaint"))
-        {
-            ctx.stage = "paint_component_unavailable";
-            ctx.message = "BP_FirstPersonCharacter.RuntimePaintable unavailable";
-            return ctx;
         }
         const auto controller_class_name = ref.class_name(ctx.controller);
         const auto relay_offset = ref.resolve_property_offset(controller_class_name.c_str(), "RuntimePaintRelay");
@@ -11422,6 +11349,130 @@ namespace
             metadata += ",\"research_direct_queue_target_strokes\":" +
                         std::to_string(research_direct_queue_target_strokes);
         }
+        if (preview_only)
+        {
+            // Preview is intentionally a local texture import.  It must return
+            // before the recorded-stroke async job is constructed: calling
+            // PaintAtUVWithBrush here turns a preview into replicated paint.
+            const auto existing_snapshot = mesh_first_preview_snapshot_copy();
+            if (existing_snapshot.available && existing_snapshot.component != ctx.component)
+            {
+                return response_json(false,
+                                     "mesh_preview_component_mismatch",
+                                     0,
+                                     1,
+                                     "The active local preview belongs to a different paint component.",
+                                     metadata + ",\"preview_snapshot_component\":\"" +
+                                         hex_address(existing_snapshot.component) + "\"");
+            }
+
+            MeshFirstChannelBytes base_albedo{};
+            MeshFirstChannelBytes base_metallic{};
+            MeshFirstChannelBytes base_roughness{};
+            MeshFirstChannelBytes base_emissive{};
+            if (existing_snapshot.available)
+            {
+                base_albedo = {true, existing_snapshot.albedo_bytes, "snapshot"};
+                base_metallic = {true, existing_snapshot.metallic_bytes, "snapshot"};
+                base_roughness = {true, existing_snapshot.roughness_bytes, "snapshot"};
+                base_emissive = {true, existing_snapshot.emissive_bytes, "snapshot"};
+            }
+            else
+            {
+                base_albedo = mesh_first_export_channel_bytes(ref, ctx.component, sdk::EPaintChannel::Albedo);
+                base_metallic = mesh_first_export_channel_bytes(ref, ctx.component, sdk::EPaintChannel::Metallic);
+                base_roughness = mesh_first_export_channel_bytes(ref, ctx.component, sdk::EPaintChannel::Roughness);
+                base_emissive = mesh_first_export_channel_bytes(ref, ctx.component, sdk::EPaintChannel::Emissive);
+            }
+            if (!base_albedo.ok || !base_metallic.ok || !base_roughness.ok || !base_emissive.ok)
+            {
+                const std::string preview_failure =
+                    !base_albedo.ok ? "albedo_export_failed:" + base_albedo.failure :
+                    !base_metallic.ok ? "metallic_export_failed:" + base_metallic.failure :
+                    !base_roughness.ok ? "roughness_export_failed:" + base_roughness.failure :
+                    "emissive_export_failed:" + base_emissive.failure;
+                return response_json(false,
+                                     "mesh_preview_export_failed",
+                                     0,
+                                     1,
+                                     "local preview texture export failed: " + preview_failure,
+                                     metadata + ",\"preview_snapshot_reused\":" +
+                                         std::string(json_bool(existing_snapshot.available)));
+            }
+
+            write_bridge_progress("mesh_preview_import",
+                                  "Applying local preview texture",
+                                  0,
+                                  static_cast<int>(strokes.size()),
+                                  0.0,
+                                  "\"phase\":\"local_preview\",\"terminal\":false,\"result\":\"running\"");
+            const auto preview = mesh_first_apply_local_material_import_preview(
+                ref,
+                ctx.component,
+                strokes,
+                active_texture_size,
+                &base_albedo.bytes,
+                &base_metallic.bytes,
+                &base_roughness.bytes,
+                &base_emissive.bytes);
+            bool recovered_after_failure = false;
+            if (!preview.ok)
+            {
+                auto restore_albedo = base_albedo.bytes;
+                auto restore_packed_pbr = base_metallic.bytes;
+                std::string ignored{};
+                recovered_after_failure =
+                    mesh_first_import_channel_bytes(ref,
+                                                    ctx.component,
+                                                    sdk::EPaintChannel::Albedo,
+                                                    restore_albedo,
+                                                    ignored) &&
+                    mesh_first_import_channel_bytes(ref,
+                                                    ctx.component,
+                                                    sdk::EPaintChannel::AlbedoMetallicRoughnessEmissive,
+                                                    restore_packed_pbr,
+                                                    ignored);
+            }
+            if (preview.ok && !existing_snapshot.available)
+            {
+                mesh_first_store_preview_snapshot(ctx.component,
+                                                  active_texture_size,
+                                                  base_albedo.bytes,
+                                                  base_metallic.bytes,
+                                                  base_roughness.bytes,
+                                                  base_emissive.bytes);
+            }
+            metadata += ",\"preview_snapshot_reused\":" +
+                        std::string(json_bool(existing_snapshot.available));
+            metadata += ",\"preview_export_ok\":" + std::string(json_bool(true));
+            metadata += ",\"preview_import_ok\":" + std::string(json_bool(preview.import_ok));
+            metadata += ",\"preview_strokes_considered\":" + std::to_string(preview.strokes_considered);
+            metadata += ",\"preview_strokes_painted\":" + std::to_string(preview.strokes_painted);
+            metadata += ",\"preview_pixels_touched\":" + std::to_string(preview.pixels_touched);
+            metadata += ",\"preview_pixels_changed\":" + std::to_string(preview.pixels_changed);
+            metadata += ",\"preview_compose_elapsed_ms\":" + std::to_string(preview.compose_elapsed_ms);
+            metadata += ",\"preview_channel_import_elapsed_ms\":" +
+                        std::to_string(preview.channel_import_elapsed_ms);
+            metadata += ",\"preview_failure_recovered\":" +
+                        std::string(json_bool(recovered_after_failure));
+            metadata += ",\"paint_elapsed_ms\":" + std::to_string(preview.elapsed_ms);
+            metadata += ",\"server_eta_ms\":0,\"local_eta_ms\":0,\"paint_eta_ms\":0";
+            write_bridge_progress(preview.ok ? "mesh_preview_done" : "mesh_preview_failed",
+                                  preview.ok ? "local preview material texture imported" :
+                                               "local preview material texture import failed",
+                                  preview.ok ? static_cast<int>(strokes.size()) : 0,
+                                  static_cast<int>(strokes.size()),
+                                  preview.elapsed_ms,
+                                  "\"phase\":\"local_preview\",\"terminal\":true,\"result\":\"" +
+                                      std::string(preview.ok ? "done" : "failed") + "\"");
+            return response_json(preview.ok,
+                                 preview.ok ? "mesh_preview_done" : "mesh_preview_failed",
+                                 preview.ok ? static_cast<int>(strokes.size()) : 0,
+                                 preview.ok ? 0 : 1,
+                                 preview.ok ? "local preview material texture imported" :
+                                              "local preview material texture import failed: " + preview.failure,
+                                 metadata);
+        }
         if (!ctx.local_paint_at_uv_function)
         {
             return response_json(false,
@@ -11432,26 +11483,6 @@ namespace
                                  metadata + ",\"replay_blocked\":true");
         }
         metadata += ",\"paint_target_channel\":\"albedo_metallic_roughness_emissive\"";
-        if (preview_only)
-        {
-            metadata += ",\"local_paint_rpc\":\"ImportChannelFromBytes\"";
-            metadata += ",\"local_visual_sync_mode\":\"local_material_channels_import_preview\"";
-            metadata += ",\"local_batch_strategy\":\"four_channel_import_preview\"";
-            metadata += ",\"local_paint_target_channel\":\"albedo_metallic_roughness_emissive\"";
-            metadata += ",\"local_texture_import_byte_order\":\"rgba\"";
-            metadata += ",\"local_visual_sync_required\":false";
-            metadata += ",\"local_texture_import_required\":true";
-            metadata += ",\"authoritative_replay\":\"local_texture_preview_only\"";
-        }
-        if (!ctx.local_paint_at_uv_function)
-        {
-            return response_json(false,
-                                 "mesh_direct_paint_unavailable",
-                                 0,
-                                 1,
-                                 "PaintAtUVWithBrush is unavailable; direct paint cannot run",
-                                 metadata + ",\"replay_blocked\":true");
-        }
         {
             auto async_job = std::make_shared<MeshFirstServerBatchAsyncJob>();
             async_job->queued = queued_job;
@@ -13492,92 +13523,6 @@ namespace
         std::string failure{};
         return process_event(object, function, params.data(), failure) &&
                sdk_read_return_transform_param(ref, function, params.data(), value);
-    }
-
-    auto sdk_write_object_property_by_name(Reflection& ref, std::uintptr_t object, const char* name, std::uintptr_t value) -> bool
-    {
-        for (auto cls = ref.class_ptr(object); cls; cls = safe_read<std::uintptr_t>(cls + OffSuperStruct))
-        {
-            const auto prop = ref.find_property(cls, name);
-            const auto offset = prop ? prop_offset(prop) : -1;
-            if (offset < 0)
-            {
-                continue;
-            }
-            __try
-            {
-                *reinterpret_cast<std::uintptr_t*>(object + static_cast<std::uintptr_t>(offset)) = value;
-                return true;
-            }
-            __except (EXCEPTION_EXECUTE_HANDLER)
-            {
-                return false;
-            }
-        }
-        return false;
-    }
-
-    auto sdk_write_number_property_by_name(Reflection& ref, std::uintptr_t object, const char* name, double value) -> bool
-    {
-        for (auto cls = ref.class_ptr(object); cls; cls = safe_read<std::uintptr_t>(cls + OffSuperStruct))
-        {
-            const auto prop = ref.find_property(cls, name);
-            if (prop && prop_offset(prop) >= 0)
-            {
-                return write_number(ref, prop, reinterpret_cast<std::uint8_t*>(object), value);
-            }
-        }
-        return false;
-    }
-
-    auto sdk_write_enum_byte(Reflection&, std::uintptr_t prop, std::uint8_t* container, std::uint8_t value) -> bool
-    {
-        const auto offset = prop_offset(prop);
-        if (offset < 0)
-        {
-            return false;
-        }
-        __try
-        {
-            *(container + offset) = value;
-            return true;
-        }
-        __except (EXCEPTION_EXECUTE_HANDLER)
-        {
-            return false;
-        }
-    }
-
-    auto sdk_write_enum_property_by_name(Reflection& ref, std::uintptr_t object, const char* name, std::uint8_t value) -> bool
-    {
-        for (auto cls = ref.class_ptr(object); cls; cls = safe_read<std::uintptr_t>(cls + OffSuperStruct))
-        {
-            const auto prop = ref.find_property(cls, name);
-            if (prop && prop_offset(prop) >= 0)
-            {
-                return sdk_write_enum_byte(ref, prop, reinterpret_cast<std::uint8_t*>(object), value);
-            }
-        }
-        return false;
-    }
-
-    auto sdk_write_bool_property_by_name(Reflection&, std::uintptr_t object, const char* name, bool value) -> bool
-    {
-        Reflection ref{};
-        std::string ignored{};
-        if (!ref.init(ignored))
-        {
-            return false;
-        }
-        for (auto cls = ref.class_ptr(object); cls; cls = safe_read<std::uintptr_t>(cls + OffSuperStruct))
-        {
-            const auto prop = ref.find_property(cls, name);
-            if (prop && prop_offset(prop) >= 0)
-            {
-                return write_bool(prop, reinterpret_cast<std::uint8_t*>(object), value);
-            }
-        }
-        return false;
     }
 
     auto sdk_write_quat_identity(Reflection& ref, std::uintptr_t prop, std::uint8_t* container) -> bool
