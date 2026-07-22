@@ -7359,6 +7359,7 @@ namespace
         double source_distance_component{0.0};
         bool source_candidate{false};
         bool unsafe{false};
+        bool image_transparent_skip{false};
     };
 
     struct MeshFirstRuntimeTriangle
@@ -9642,9 +9643,16 @@ namespace
         {
             return queued_paint_cancel_response(queued_job, "mesh_paint_cancelled");
         }
-        const auto front_region_mode = mesh_first_parse_region_mode(request, "front_region_mode");
-        const auto side_region_mode = mesh_first_parse_region_mode(request, "side_region_mode");
-        const auto back_region_mode = mesh_first_parse_region_mode(request, "back_region_mode");
+        auto front_region_mode = mesh_first_parse_region_mode(request, "front_region_mode");
+        auto side_region_mode = mesh_first_parse_region_mode(request, "side_region_mode");
+        auto back_region_mode = mesh_first_parse_region_mode(request, "back_region_mode");
+        const bool image_paint_enabled = json_bool_field(request, "image_paint_enabled", false);
+        if (image_paint_enabled)
+        {
+            front_region_mode = MeshFirstRegionMode::Paint;
+            side_region_mode = MeshFirstRegionMode::Paint;
+            back_region_mode = MeshFirstRegionMode::Paint;
+        }
         const bool enable_front = front_region_mode == MeshFirstRegionMode::Paint;
         const bool enable_side = side_region_mode == MeshFirstRegionMode::Paint;
         const bool enable_back = back_region_mode == MeshFirstRegionMode::Paint;
@@ -9696,6 +9704,30 @@ namespace
         const double fill_metallic = clamp_range(json_number_field(request, "fill_metallic", 1.0), 0.0, 1.0);
         const double fill_roughness = clamp_range(json_number_field(request, "fill_roughness", 0.0), 0.0, 1.0);
         const double fill_emissive = clamp_range(json_number_field(request, "fill_emissive", 0.0), 0.0, 1.0);
+        const int image_paint_width = json_int_field(request, "image_paint_width", 0, 0, 512);
+        const int image_paint_height = json_int_field(request, "image_paint_height", 0, 0, 128);
+        const std::string image_paint_alpha_mode = lower_copy(json_string_field(request, "image_paint_alpha_mode", "skip"));
+        const std::string image_paint_wrap_mode = lower_copy(json_string_field(request, "image_paint_wrap_mode", "base"));
+        const std::string image_paint_body_type = lower_copy(json_string_field(request, "image_paint_body_type", "round"));
+        const double image_paint_background_r = clamp_range(json_number_field(request, "image_paint_background_r", 1.0), 0.0, 1.0);
+        const double image_paint_background_g = clamp_range(json_number_field(request, "image_paint_background_g", 1.0), 0.0, 1.0);
+        const double image_paint_background_b = clamp_range(json_number_field(request, "image_paint_background_b", 1.0), 0.0, 1.0);
+        std::vector<std::uint8_t> image_paint_rgba{};
+        if (image_paint_enabled)
+        {
+            std::string image_decode_failure{};
+            if (image_paint_width <= 0 || image_paint_height <= 0 ||
+                !hex_to_bytes(json_string_field(request, "image_paint_rgba_hex", ""), image_paint_rgba, image_decode_failure) ||
+                image_paint_rgba.size() != static_cast<std::size_t>(image_paint_width * image_paint_height * 4))
+            {
+                return response_json(false,
+                                     "image_paint_invalid",
+                                     0,
+                                     1,
+                                     "Imported image data is invalid; painting was not started",
+                                     "\"replay_blocked\":true,\"image_decode_failure\":\"" + json_escape(image_decode_failure) + "\"");
+            }
+        }
         const bool research_force_paint_color =
             research_artifacts && !preview_only && !unpreview_only &&
             json_bool_field(request, "research_force_paint_color", false);
@@ -10447,7 +10479,7 @@ namespace
             front.component_position = sample.local_position;
             native_front.samples.push_back(front);
         }
-        if (any_paint_region && !research_force_paint_color && native_front.samples.empty())
+        if (any_paint_region && !research_force_paint_color && !image_paint_enabled && native_front.samples.empty())
         {
             metadata += ",";
             metadata += mesh_first_plan_stats_metadata(plan_stats);
@@ -10472,9 +10504,97 @@ namespace
 
         SdkFrontCaptureResult capture{};
         int research_constant_paint_color_assignments = 0;
-        const bool mesh_capture_required = any_paint_region && !research_force_paint_color;
+        const bool mesh_capture_required = any_paint_region && !research_force_paint_color && !image_paint_enabled;
         metadata += ",\"mesh_capture_required\":" + std::string(json_bool(mesh_capture_required));
-        if (research_force_paint_color && any_paint_region)
+        if (image_paint_enabled && any_paint_region)
+        {
+            capture.failure = "skipped_imported_image";
+            metadata += ",\"mesh_capture_skipped\":true";
+            metadata += ",\"mesh_capture_skip_reason\":\"imported_image\"";
+            metadata += ",\"image_paint_enabled\":true";
+            metadata += ",\"image_paint_width\":" + std::to_string(image_paint_width);
+            metadata += ",\"image_paint_height\":" + std::to_string(image_paint_height);
+            int assigned = 0;
+            int transparent_skipped = 0;
+            double min_x = std::numeric_limits<double>::infinity();
+            double max_x = -std::numeric_limits<double>::infinity();
+            double min_y = std::numeric_limits<double>::infinity();
+            double max_y = -std::numeric_limits<double>::infinity();
+            double min_z = std::numeric_limits<double>::infinity();
+            double max_z = -std::numeric_limits<double>::infinity();
+            for (const auto& sample : plan_samples)
+            {
+                min_x = std::min(min_x, sample.local_position.X);
+                max_x = std::max(max_x, sample.local_position.X);
+                min_y = std::min(min_y, sample.local_position.Y);
+                max_y = std::max(max_y, sample.local_position.Y);
+                min_z = std::min(min_z, sample.local_position.Z);
+                max_z = std::max(max_z, sample.local_position.Z);
+            }
+            const double range_x = std::max(0.000001, max_x - min_x);
+            const double range_y = std::max(0.000001, max_y - min_y);
+            const double range_z = std::max(0.000001, max_z - min_z);
+            const bool depth_is_y = region_axis == 'y' || region_axis == 'Y';
+            const double horizontal_midpoint = depth_is_y
+                                                   ? (min_x + max_x) * 0.5
+                                                   : (min_y + max_y) * 0.5;
+            plan_stats.enabled_samples = 0;
+            plan_stats.unsafe_candidates = 0;
+            plan_stats.unsafe_enabled = 0;
+            for (auto& sample : plan_samples)
+            {
+                const double horizontal_normalized = depth_is_y
+                                                         ? (sample.local_position.X - min_x) / range_x
+                                                         : (sample.local_position.Y - min_y) / range_y;
+                const double depth_normalized = depth_is_y
+                                                    ? (sample.local_position.Y - min_y) / range_y
+                                                    : (sample.local_position.X - min_x) / range_x;
+                double image_u = 0.125;
+                if (sample.region == MeshFirstRegion::Side)
+                {
+                    const double side_coordinate = depth_is_y
+                                                       ? sample.local_position.X
+                                                       : sample.local_position.Y;
+                    image_u = side_coordinate > horizontal_midpoint
+                                  ? 0.25 + clamp01(depth_normalized) * 0.25
+                                  : 0.75 + (1.0 - clamp01(depth_normalized)) * 0.25;
+                }
+                else if (sample.region == MeshFirstRegion::Back)
+                {
+                    image_u = 0.5 + (1.0 - clamp01(horizontal_normalized)) * 0.25;
+                }
+                else
+                {
+                    image_u = clamp01(horizontal_normalized) * 0.25;
+                }
+                const double image_v = (sample.local_position.Z - min_z) / range_z;
+                const int x = std::max(0, std::min(image_paint_width - 1,
+                    static_cast<int>(std::round(clamp01(image_u) * static_cast<double>(image_paint_width - 1)))));
+                const int y = std::max(0, std::min(image_paint_height - 1,
+                    static_cast<int>(std::round((1.0 - clamp01(image_v)) * static_cast<double>(image_paint_height - 1)))));
+                const auto pixel = (static_cast<std::size_t>(y) * static_cast<std::size_t>(image_paint_width) + static_cast<std::size_t>(x)) * 4;
+                const auto alpha = image_paint_rgba[pixel + 3];
+                if (image_paint_alpha_mode == "skip" && alpha < 128)
+                {
+                    sample.image_transparent_skip = true;
+                    ++transparent_skipped;
+                    continue;
+                }
+                sample.r = static_cast<double>(image_paint_rgba[pixel + 0]) / 255.0;
+                sample.g = static_cast<double>(image_paint_rgba[pixel + 1]) / 255.0;
+                sample.b = static_cast<double>(image_paint_rgba[pixel + 2]) / 255.0;
+                sample.roughness = 1.0;
+                sample.metallic = 0.0;
+                sample.unsafe = false;
+                ++assigned;
+                ++plan_stats.enabled_samples;
+            }
+            metadata += ",\"image_paint_assignments\":" + std::to_string(assigned);
+            metadata += ",\"image_paint_transparent_skips\":" + std::to_string(transparent_skipped);
+            metadata += ",\"image_paint_wrap_mode\":\"" + json_escape(image_paint_wrap_mode) + "\"";
+            metadata += ",\"image_paint_body_type\":\"" + json_escape(image_paint_body_type) + "\"";
+        }
+        else if (research_force_paint_color && any_paint_region)
         {
             capture.failure = "skipped_research_constant_paint_color";
             metadata += ",\"mesh_capture_skipped\":true";
@@ -10634,7 +10754,8 @@ namespace
         paint_brush.Radius = static_cast<float>(brush_radius_uv);
         metadata += ",\"brush_radius_texels\":" + std::to_string(tuning_brush_size_texels);
         metadata += ",\"brush_radius_uv\":" + std::to_string(brush_radius_uv);
-        const bool any_fill_region = front_region_mode == MeshFirstRegionMode::Fill ||
+        const bool any_fill_region = image_paint_enabled ||
+                                     front_region_mode == MeshFirstRegionMode::Fill ||
                                      side_region_mode == MeshFirstRegionMode::Fill ||
                                      back_region_mode == MeshFirstRegionMode::Fill;
         metadata += ",\"fill_all_regions\":" + std::string(json_bool(any_fill_region));
@@ -10679,7 +10800,7 @@ namespace
             return runtime_contract::ReplayRegionMode::Paint;
         };
         std::vector<runtime_contract::ReplayCandidate> replay_candidates{};
-        replay_candidates.reserve(plan_samples.size());
+        replay_candidates.reserve(plan_samples.size() * (image_paint_enabled ? 2 : 1));
         double replay_current_view_vertical_min = 0.0;
         double replay_current_view_vertical_max = 0.0;
         bool replay_current_view_vertical_bounds_available = false;
@@ -10708,18 +10829,33 @@ namespace
             const double current_view_horizontal = current_view_projected
                                                        ? projected_x
                                                        : fallback_view_horizontal;
-            replay_candidates.push_back(
-                {sample_index,
-                 contract_region(sample.region),
-                 contract_mode(mode),
-                 sample.uv_island,
-                 sample.u,
-                 sample.v,
-                 current_view_projected,
-                 current_view_vertical,
-                 fallback_view_vertical,
-                 current_view_horizontal,
-                 sample_index});
+            const auto append_candidate = [&](MeshFirstRegionMode candidate_mode) {
+                replay_candidates.push_back(
+                    {sample_index,
+                     contract_region(sample.region),
+                     contract_mode(candidate_mode),
+                     sample.uv_island,
+                     sample.u,
+                     sample.v,
+                     current_view_projected,
+                     current_view_vertical,
+                     fallback_view_vertical,
+                     current_view_horizontal,
+                     sample_index});
+            };
+            if (image_paint_enabled)
+            {
+                // Clear the previous design first so repeated F1 runs are deterministic.
+                append_candidate(MeshFirstRegionMode::Fill);
+                if (!sample.image_transparent_skip)
+                {
+                    append_candidate(MeshFirstRegionMode::Paint);
+                }
+            }
+            else
+            {
+                append_candidate(mode);
+            }
             if (mode != MeshFirstRegionMode::Skip || any_fill_region)
             {
                 if (!replay_current_view_vertical_bounds_available)
@@ -10935,7 +11071,7 @@ namespace
             previous_pass = entry.pass;
             previous_spatial_key = entry.spatial_key;
         }
-        const bool compression_requested = tuning_color_compression_tolerance > 0.0;
+        const bool compression_requested = tuning_color_compression_tolerance > 0.0 && !image_paint_enabled;
         // Auto Detect may fall back to source PBR values per sample. Do not
         // merge those samples merely because their albedo happens to match.
         const bool compression_enabled = compression_requested &&
@@ -10959,7 +11095,7 @@ namespace
                                         sample.r,
                                         sample.g,
                                         sample.b,
-                                        mode == MeshFirstRegionMode::Paint,
+                                        mode == MeshFirstRegionMode::Paint && !sample.image_transparent_skip,
                                         !sample.unsafe,
                                         1});
         }
@@ -10975,7 +11111,7 @@ namespace
                     std::string(json_bool(compression_enabled));
         metadata += ",\"color_compression_disabled_reason\":\"" +
                     std::string(!compression_requested
-                                    ? "tolerance_zero"
+                                    ? (image_paint_enabled ? "imported_image_detail_preserved" : "tolerance_zero")
                                     : (compression_enabled ? "" : "auto_material_source_fallback")) +
                     "\"";
         metadata += ",\"color_compression_expanded_strokes\":" +
@@ -10994,16 +11130,25 @@ namespace
             sdk::FPaintChannelData channel{};
             if (fill_mode)
             {
-                const double stroke_metallic = fill_metallic;
-                const double stroke_roughness = fill_roughness;
-                const double stroke_emissive = fill_emissive;
+                const double reset_r = image_paint_enabled && image_paint_alpha_mode == "background"
+                                           ? image_paint_background_r
+                                           : (image_paint_enabled ? 0.73535698 : fill_color_r);
+                const double reset_g = image_paint_enabled && image_paint_alpha_mode == "background"
+                                           ? image_paint_background_g
+                                           : (image_paint_enabled ? 0.73535698 : fill_color_g);
+                const double reset_b = image_paint_enabled && image_paint_alpha_mode == "background"
+                                           ? image_paint_background_b
+                                           : (image_paint_enabled ? 0.73535698 : fill_color_b);
+                const double stroke_metallic = image_paint_enabled ? 0.0 : fill_metallic;
+                const double stroke_roughness = image_paint_enabled ? 1.0 : fill_roughness;
+                const double stroke_emissive = image_paint_enabled ? 0.0 : fill_emissive;
                 ++material_properties_fill_manual_samples;
                 const auto apply_mode = research_apply_mode >= 0
                                             ? static_cast<sdk::EPaintChannelApplyMode>(research_apply_mode)
                                             : sdk::EPaintChannelApplyMode::Override;
-                channel = sdk_make_channel(sdk_srgb_to_linear_unit(fill_color_r),
-                                           sdk_srgb_to_linear_unit(fill_color_g),
-                                           sdk_srgb_to_linear_unit(fill_color_b),
+                channel = sdk_make_channel(sdk_srgb_to_linear_unit(reset_r),
+                                           sdk_srgb_to_linear_unit(reset_g),
+                                           sdk_srgb_to_linear_unit(reset_b),
                                            stroke_metallic,
                                            stroke_roughness,
                                            stroke_emissive,
@@ -11011,10 +11156,10 @@ namespace
             }
             else
             {
-                double stroke_metallic = tuning_metallic;
-                double stroke_roughness = tuning_roughness;
-                double stroke_emissive = tuning_emissive;
-                if (tuning_auto_material)
+                double stroke_metallic = image_paint_enabled ? 0.0 : tuning_metallic;
+                double stroke_roughness = image_paint_enabled ? 1.0 : tuning_roughness;
+                double stroke_emissive = image_paint_enabled ? 0.0 : tuning_emissive;
+                if (tuning_auto_material && !image_paint_enabled)
                 {
                     if (material_properties.ok)
                     {
