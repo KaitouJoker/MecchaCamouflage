@@ -99,7 +99,6 @@ Research-only code includes:
 
 - paint replication probes
 - pressure probes
-- packed replay probes
 - event-watch sidecars
 - dump and trace helpers
 - `MECCHA_RESEARCH_ARTIFACTS` paths
@@ -110,16 +109,15 @@ directory.
 
 ## Paint Replication Rules
 
-Normal paint submits packed AMRE strokes through `ServerPackedPaintBatch` and
-applies those submitted strokes through the validated internal no-resend
-renderer. The AMRE target is one packed material-properties texture:
-`R=Metallic`, `G=Roughness`, and `B=Emissive`. Do not split it into separate
-PBR imports or replay it through reflected `PaintAtUVWithBrush`; both have
-previously created a second local pass or overwritten packed channels.
+Normal paint invokes the game-owned `PaintAtUVWithBrush` entry point for every
+planned stroke. This is the only production paint route; it lets the game
+record and replicate the stroke using its current multiplayer implementation.
+The material target remains AMRE: `R=Metallic`, `G=Roughness`, and
+`B=Emissive`.
 
-`ImportChannelFromBytes` is the Preview/Unpreview transport. The reflected
-`PaintAtUVWithBrush` and native packed receiver queue routes are explicit
-research A/B modes only.
+`ImportChannelFromBytes` is strictly the Preview/Unpreview transport. It must
+not become a production paint fallback, and neither a packed RPC nor the old
+internal no-resend / receiver-queue routes may be reintroduced.
 
 Auto Detect applies only to Paint regions. It obtains one global dominant
 material pattern from `GetDominantPaintMaterialPatterns`, including M/R/E, and
@@ -128,9 +126,9 @@ Fill is always an explicit manual material, even when Auto Detect is on. Record
 the returned candidate list, selection, and first-stroke M/R/E before judging
 an Auto Detect result.
 
-The server schema, packed payload, source ID, and internal no-resend resolver
-remain fatal requirements. Do not silently switch normal paint to texture
-import, reflected local paint, or an unverified local route.
+The reflected `PaintAtUVWithBrush` schema is a fatal requirement. If it is
+unavailable, stop before painting; do not silently switch to texture import or
+any legacy packed route.
 
 When changing replication behavior, verify host and joining-client behavior
 separately. Painter-side completion is not enough; a normal other client must
@@ -145,7 +143,7 @@ Build a short numeric feedback loop before changing the production route.
    directory. Run only one research runner while its event-watch bridge is
    active.
 2. Use distinguishable manual PBR values such as `M=.21`, `R=.83`, `E=.47`.
-   The packed texture result should be approximately `R=54`, `G=212`,
+   The material-properties texture result should be approximately `R=54`, `G=212`,
    `B=120`; quantization is expected.
 3. Run the same controlled probe with Auto Detect on. Compare
    `material_properties_candidates`, `material_properties_selection`, and the
@@ -168,15 +166,13 @@ authenticate a fresh controller-owned instance in an already-running game.
 
 ### Game-update revalidation
 
-The native packed receiver route is not exact-build gated. After a game update,
-record the PE and `.text` identity for diagnosis, then verify the packed
-format, `FPaintChannelData`/`FPaintStroke` reflection layout (including
-Emissive), and the unique masked-signature chain from UFunction thunk through
-the internal no-resend renderer. Never copy old RVAs forward as acceptance
-criteria. A missing, changed-ABI, or ambiguous candidate must fail explicitly;
-do not substitute another local transport. Then repeat both multiplayer
-directions with event-watch, pressure/queue samples, and painter/receiver
-texture checksums.
+After a game update, record the PE and `.text` identity for diagnosis, then
+verify the reflected `PaintAtUVWithBrush`, `FPaintChannelData`, and
+`FPaintStroke` layouts, including Emissive. Never copy old RVAs or queued-paint
+memory offsets forward as acceptance criteria. A missing or changed direct
+paint schema must fail explicitly; do not substitute a second transport. Then
+repeat both multiplayer directions, recording native queue depth, submitted
+and completed strokes, and painter/receiver texture evidence.
 
 ## Bridge File Structure
 

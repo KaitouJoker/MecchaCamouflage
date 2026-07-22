@@ -45,16 +45,6 @@ int main()
         return 3;
     }
 
-    if (!runtime_contract::requires_internal_no_resend(false, false, true, true) ||
-        runtime_contract::requires_internal_no_resend(true, false, true, true) ||
-        runtime_contract::requires_internal_no_resend(false, true, true, true) ||
-        !runtime_contract::requires_internal_no_resend(false, false, false, true) ||
-        runtime_contract::requires_internal_no_resend(false, false, true, false) ||
-        runtime_contract::InternalNoResendMaxCallsPerTick != 6)
-    {
-        return 4;
-    }
-
     if (!runtime_contract::uobject_flags_usable(0, 0) ||
         runtime_contract::uobject_flags_usable(runtime_contract::RFClassDefaultObject, 0) ||
         runtime_contract::uobject_flags_usable(runtime_contract::RFBeginDestroyed, 0) ||
@@ -66,109 +56,6 @@ int main()
         !runtime_contract::uobject_flags_usable(0x20000000u, 0))
     {
         return 5;
-    }
-
-    const auto fastest = runtime_contract::resolve_pacing(
-        20,
-        50,
-        20,
-        20,
-        24,
-        6);
-    if (fastest.remote_batch_limit != 20 || fastest.remote_delay_ms != 50 ||
-        fastest.local_batch_limit != 6 ||
-        fastest.local_delay_ms != runtime_contract::FastLocalCadenceMs)
-    {
-        return 6;
-    }
-
-    const auto tuned = runtime_contract::resolve_pacing(
-        7,
-        125,
-        20,
-        20,
-        24,
-        6);
-    if (tuned.remote_batch_limit != 7 || tuned.remote_delay_ms != 125 ||
-        tuned.local_batch_limit != 6 ||
-        tuned.local_delay_ms != runtime_contract::FastLocalCadenceMs)
-    {
-        return 7;
-    }
-
-    const auto clamped = runtime_contract::resolve_pacing(0, 0, 20, 20, 24, 6);
-    if (clamped.remote_batch_limit != 1 || clamped.remote_delay_ms != 50 ||
-        clamped.local_batch_limit != 6 ||
-        clamped.local_delay_ms != runtime_contract::FastLocalCadenceMs)
-    {
-        return 8;
-    }
-
-    const auto expanded = runtime_contract::resolve_pacing(500, 1, 500, 1000, 500, 6);
-    if (expanded.remote_batch_limit != 500 || expanded.remote_delay_ms != 1 ||
-        expanded.local_batch_limit != 6 ||
-        expanded.local_delay_ms != runtime_contract::FastLocalCadenceMs)
-    {
-        return 8;
-    }
-
-    const auto auto_adapted = runtime_contract::resolve_configured_pacing(
-        true, 7, 125, 20, 20, 24, 6);
-    const auto manual = runtime_contract::resolve_configured_pacing(
-        false, 500, 1, 20, 20, 24, 6);
-    if (auto_adapted.remote_batch_limit != 20 || auto_adapted.remote_delay_ms != 50 ||
-        auto_adapted.local_delay_ms != runtime_contract::FastLocalCadenceMs ||
-        manual.remote_batch_limit != 500 || manual.remote_delay_ms != 1 ||
-        manual.local_delay_ms != 1)
-    {
-        return 8;
-    }
-
-    if (runtime_contract::production_paint_uses_texture_import(false, true, true, false) ||
-        runtime_contract::production_paint_uses_texture_import(true, true, true, false) ||
-        runtime_contract::production_paint_uses_texture_import(false, false, true, false) ||
-        runtime_contract::production_paint_uses_texture_import(false, true, false, false) ||
-        runtime_contract::production_paint_uses_texture_import(false, true, true, true))
-    {
-        return 8;
-    }
-    if (runtime_contract::incremental_texture_import_chunk_limit(20) != 40 ||
-        runtime_contract::incremental_texture_import_chunk_limit(500) != 500 ||
-        runtime_contract::IncrementalTextureImportPacingMs != 100 ||
-        runtime_contract::incremental_texture_import_count(0, 0, 7'506, 40, 332) != 0 ||
-        runtime_contract::incremental_texture_import_count(20, 0, 7'506, 40, 332) != 20 ||
-        runtime_contract::incremental_texture_import_count(60, 20, 7'506, 40, 332) != 40 ||
-        runtime_contract::incremental_texture_import_count(500, 320, 7'506, 500, 332) != 12 ||
-        runtime_contract::incremental_texture_import_count(8'000, 7'506, 7'506, 500, 7'506) != 0)
-    {
-        return 8;
-    }
-    if (!runtime_contract::server_only_replay_complete(
-            false, true, false, true, 0, 7'506, 7'506) ||
-        runtime_contract::server_only_replay_complete(
-            false, true, false, false, 0, 7'506, 7'506) ||
-        runtime_contract::server_only_replay_complete(
-            false, false, false, true, 1, 7'506, 7'506))
-    {
-        return 8;
-    }
-    if (!runtime_contract::uses_fast_local_dispatch_wakeup(true, false, true) ||
-        runtime_contract::uses_fast_local_dispatch_wakeup(false, false, true) ||
-        runtime_contract::uses_fast_local_dispatch_wakeup(true, true, true) ||
-        runtime_contract::uses_fast_local_dispatch_wakeup(true, false, false))
-    {
-        return 8;
-    }
-    if (runtime_contract::should_immediately_repost_direct_local(true, 0) ||
-        runtime_contract::should_immediately_repost_direct_local(true, 1) ||
-        runtime_contract::should_immediately_repost_direct_local(false, 0))
-    {
-        return 8;
-    }
-    if (runtime_contract::parallel_lane_eta_ms(15.0, 20'000.0) != 20'000.0 ||
-        runtime_contract::parallel_lane_eta_ms(-1.0, 500.0) != -1.0)
-    {
-        return 8;
     }
 
     if (!runtime_contract::event_watch_generation_active(true, 7, 7) ||
@@ -349,101 +236,6 @@ int main()
         return 16;
     }
 
-    if (!runtime_contract::packed_manager_precommit_matches(0x1000, 0x1000) ||
-        runtime_contract::packed_manager_precommit_matches(0x1000, 0x2000) ||
-        runtime_contract::packed_manager_precommit_matches(0x1000, 0) ||
-        runtime_contract::packed_manager_precommit_matches(0, 0))
-    {
-        return 17;
-    }
-
-    if (!runtime_contract::paired_paint_cancel_safe_to_observe(false, 20, 0) ||
-        !runtime_contract::paired_paint_cancel_safe_to_observe(true, 20, 20) ||
-        runtime_contract::paired_paint_cancel_safe_to_observe(true, 20, 0) ||
-        runtime_contract::paired_paint_cancel_safe_to_observe(true, 40, 20))
-    {
-        return 18;
-    }
-
-    float triangle_world_radius = 0.0f;
-    if (runtime_contract::PackedMeshAnchorWorldRadiusAuto != 0.0f ||
-        runtime_contract::PackedMeshAnchorCoverageSafetyFactor != 0.91 ||
-        runtime_contract::PackedMeshAnchorProductionRadiusScale != 1.0 ||
-        !runtime_contract::PackedMeshAnchorProductionUsesTriangleWorldRadius ||
-        !runtime_contract::resolve_packed_triangle_world_radius(
-            124.27264,
-            5.0f / 1024.0f,
-            triangle_world_radius) ||
-        std::abs(triangle_world_radius - 0.6068f) > 0.0001f ||
-        !runtime_contract::packed_mesh_anchor_requests_world_radius_conversion(
-            runtime_contract::PackedMeshAnchorWorldRadiusAuto) ||
-        runtime_contract::packed_mesh_anchor_requests_world_radius_conversion(20.0f / 1024.0f) ||
-        !runtime_contract::packed_mesh_anchor_world_radius_contract_valid(0.0f, 10.0f / 1024.0f) ||
-        !runtime_contract::packed_mesh_anchor_world_radius_contract_valid(1.665f, 10.0f / 1024.0f) ||
-        runtime_contract::packed_mesh_anchor_world_radius_contract_valid(10.0f / 1024.0f,
-                                                                         10.0f / 1024.0f) ||
-        runtime_contract::packed_mesh_anchor_world_radius_contract_valid(
-            std::numeric_limits<float>::quiet_NaN(),
-            10.0f / 1024.0f))
-    {
-        return 19;
-    }
-
-    const float source_wire_test_radius = 10.0f / 1024.0f;
-    float resolved_wire_radius = -1.0f;
-    if (!runtime_contract::resolve_packed_wire_brush_radius(source_wire_test_radius,
-                                                            1.0,
-                                                            resolved_wire_radius) ||
-        resolved_wire_radius != source_wire_test_radius ||
-        !runtime_contract::resolve_packed_wire_brush_radius(source_wire_test_radius,
-                                                            3.5,
-                                                            resolved_wire_radius) ||
-        resolved_wire_radius != static_cast<float>(
-                                    static_cast<double>(source_wire_test_radius) * 3.5) ||
-        source_wire_test_radius != 10.0f / 1024.0f ||
-        runtime_contract::resolve_packed_wire_brush_radius(0.0f, 1.0, resolved_wire_radius) ||
-        runtime_contract::resolve_packed_wire_brush_radius(-0.1f, 1.0, resolved_wire_radius) ||
-        runtime_contract::resolve_packed_wire_brush_radius(
-            std::numeric_limits<float>::quiet_NaN(), 1.0, resolved_wire_radius) ||
-        runtime_contract::resolve_packed_wire_brush_radius(
-            std::numeric_limits<float>::infinity(), 1.0, resolved_wire_radius) ||
-        runtime_contract::resolve_packed_wire_brush_radius(source_wire_test_radius,
-                                                            0.0,
-                                                            resolved_wire_radius) ||
-        runtime_contract::resolve_packed_wire_brush_radius(
-            source_wire_test_radius,
-            std::numeric_limits<double>::quiet_NaN(),
-            resolved_wire_radius) ||
-        runtime_contract::resolve_packed_wire_brush_radius(
-            source_wire_test_radius,
-            std::numeric_limits<double>::infinity(),
-            resolved_wire_radius) ||
-        runtime_contract::resolve_packed_wire_brush_radius(0.5f, 3.0, resolved_wire_radius))
-    {
-        return 20;
-    }
-
-    constexpr auto auto_subdivision_tail =
-        runtime_contract::packed_mesh_anchor_auto_subdivision_tail();
-    if (runtime_contract::PackedMeshAnchorSubdivisionLevelAuto != 0 ||
-        runtime_contract::PackedMeshAnchorSubdivisionPixelSizeAuto != 0.0f ||
-        runtime_contract::PackedMeshAnchorTemplateResolutionAuto != 0 ||
-        auto_subdivision_tail.size() != 4 ||
-        auto_subdivision_tail[0] != 0 ||
-        auto_subdivision_tail[1] != 0 ||
-        auto_subdivision_tail[2] != 0 ||
-        auto_subdivision_tail[3] != 0 ||
-        !runtime_contract::packed_mesh_anchor_requests_native_subdivision_preflight(
-            runtime_contract::PackedMeshAnchorSubdivisionLevelAuto,
-            runtime_contract::PackedMeshAnchorSubdivisionPixelSizeAuto,
-            runtime_contract::PackedMeshAnchorTemplateResolutionAuto) ||
-        runtime_contract::packed_mesh_anchor_requests_native_subdivision_preflight(20, 0.0f, 0) ||
-        runtime_contract::packed_mesh_anchor_requests_native_subdivision_preflight(0, 2.0f, 0) ||
-        runtime_contract::packed_mesh_anchor_requests_native_subdivision_preflight(0, 0.0f, 1024))
-    {
-        return 21;
-    }
-
     const auto fill_window = runtime_contract::replay_pass_window(0, 100, 20, 80);
     const auto coarse_window = runtime_contract::replay_pass_window(20, 100, 20, 80);
     const auto fine_window = runtime_contract::replay_pass_window(80, 100, 20, 80);
@@ -463,53 +255,12 @@ int main()
         return 22;
     }
 
-    if (runtime_contract::receiver_queue_rendered_strokes(5596, 4119, 0) != 1477 ||
-        runtime_contract::receiver_queue_rendered_strokes(5596, 4200, 1477) != 1477 ||
-        runtime_contract::receiver_queue_rendered_strokes(5596, 0, 1477) != 5596 ||
-        runtime_contract::receiver_queue_rendered_strokes(5596, 7420, 0) != 0 ||
-        runtime_contract::receiver_queue_drain_complete(1, 2) ||
-        runtime_contract::receiver_queue_drain_complete(0, 1) ||
-        !runtime_contract::receiver_queue_drain_complete(0, 2) ||
-        runtime_contract::receiver_queue_idle_threshold_reached(0, 120000, 120000) ||
-        runtime_contract::receiver_queue_idle_threshold_reached(1, 119999, 120000) ||
-        !runtime_contract::receiver_queue_idle_threshold_reached(1, 120000, 120000) ||
-        !runtime_contract::receiver_queue_idle_threshold_reached(1, 120001, 120000))
-    {
-        return 23;
-    }
-
-    if (runtime_contract::paired_local_queue_available_capacity(20, 0) != 20 ||
-        runtime_contract::paired_local_queue_available_capacity(20, 7) != 13 ||
-        runtime_contract::paired_local_queue_available_capacity(20, 20) != 0 ||
-        runtime_contract::paired_local_queue_available_capacity(20, 21) != 0 ||
-        runtime_contract::paired_local_queue_available_capacity(20, -1) != 0 ||
-        runtime_contract::paired_local_queue_commit_count(20, 20, 7) != 13 ||
-        runtime_contract::paired_local_queue_commit_count(5, 20, 7) != 5 ||
-        runtime_contract::paired_local_queue_commit_count(20, 20, 20) != 0 ||
-        runtime_contract::paired_local_queue_cancel_needs_drain(false, 20) ||
-        runtime_contract::paired_local_queue_cancel_needs_drain(true, 0) ||
-        !runtime_contract::paired_local_queue_cancel_needs_drain(true, 1))
-    {
-        return 24;
-    }
-
-    if (runtime_contract::PackedPaintFormatVersion != 2 ||
-        runtime_contract::PackedPaintHeaderBytes != 21 ||
-        runtime_contract::PackedPaintRecordBytes != 31 ||
-        runtime_contract::PackedPaintRecordAlbedoOffset != 12 ||
-        runtime_contract::PackedPaintRecordMetallicOffset != 16 ||
-        runtime_contract::PackedPaintRecordRoughnessOffset != 17 ||
-        runtime_contract::PackedPaintRecordEmissiveOffset != 18 ||
-        runtime_contract::PackedPaintRecordChannelOffset != 22 ||
-        runtime_contract::PackedPaintRecordWorldRadiusOffset != 23 ||
-        runtime_contract::PackedPaintRecordSubdivisionOffset != 27 ||
-        runtime_contract::packed_paint_payload_size(3) != 114 ||
-        runtime_contract::production_material_stroke_count(3) != 3 ||
+    if (runtime_contract::production_material_stroke_count(3) != 3 ||
         runtime_contract::production_material_sample_index(0) != 0 ||
         runtime_contract::production_material_sample_index(1) != 1 ||
         runtime_contract::production_material_sample_index(2) != 2)
     {
-        return 25;
+        return 23;
     }
     if (runtime_contract::ProductionMaterialPaintChannels !=
         std::array<std::uint8_t, 1>{

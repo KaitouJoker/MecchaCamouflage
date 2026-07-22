@@ -1,128 +1,68 @@
 # Runtime Paint Replication Research
 
-This document tracks the reverse-engineering surface for multiplayer paint
-replication. It is separate from normal runtime docs because these entrypoints
-are investigative and may be useful even when they are not part of production
-paint behavior.
+## Production contract
 
-For the evidence-backed findings, known limits, and release boundary from the
-Issue #87 investigation, see
-[`runtime-paint-replication-validation.md`](runtime-paint-replication-validation.md).
+Production paint has one route: the bridge invokes the game's reflected
+`PaintAtUVWithBrush` once for each planned stroke. The game owns its recorded
+stroke queue, rendering, and replication. The bridge must not construct or
+send a custom multiplayer paint payload.
 
-## Current Production Route
+Preview and Unpreview may use texture export/import to preserve a local material
+snapshot. Normal Paint must never use texture import as a fallback.
 
-Normal paint uses the direct component route:
+The current material-properties target is AMRE: Metallic, Roughness, and
+Emissive are written atomically through paint channel 7. Explicit Emissive
+writes prevent a previous glowing value from persisting in a newly painted
+surface.
 
-- `RuntimePaintableComponent.ServerPackedPaintBatch`
-- painter-side application of successfully submitted packed AMRE strokes through
-  the validated internal no-resend renderer; texture export/import is limited
-  to Preview and Unpreview
-- Auto Adapt defaults ON and derives the server batch boundary and pacing
-  from readable game limits (fixed 20/50 fallback). When OFF, manual controls
-  accept 1--500 strokes and 1--500 ms
-- packed-wire UV radius scale `1.0`; each Fill/Brush 1/Brush 2 anchor derives a
-  world radius from that triangle's UV-to-world Jacobian and serializes it per
-  stroke, without sharing the batch maximum
-- the non-positive `EffectiveBrushWorldRadius` conversion sentinel remains only
-  for uniform-scale research A/B runs. Copying the normalized UV radius into
-  this world-unit field still collapses strokes to dots
-- the effective subdivision tail is exactly `level=0`, `pixel-size=0`,
-  `template-resolution=0`, allowing receiver preflight to select the component
-  defaults. These fields are not brush diameter bytes
-- normal painter-local rendering uses the internal no-resend renderer after the
-  corresponding packed server submission; Preview/Unpreview alone use texture
-  export/import
-- Auto Material uses `GetDominantPaintMaterialPatterns` for M/R/E. It is a
-  global pattern choice for Paint regions, and reports its candidates and
-  selection. Fill stays on the explicit manual PBR values even with Auto Detect
-  enabled
-- no fallback to old compact/adaptive `SendCustom` path
-- no automatic fallback to a reflected local route, packed receiver queue, or
-  texture-sync transport; those remain explicit research A/B modes
-- server packed schema/payload/source-ID failure still stops paint with explicit
-  metadata
+## Queue telemetry and completion
 
-`local_packed_queue_calls_returned` proves only that the receiver implementation
-returned. `local_packed_queue_last_queue_delta` proves observed queue growth on
-the exact manager. Neither field proves a render-thread write or pixel coverage;
-even a few dots change a whole-texture checksum. Release evidence must separately
-observe queue drain and compare exported channel bytes by changed-texel count (or
-perform an equivalent visual-coverage check), not hash inequality alone.
+The visible dotted frontier was caused by the bridge submitting strokes much
+faster than the game drained its own recorded-paint queue. Submission success
+is therefore not completion.
 
-The game renderer's homogeneous-batch key includes quantized ChannelData.
-Different camouflage colors therefore commonly turn one packed network batch
-into per-stroke surface generation. Network batch size and render batch size
-must not be treated as equivalent in FPS analysis.
+For every async job, the bridge samples the game-owned recorded/component queue
+when available and reports:
 
-Painter-local paint is not remote-peer pressure and does not back off the
-outgoing server lane, but it follows the successfully submitted stroke cursor
-so the painter sees Fill and Brush passes progress in order. Remote game-owned
-receiver/render budgets still drain asynchronously. The production route must
-remain small and deterministic.
-Research probes and artifact collection must not change normal route selection;
-research mode names explicitly choose their A/B route.
+- `local_strokes_submitted`
+- `local_strokes_synced` (confirmed rendered strokes)
+- `native_queue_*` observations, target, peak, and wait count
+- `paint_eta_ms` calculated from confirmed progress
 
-## Research Entry Points
+The direct scheduler preserves a one-millisecond wake-up floor and a bounded
+CPU slice. It may hold a small queue window, but must wait for the queue to
+drain before reporting terminal completion. Do not bypass this with immediate
+reposts, queue-memory writes, or zero-delay loops.
 
-The bridge currently exposes these investigation-only command types:
+## Multiplayer validation
 
-- `paint_replication_probe`
-  - resolves the current paint component and replication functions/properties
-  - reports reflected schema and queue metadata when available
-- `paint_replication_pressure_probe`
-  - samples global/component replication pressure and drain-related values
-  - used to compare old queue/drain behavior with packed route behavior
-- `paint_packed_replay_probe`
-  - submits a caller-provided packed payload through the selected packed route
-  - dangerous enough that scripts should require an explicit replay opt-in
-- event-watch sidecar
-  - samples selected `ProcessEvent` calls when enabled by sidecar/config
-  - useful for discovering host/client route differences
+Validate host-painter and joining-client-painter separately. For each run,
+record:
 
-These commands are classified as `RESEARCH_ONLY` in
-`docs/runtime-bridge-map.md`.
+1. `PaintAtUVWithBrush` activity and direct-route metadata.
+2. Submitted versus confirmed strokes and native queue depth over time.
+3. Painter completion time and joining-client visible completion time.
+4. Cancellation behavior: no additional submission after cancel, followed by a
+   bounded natural drain of already recorded work.
+5. A changed-pixel/material export from the selected painter component and, if
+   possible, the joining receiver component.
 
-## Authenticated research access
+The test fails if the game crashes, the queue grows without bounded progress,
+terminal completion occurs while the queue remains nonzero, or a joining client
+remains visibly behind after the queue reaches zero.
 
-The old fixed-port, unauthenticated probe scripts are removed. A research
-client must use the same per-instance endpoint and GUID/token HELLO handshake
-as the controller; see [`runtime-direct-bridge.md`](runtime-direct-bridge.md).
-Do not scan ports or send a command before HELLO. Keep generated output under
-`artifacts/research/` or a local temp directory.
+## Game-update investigation
 
-## Multiplayer Verification Questions
+Build a small numeric loop before editing the runtime route:
 
-When a route changes, collect these facts separately for host and joining
-client:
+1. Use one region and a small stroke limit.
+2. Confirm reflection resolves `PaintAtUVWithBrush`, the paint component, and
+   `FPaintChannelData` including Emissive.
+3. Use manual sentinel material values and compare exported M/R/E values.
+4. Repeat with Auto Detect on; compare the selected dominant material pattern,
+   not the manual values.
+5. Run the same controlled job in host and joining-client roles.
 
-- who initiated paint: host or joining client
-- whether other players see the paint
-- painter-side completion time
-- other-client visible completion time
-- delay between painter completion and other-client completion
-- crashes, disconnects, lobby returns, freezes, missing paint, or partial paint
-- event-watch counts for old send path, packed component route, and relay route
-
-The important distinction is not just whether the painter finishes quickly. The
-other normal client must also receive the result without falling back to the old
-2-3 minute replication drain path.
-
-## Cleanup Rules
-
-- Do not delete research helpers only because static analysis shows few
-  references.
-- Do not expose research probes in normal UI unless they become supported user
-  behavior.
-- Do not let probe output change production paint decisions.
-- Keep `ProcessEvent`, RPC payload layout, and SDK padding changes behind live
-  verification.
-- Move repeatable one-off experiments into `scripts/research/` before adding
-  more bridge command strings.
-
-## Artifacts Not To Commit
-
-- event-watch output
-- raw replay payloads
-- game archives or cooked assets
-- generated mappings
-- dumps, traces, injected DLLs, and local diagnostics bundles
+Never carry old RVAs, payload layouts, queue offsets, or alternate transports
+into a new game version. Missing or ambiguous direct reflection is an explicit
+failure that needs investigation.

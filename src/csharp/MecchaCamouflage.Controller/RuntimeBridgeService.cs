@@ -18,7 +18,8 @@ public enum ResearchProbeKind
 public enum ResearchTextureTarget
 {
     ResolvedComponent,
-    EventwatchMulticastPackedReceiver
+    EventwatchDirectReceiver,
+    AllRuntimePaintComponents
 }
 
 /// <summary>
@@ -548,11 +549,16 @@ public sealed class RuntimeBridgeService
         ResearchTextureTarget.ResolvedComponent when string.IsNullOrWhiteSpace(expectedTextureComponent) =>
             "{\"type\":\"paint_replication_texture_probe\",\"research_texture_target\":\"resolved\"}",
         ResearchTextureTarget.ResolvedComponent => throw new ArgumentException(
-            "A texture component pin is only supported for an event-watch multicast receiver.",
+            "A texture component pin is only supported for an event-watch direct receiver.",
             nameof(expectedTextureComponent)),
-        ResearchTextureTarget.EventwatchMulticastPackedReceiver =>
-            "{\"type\":\"paint_replication_texture_probe\",\"research_texture_target\":\"eventwatch_multicast_packed_receiver\",\"research_texture_expected_component\":\"" +
+        ResearchTextureTarget.EventwatchDirectReceiver =>
+            "{\"type\":\"paint_replication_texture_probe\",\"research_texture_target\":\"eventwatch_direct_receiver\",\"research_texture_expected_component\":\"" +
             NormalizeNonZeroHexAddress(expectedTextureComponent) + "\"}",
+        ResearchTextureTarget.AllRuntimePaintComponents when string.IsNullOrWhiteSpace(expectedTextureComponent) =>
+            "{\"type\":\"paint_replication_texture_probe\",\"research_texture_target\":\"inventory_all\"}",
+        ResearchTextureTarget.AllRuntimePaintComponents => throw new ArgumentException(
+            "An all-components texture probe does not accept a component pin.",
+            nameof(expectedTextureComponent)),
         _ => throw new ArgumentOutOfRangeException(nameof(textureTarget), textureTarget, "Unsupported research texture target.")
     };
 

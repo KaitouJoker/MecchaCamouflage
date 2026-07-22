@@ -84,10 +84,11 @@ When a game update breaks painting, use this order:
 
 1. Run the app once and keep `%LOCALAPPDATA%\MecchaCamouflage\runtime\` logs.
 2. Check runtime reflection metadata first: function availability, reflected
-   offsets, `RuntimePaintable` state, mesh profile identity, packed paint
-   format, and `FPaintChannelData`/`FPaintStroke` field layouts.
+   offsets, `RuntimePaintable` state, mesh profile identity, direct
+   `PaintAtUVWithBrush` availability, and `FPaintChannelData`/`FPaintStroke`
+   field layouts.
 3. Build one authenticated research run with one stroke and distinct PBR values
-   before changing production code. Compare numeric packed texture values; do
+   before changing production code. Compare numeric material-properties values; do
    not infer a channel layout from a screenshot or a texture hash alone.
 4. Use UnrealMappingsDumper only when runtime reflection cannot resolve a
    trustworthy layout or the engine-side mapping changed.

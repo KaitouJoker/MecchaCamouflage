@@ -11,28 +11,18 @@ var tests = new List<(string Name, Action Run)>
     ("paint defaults expose coarse and detail brushes", PaintDefaultsExposeCoarseAndDetailBrushes),
     ("brush selection persists", BrushSelectionPersists),
     ("brush settings clamp to supported ranges", TwoPassBrushSettingsClampToSupportedRanges),
-    ("paint defaults expose batch sliders", PaintDefaultsExposeBatchSliders),
     ("app defaults use 99 percent opacity", AppDefaultsUse99PercentOpacity),
     ("payload sends active brushes", PayloadSendsTwoPassBrushPipeline),
+    ("diagnostic stroke limit requires explicit option", DiagnosticStrokeLimitRequiresExplicitOption),
     ("native accepts the Brush 1 configured range", NativeAcceptsBrush1ConfiguredRange),
-    ("native local route is signature resolved instead of build gated", NativeLocalRouteIsSignatureResolvedInsteadOfBuildGated),
-    ("native research no-resend route is signature resolved instead of build gated", NativeResearchNoResendRouteIsSignatureResolvedInsteadOfBuildGated),
-    ("native local failures use fixed server packed fallback", NativeLocalFailuresUseFixedServerPackedFallback),
-    ("native production radius follows each triangle and fill stays fixed", NativeProductionRadiusFollowsEachTriangleAndFillStaysFixed),
+    ("native direct radius uses game defaults and fill stays fixed", NativeDirectRadiusUsesGameDefaultsAndFillStaysFixed),
     ("native spatial replay follows the current pose and camera", NativeSpatialReplayFollowsCurrentPoseAndCamera),
     ("native async paint tolerates freecam pawn transitions", NativeAsyncPaintToleratesFreecamPawnTransitions),
     ("native production local sync uses per-stroke paint", NativeProductionLocalSyncUsesPerStrokePaint),
     ("native preview applies PBR and emissive channels", NativePreviewAppliesPbrAndEmissiveChannels),
     ("native auto material detects emissive and reports local pacing", NativeAutoMaterialDetectsEmissiveAndReportsLocalPacing),
-    ("payload includes packed route and fill material", PayloadIncludesPackedRouteAndFillMaterial),
-    ("payload sends batch slider values", PayloadSendsBatchSliderValues),
-    ("pre-mode pacing preserves saved delay", PreModePacingPreservesSavedDelay),
-    ("legacy auto pacing migrates to fastest sliders", LegacyAutoPacingMigratesToFastestSliders),
-    ("legacy manual pacing migrates to sliders", LegacyManualPacingMigratesToSliders),
-    ("legacy compatibility pacing migrates to sliders", LegacyCompatibilityPacingMigratesToSliders),
+    ("payload uses native paint route and includes fill material", PayloadUsesNativePaintRouteAndFillMaterial),
     ("legacy mirror-like Fill PBR defaults migrate to manual material", LegacyFillPbrDefaultsMigrateToManualMaterial),
-    ("settings clamp batch sliders", SettingsClampBatchSliders),
-    ("settings clamp clamps tolerance within range", SettingsClampTolerance),
     ("locales have complete keys", LocalesHaveCompleteKeys),
     ("color parser accepts rrggbb", ColorParserAcceptsHex),
     ("runtime log keeps repeated guard messages", RuntimeLogKeepsRepeatedGuardMessages),
@@ -40,10 +30,9 @@ var tests = new List<(string Name, Action Run)>
     ("copy if invalid repairs corrupt target", CopyIfInvalidRepairsCorruptTarget),
     ("research event-watch sidecar uses exact staged bridge path", ResearchEventWatchSidecarUsesExactStagedBridgePath),
     ("research texture probe is explicitly dispatched", ResearchTextureProbeIsExplicitlyDispatched),
-    ("native research replay plan preserves actual pass strokes", NativeResearchReplayPlanPreservesActualPassStrokes),
     ("research runner can isolate one planned replay stroke", ResearchRunnerCanIsolateOnePlannedReplayStroke),
-    ("research runner records two-pass brushes and packed local queue mode", ResearchRunnerRecordsTwoPassBrushesAndPackedLocalQueueMode),
-    ("UV replay atlas separates passes and packed radii", UvReplayAtlasSeparatesPassesAndPackedRadii),
+    ("research runner records two-pass brushes and direct queue mode", ResearchRunnerRecordsTwoPassBrushesAndDirectQueueMode),
+    ("UV replay atlas separates passes and direct radii", UvReplayAtlasSeparatesPassesAndDirectRadii),
     ("research replay sidecar is staged as a UV PNG", ResearchReplaySidecarIsStagedAsUvPng),
     ("research replay sidecar refuses a non-successful paint", ResearchReplaySidecarRefusesNonSuccessfulPaint),
     ("research texture probes stage an actual delta PNG", ResearchTextureProbesStageActualDeltaPng),
@@ -55,9 +44,8 @@ var tests = new List<(string Name, Action Run)>
     ("auto material defaults off", AutoMaterialDefaultsOff),
     ("front region defaults to fill", FrontRegionDefaultsToFill),
     ("bridge messages are user friendly", BridgeMessagesAreUserFriendly),
-    ("paint fallback warning preserves native reason and fixed pacing", PaintFallbackWarningPreservesNativeReasonAndFixedPacing),
     ("settings detect supported system language", SettingsDetectSupportedSystemLanguage),
-    ("ui snapshot exposes two-pass brushes and batch sliders", UiSnapshotExposesTwoPassBrushesAndBatchSliders),
+    ("ui snapshot exposes two-pass brushes", UiSnapshotExposesTwoPassBrushes),
     ("web ui exposes two-pass brush sliders", WebUiExposesTwoPassBrushSliders),
     ("web UI keeps theme color on readonly range and checkbox controls", WebUiKeepsThemeColorOnReadonlyControls),
     ("web ui renders pass progress and total eta", WebUiRendersPassProgressAndTotalEta),
@@ -68,8 +56,6 @@ var tests = new List<(string Name, Action Run)>
     ("host session reset restores setting default", HostSessionResetRestoresDefault),
     ("host session brush updates are independent and detail syncs coverage", HostSessionBrushUpdatesAreIndependentAndDetailSyncsCoverage),
     ("host session rejects disabling every brush", HostSessionRejectsDisablingEveryBrush),
-    ("host session updates batch sliders", HostSessionUpdatesBatchSliders),
-    ("host session quantizes decimal batch slider updates", HostSessionQuantizesDecimalBatchSliderUpdates),
     ("host session rolls back invalid hotkey update", HostSessionRollsBackInvalidHotkeyUpdate),
     ("host session applies multiple setting updates atomically", HostSessionAppliesMultipleSettingUpdatesAtomically),
     ("host session rolls back duplicate hotkey batch", HostSessionRollsBackDuplicateHotkeyBatch),
@@ -80,8 +66,9 @@ var tests = new List<(string Name, Action Run)>
     ("host session does not cross bridge instances during a preferred progress write", HostSessionDoesNotFallbackWhenPreferredProgressIsMalformed),
     ("host session waits for a missing preferred progress file", HostSessionDoesNotFallbackWhenPreferredProgressIsMissing),
     ("host session does not cross bridge instances for stale preferred progress", HostSessionDoesNotFallbackWhenPreferredProgressIsStale),
-    ("host session presents native pass progress and receiver queue", HostSessionPresentsNativePassProgressAndReceiverQueue),
+    ("host session presents native pass progress and queue backpressure", HostSessionPresentsNativePassProgressAndQueueBackpressure),
     ("host session logs each pass transition once per job", HostSessionLogsEachPassTransitionOnce),
+    ("paint diagnostics report direct-stroke PBR values", PaintDiagnosticsReportDirectStrokePbrValues),
     ("host session snapshot ignores pre-paint progress", HostSessionSnapshotIgnoresPrePaintProgress),
     ("host session warns when cancel has no active paint", HostSessionWarnsWhenCancelHasNoActivePaint),
     ("host session pre-dispatch cancel prevents a late paint send", HostSessionPreDispatchCancelPreventsLatePaintSend),
@@ -144,19 +131,17 @@ static void BrushSelectionPersists()
     settings.Paint.Brush1SizeTexels = 42.5;
     settings.Paint.Brush2Enabled = false;
     settings.Paint.Brush2SizeTexels = 2.5;
-    settings.Paint.BatchAutoAdapt = false;
 
     new SettingsStore(paths).Save(settings);
     var loaded = new SettingsStore(paths).Load();
     Assert(loaded.Paint.Brush1Enabled && !loaded.Paint.Brush2Enabled, "enabled brushes should round-trip");
     Assert(Math.Abs(loaded.Paint.Brush1SizeTexels - 42.5) < 0.000001, "brush 1 size should round-trip");
     Assert(Math.Abs(loaded.Paint.Brush2SizeTexels - 2.5) < 0.000001, "brush 2 size should round-trip");
-    Assert(!loaded.Paint.BatchAutoAdapt, "batch auto adapt should round-trip");
     Assert(Math.Abs(loaded.Paint.CoverageStepTexels - 42.5) < 0.000001, "coverage should follow the only active brush");
     using var saved = JsonDocument.Parse(File.ReadAllText(paths.ConfigPath));
     Assert(saved.RootElement.GetProperty("brush_1_enabled").GetBoolean(), "brush 1 enabled should persist");
     Assert(!saved.RootElement.GetProperty("brush_2_enabled").GetBoolean(), "brush 2 enabled should persist");
-    Assert(!saved.RootElement.GetProperty("batch_auto_adapt").GetBoolean(), "batch auto adapt should persist");
+    Assert(!saved.RootElement.TryGetProperty("batch_auto_adapt", out _), "retired batch settings should not persist");
     Assert(!saved.RootElement.TryGetProperty("stroke_size_texels", out _), "the legacy brush key should not be persisted");
 }
 
@@ -187,15 +172,6 @@ static void TwoPassBrushSettingsClampToSupportedRanges()
     Assert(Math.Abs(clamped.Paint.Brush2SizeTexels - 1.0) < 0.000001, "brush 2 should clamp to 1");
 }
 
-static void PaintDefaultsExposeBatchSliders()
-{
-    var paint = new AppSettings().Paint;
-
-    Assert(paint.BatchAutoAdapt, "batch auto adapt should default on");
-    Assert(paint.PackedBatchLimit == 20, "batch limit should retain its default");
-    Assert(paint.PackedBatchPacingMs == 50, "batch pacing should default to the fastest safe interval");
-}
-
 static void AppDefaultsUse99PercentOpacity()
 {
     using var temp = new TempHome();
@@ -213,7 +189,6 @@ static void PayloadSendsTwoPassBrushPipeline()
     settings.Paint.Brush2SizeTexels = 7.5;
     settings.Paint.Brush1Enabled = true;
     settings.Paint.Brush2Enabled = false;
-    settings.Paint.BatchAutoAdapt = false;
 
     var payload = BridgePayloadBuilder.BuildPaintPayload(settings, 42, "Game.exe", new PaintRequestOptions());
     using var doc = JsonDocument.Parse(payload);
@@ -223,10 +198,27 @@ static void PayloadSendsTwoPassBrushPipeline()
     Assert(Math.Abs(tuning.GetProperty("brush_1_size_texels").GetDouble() - 17.5) < 0.000001, "payload should send brush 1");
     Assert(!tuning.GetProperty("brush_2_enabled").GetBoolean(), "payload should disable brush 2");
     Assert(Math.Abs(tuning.GetProperty("brush_2_size_texels").GetDouble() - 7.5) < 0.000001, "payload should send brush 2");
-    Assert(!tuning.GetProperty("server_batch_auto_adapt").GetBoolean(), "payload should send the batch auto-adapt mode");
     Assert(!tuning.TryGetProperty("brush_pipeline_version", out _), "payload should not version the brush pipeline");
     Assert(!tuning.TryGetProperty("stroke_size_texels", out _), "payload should not send the legacy stroke size");
     Assert(Math.Abs(tuning.GetProperty("coverage_step_texels").GetDouble() - 17.5) < 0.000001, "coverage should follow the only active brush");
+}
+
+static void DiagnosticStrokeLimitRequiresExplicitOption()
+{
+    var settings = new AppSettings();
+    var normal = BridgePayloadBuilder.BuildPaintPayload(settings, 42, "Game.exe", new PaintRequestOptions());
+    using var normalDocument = JsonDocument.Parse(normal);
+    Assert(!normalDocument.RootElement.TryGetProperty("diagnostic_stroke_limit", out _),
+        "normal paint must not carry a diagnostic stroke limit");
+
+    var diagnostic = BridgePayloadBuilder.BuildPaintPayload(
+        settings,
+        42,
+        "Game.exe",
+        new PaintRequestOptions(DiagnosticStrokeLimit: 100));
+    using var diagnosticDocument = JsonDocument.Parse(diagnostic);
+    Assert(diagnosticDocument.RootElement.GetProperty("diagnostic_stroke_limit").GetInt32() == 100,
+        "the explicitly requested diagnostic limit must reach native paint");
 }
 
 static void NativeAcceptsBrush1ConfiguredRange()
@@ -240,86 +232,7 @@ static void NativeAcceptsBrush1ConfiguredRange()
         "native paint payload parsing must preserve the configured 10-50 Brush 1 range");
 }
 
-static void NativeLocalRouteIsSignatureResolvedInsteadOfBuildGated()
-{
-    var bridge = File.ReadAllText(Path.Combine(
-        FindRepositoryRoot(),
-        "src", "native", "bridge", "bridge.cpp"));
-    var start = bridge.LastIndexOf("auto resolve_local_packed_queue_route(", StringComparison.Ordinal);
-    var end = bridge.IndexOf("auto resolve_internal_no_resend_route(", start, StringComparison.Ordinal);
-    Assert(start >= 0 && end > start, "local packed route resolver should be present");
-    var resolver = bridge[start..end];
-
-    Assert(!resolver.Contains("TimeDateStamp ==", StringComparison.Ordinal) &&
-           !resolver.Contains("ExpectedThunkRva", StringComparison.Ordinal) &&
-           !resolver.Contains("main_module_build_identity_mismatch", StringComparison.Ordinal),
-        "local route must not reject a build solely because its identity or RVAs changed");
-    Assert(resolver.Contains("MulticastPackedPaintBatch_param_layout_mismatch", StringComparison.Ordinal) &&
-           resolver.Contains("slot <= 0x800", StringComparison.Ordinal) &&
-           resolver.Contains("candidates.size() != 1", StringComparison.Ordinal),
-        "local route must retain schema validation and require one signature/call-chain candidate");
-}
-
-static void NativeResearchNoResendRouteIsSignatureResolvedInsteadOfBuildGated()
-{
-    var bridge = File.ReadAllText(Path.Combine(
-        FindRepositoryRoot(),
-        "src", "native", "bridge", "bridge.cpp"));
-    var start = bridge.LastIndexOf("auto resolve_internal_no_resend_route(", StringComparison.Ordinal);
-    var end = bridge.IndexOf("auto sdk_validate_internal_common_no_resend_preconditions(", start, StringComparison.Ordinal);
-    Assert(start >= 0 && end > start, "research no-resend resolver should be present");
-    var resolver = bridge[start..end];
-
-    Assert(!resolver.Contains("TimeDateStamp ==", StringComparison.Ordinal) &&
-           !resolver.Contains("ExpectedThunkRva", StringComparison.Ordinal) &&
-           !resolver.Contains("main_module_build_identity_mismatch", StringComparison.Ordinal) &&
-           !resolver.Contains("main_module_text_identity_mismatch", StringComparison.Ordinal),
-        "research no-resend route must not reject a build solely because its identity or RVAs changed");
-    Assert(resolver.Contains("PaintAtUVWithBrush_param_layout_mismatch", StringComparison.Ordinal) &&
-           resolver.Contains("{\"channeldata\", 0x10, static_cast<int>(sizeof(sdk::FPaintChannelData))}", StringComparison.Ordinal) &&
-           resolver.Contains("{\"brushsettings\", 0x38, static_cast<int>(sizeof(sdk::FRuntimeBrushSettings))}", StringComparison.Ordinal) &&
-           resolver.Contains("{\"channel\", 0x60, 0x01}", StringComparison.Ordinal) &&
-           resolver.Contains("internal_rel32_call_target", StringComparison.Ordinal) &&
-           resolver.Contains("matches.size() != 1", StringComparison.Ordinal),
-        "research no-resend route must validate the UE5.6 Emissive-aware parameter layout, signature, relative call, and uniqueness");
-}
-
-static void NativeLocalFailuresUseFixedServerPackedFallback()
-{
-    var bridge = File.ReadAllText(Path.Combine(
-        FindRepositoryRoot(),
-        "src", "native", "bridge", "bridge.cpp"));
-    var contract = File.ReadAllText(Path.Combine(
-        FindRepositoryRoot(),
-        "src", "native", "include", "runtime_contract.hpp"));
-    var responseJson = File.ReadAllText(Path.Combine(
-        FindRepositoryRoot(),
-        "src", "native", "bridge", "bridge_json.inc"));
-
-    Assert(contract.Contains("ServerPackedFallbackBatchLimit = 20", StringComparison.Ordinal) &&
-           contract.Contains("ServerPackedFallbackPacingMs = 50", StringComparison.Ordinal),
-        "fallback pacing should be one explicit native contract");
-    Assert(bridge.Contains("\\\"local_route_mode\\\":\\\"server_packed_fallback\\\"", StringComparison.Ordinal) &&
-           bridge.Contains("\\\"fallback_reason\\\"", StringComparison.Ordinal) &&
-           bridge.Contains("\\\"fallback_batch_limit\\\"", StringComparison.Ordinal) &&
-           bridge.Contains("\\\"fallback_pacing_ms\\\"", StringComparison.Ordinal),
-        "fallback replies should expose the unified metadata contract");
-    Assert(responseJson.Contains("\"local_route_mode\"", StringComparison.Ordinal) &&
-           responseJson.Contains("\"fallback_reason\"", StringComparison.Ordinal) &&
-           responseJson.Contains("\"fallback_batch_limit\"", StringComparison.Ordinal) &&
-           responseJson.Contains("\"fallback_pacing_ms\"", StringComparison.Ordinal),
-        "production response compaction must retain fallback metadata for the controller warning");
-    Assert(bridge.Contains("the exact local receiver queue could not be measured before any server batch was submitted", StringComparison.Ordinal) &&
-           bridge.Contains("The exact local receiver queue could not be measured before the next server batch; no new batch was submitted.", StringComparison.Ordinal),
-        "initial and mid-job exact queue probe failures should activate fallback with their original text");
-    Assert(bridge.Contains("mesh_local_packed_queue_still_draining", StringComparison.Ordinal) &&
-           bridge.Contains("component_queue_not_empty", StringComparison.Ordinal),
-        "a readable nonzero previous queue must remain a blocking condition");
-    Assert(bridge.Contains("the painter-local texture import failed before server submission", StringComparison.Ordinal),
-        "production texture-import failure should activate the fixed server fallback before submission");
-}
-
-static void NativeProductionRadiusFollowsEachTriangleAndFillStaysFixed()
+static void NativeDirectRadiusUsesGameDefaultsAndFillStaysFixed()
 {
     var bridge = File.ReadAllText(Path.Combine(
         FindRepositoryRoot(),
@@ -328,13 +241,10 @@ static void NativeProductionRadiusFollowsEachTriangleAndFillStaysFixed()
     Assert(bridge.Contains("const double fill_stroke_radius_texels = 100.0;", StringComparison.Ordinal) &&
            bridge.Contains("\\\"fill_stroke_radius_source\\\":\\\"fixed_100_texels\\\"", StringComparison.Ordinal),
         "fill radius should be independent from either brush");
-    Assert(bridge.Contains("production_triangle_world_radius_per_stroke", StringComparison.Ordinal) &&
-           bridge.Contains("runtime_contract::resolve_packed_triangle_world_radius", StringComparison.Ordinal) &&
-           bridge.Contains("replay_triangle_world_radius_normalization", StringComparison.Ordinal) &&
-           bridge.Contains("per_stroke", StringComparison.Ordinal) &&
-           !bridge.Contains("packed_radius_calibration_failed", StringComparison.Ordinal) &&
-           !bridge.Contains("packed_radius_calibration_target_mesh_mismatch", StringComparison.Ordinal),
-        "production paint should derive one world radius per triangle without a calibration failure gate");
+    Assert(bridge.Contains("\\\"replay_world_radius_policy\\\":\\\"game_default\\\"", StringComparison.Ordinal) &&
+           bridge.Contains("sdk_make_mesh_anchor_stroke", StringComparison.Ordinal) &&
+           bridge.Contains("GamePaintMeshAnchorWorldRadiusAuto", StringComparison.Ordinal),
+        "direct paint should leave world-radius interpretation to the game defaults");
 }
 
 static void NativeSpatialReplayFollowsCurrentPoseAndCamera()
@@ -356,39 +266,41 @@ static void NativeAsyncPaintToleratesFreecamPawnTransitions()
     var bridge = File.ReadAllText(Path.Combine(
         FindRepositoryRoot(),
         "src", "native", "bridge", "bridge.cpp"));
-    var start = bridge.IndexOf("auto active_context_still_matches =", StringComparison.Ordinal);
-    var end = bridge.IndexOf("if (job->strokes.empty())", start, StringComparison.Ordinal);
-    Assert(start >= 0 && end > start, "async paint context guard should be present");
-    var guard = bridge[start..end];
-
-    Assert(guard.Contains("Freecam and spectator-like states can replace or detach the", StringComparison.Ordinal) &&
-           !guard.Contains("current_pawn != job->pawn", StringComparison.Ordinal),
+    Assert(bridge.Contains("safe_read<std::uintptr_t>(job->component + OffClass)", StringComparison.Ordinal) &&
+           !bridge.Contains("current_pawn != job->pawn", StringComparison.Ordinal),
         "a valid captured paint component must remain paintable when freecam replaces the controller pawn");
 }
 
 static void NativeProductionLocalSyncUsesPerStrokePaint()
 {
-    var contract = File.ReadAllText(Path.Combine(
-        FindRepositoryRoot(),
-        "src", "native", "include", "runtime_contract.hpp"));
     var bridge = File.ReadAllText(Path.Combine(
         FindRepositoryRoot(),
         "src", "native", "bridge", "bridge.cpp"));
-    var start = contract.IndexOf("constexpr bool production_paint_uses_texture_import(", StringComparison.Ordinal);
-    var end = contract.IndexOf("constexpr int incremental_texture_import_chunk_limit(", start, StringComparison.Ordinal);
-    Assert(start >= 0 && end > start, "production local-sync policy should be present");
-    var policy = contract[start..end];
 
-    Assert(policy.Contains("return false;", StringComparison.Ordinal),
-        "normal packed paint must use the validated per-stroke local paint route, not texture import");
-    Assert(bridge.Contains("\\\"local_route_mode\\\":\\\"validated_no_resend_direct\\\"", StringComparison.Ordinal) &&
-           bridge.Contains("\\\"local_apply_route\\\":\\\"internal_common_no_resend\\\"", StringComparison.Ordinal) &&
-           bridge.Contains("server_packed_with_internal_no_resend_local_lockstep", StringComparison.Ordinal) &&
-           bridge.Contains("suppress_nested_self_multicast_exact_payload_only", StringComparison.Ordinal) &&
-           bridge.Contains("self_packed_multicast_suppressions", StringComparison.Ordinal) &&
-           bridge.Contains("direct_no_resend_committed_local_pending", StringComparison.Ordinal) &&
-           bridge.Contains("direct_no_resend_cancel_completing_committed_batch", StringComparison.Ordinal),
-        "production metadata must identify the non-echo local paint route, exact self-multicast suppression, and bounded cancel pairing");
+    Assert(bridge.Contains("\\\"local_route_mode\\\":\\\"native_recorded_paint\\\"", StringComparison.Ordinal) &&
+           bridge.Contains("PaintAtUVWithBrush", StringComparison.Ordinal) &&
+           bridge.Contains("paint_at_uv_with_brush_native_replication", StringComparison.Ordinal) &&
+           bridge.Contains("sdk_call_paint_at_uv_with_brush", StringComparison.Ordinal),
+        "production paint must use the game-native recorded per-stroke route");
+    Assert(bridge.Contains("const int local_sample_batch_limit = runtime_contract::NativeRecordedPaintMaxCallsPerTick;", StringComparison.Ordinal),
+        "production paint must schedule only the bounded game-native route");
+    var contract = File.ReadAllText(Path.Combine(
+        FindRepositoryRoot(),
+        "src", "native", "include", "runtime_contract.hpp"));
+    Assert(contract.Contains("constexpr int NativeRecordedPaintMaxCallsPerTick = 6;", StringComparison.Ordinal) &&
+           contract.Contains("constexpr int NativeRecordedPaintQueueTargetStrokes = 4;", StringComparison.Ordinal) &&
+           contract.Contains("constexpr int FastLocalCadenceMs = 1;", StringComparison.Ordinal),
+        "native paint must retain bounded direct dispatch and a small game-owned queue window");
+    Assert(bridge.Contains("direct_paint_capture_queue_snapshot", StringComparison.Ordinal) &&
+           bridge.Contains("GetQueuedStrokeCountForComponent", StringComparison.Ordinal) &&
+           bridge.Contains("native_queue_backpressure", StringComparison.Ordinal) &&
+           bridge.Contains("direct_paint_queue_target_strokes", StringComparison.Ordinal) &&
+           bridge.Contains("mesh_direct_paint_cancel_drain", StringComparison.Ordinal) &&
+           bridge.Contains("waiting for the game's recorded-paint queue", StringComparison.Ordinal),
+        "native paint must use the game-owned component queue for backpressure, completion, and cancel drain");
+    Assert(bridge.Contains("json_int_field(request, \"diagnostic_stroke_limit\", 0, 0, 10000)", StringComparison.Ordinal) &&
+           bridge.Contains("diagnostic_stroke_limit_applied", StringComparison.Ordinal),
+        "diagnostic runs must report their explicit stroke limit without changing normal paint");
 }
 
 static void NativePreviewAppliesPbrAndEmissiveChannels()
@@ -438,11 +350,9 @@ static void NativeAutoMaterialDetectsEmissiveAndReportsLocalPacing()
         "normal local paint must report its CPU and write-budget pacing for live performance checks");
 }
 
-static void PayloadIncludesPackedRouteAndFillMaterial()
+static void PayloadUsesNativePaintRouteAndFillMaterial()
 {
     var settings = new AppSettings();
-    settings.Paint.PackedBatchLimit = 13;
-    settings.Paint.PackedBatchPacingMs = 88;
     settings.Paint.FrontRegionMode = RegionMode.Fill;
     settings.Paint.SideRegionMode = RegionMode.Skip;
     settings.Paint.BackRegionMode = RegionMode.Paint;
@@ -454,14 +364,12 @@ static void PayloadIncludesPackedRouteAndFillMaterial()
 
     var payload = BridgePayloadBuilder.BuildPaintPayload(settings, 42, "Game.exe", new PaintRequestOptions());
     using var doc = JsonDocument.Parse(payload);
-    Assert(doc.RootElement.GetProperty("server_batch_rpc").GetString() == "packed", "payload should request packed server route");
-    Assert(doc.RootElement.GetProperty("packed_route").GetString() == "component", "payload should request component packed route");
+    Assert(doc.RootElement.GetProperty("native_apply_mode").GetString() == "native_recorded_paint",
+        "payload should request the game-native recorded paint route");
     var tuning = doc.RootElement.GetProperty("tuning");
     Assert(tuning.GetProperty("front_region_mode").GetString() == "fill", "front mode missing");
     Assert(tuning.GetProperty("side_region_mode").GetString() == "skip", "side mode missing");
     Assert(tuning.GetProperty("back_region_mode").GetString() == "paint", "back mode missing");
-    Assert(tuning.GetProperty("server_batch_limit").GetInt32() == 13, "server batch limit should be sent");
-    Assert(tuning.GetProperty("server_batch_pacing_ms").GetInt32() == 88, "server batch pacing should be sent");
     Assert(tuning.GetProperty("fill_color").GetString() == "#F11111", "fill color missing");
     Assert(Math.Abs(tuning.GetProperty("fill_color_r").GetDouble() - (241.0 / 255.0)) < 0.00001, "fill red not normalized");
     Assert(Math.Abs(tuning.GetProperty("emissive").GetDouble() - 0.35) < 0.00001, "paint emissive missing");
@@ -470,95 +378,6 @@ static void PayloadIncludesPackedRouteAndFillMaterial()
     Assert(!tuning.TryGetProperty("enable_side_paint", out _), "legacy side bool must not be sent");
     Assert(!tuning.TryGetProperty("enable_back_paint", out _), "legacy back bool must not be sent");
     Assert(!tuning.TryGetProperty("auto_material_properties", out _), "legacy material key must not be sent");
-    Assert(!tuning.TryGetProperty("adaptive_batch_enabled", out _), "payload should not send legacy adaptive tuning");
-    Assert(!tuning.TryGetProperty("server_pacing_mode", out _), "removed pacing mode must not be sent");
-    Assert(!tuning.TryGetProperty("server_batch_delay_ms", out _), "legacy delay wording must not be sent");
-}
-
-static void LegacyAutoPacingMigratesToFastestSliders()
-{
-    using var temp = new TempHome();
-    var paths = new AppPaths("pacing-settings-migration-test");
-    Directory.CreateDirectory(paths.ConfigDirectory);
-    File.WriteAllText(paths.ConfigPath, """
-    {
-      "layout_version": 35,
-      "pacing_mode": "auto_fast",
-      "packed_batch_delay_ms": 175
-    }
-    """);
-
-    var settings = new SettingsStore(paths).Load();
-
-    Assert(settings.Paint.PackedBatchLimit == 20, "auto pacing should migrate to maximum batch size");
-    Assert(settings.Paint.PackedBatchPacingMs == 50, "auto pacing should migrate to fastest safe pacing");
-    Assert(settings.LayoutVersion == AppSettings.CurrentLayoutVersion, "migration should advance the layout version");
-
-    new SettingsStore(paths).Save(settings);
-    using var saved = JsonDocument.Parse(File.ReadAllText(paths.ConfigPath));
-    Assert(saved.RootElement.GetProperty("packed_batch_limit").GetInt32() == 20, "migrated batch limit should persist");
-    Assert(saved.RootElement.GetProperty("packed_batch_pacing_ms").GetInt32() == 50, "migrated pacing should persist");
-    Assert(!saved.RootElement.TryGetProperty("pacing_mode", out _), "removed pacing mode should not be persisted");
-    Assert(!saved.RootElement.TryGetProperty("packed_batch_delay_ms", out _), "legacy delay wording should not be persisted");
-}
-
-static void PreModePacingPreservesSavedDelay()
-{
-    using var temp = new TempHome();
-    foreach (var savedDelay in new[] { 75, 175 })
-    {
-        var paths = new AppPaths($"pre-mode-pacing-settings-migration-{savedDelay}-test");
-        Directory.CreateDirectory(paths.ConfigDirectory);
-        File.WriteAllText(paths.ConfigPath, $$"""
-        {
-          "layout_version": 35,
-          "packed_batch_delay_ms": {{savedDelay}}
-        }
-        """);
-
-        var settings = new SettingsStore(paths).Load();
-
-        Assert(settings.Paint.PackedBatchLimit == 20, "pre-mode pacing should migrate to maximum batch size");
-        Assert(settings.Paint.PackedBatchPacingMs == savedDelay, "pre-mode pacing should retain its saved interval");
-    }
-}
-
-static void LegacyManualPacingMigratesToSliders()
-{
-    using var temp = new TempHome();
-    var paths = new AppPaths("manual-pacing-settings-migration-test");
-    Directory.CreateDirectory(paths.ConfigDirectory);
-    File.WriteAllText(paths.ConfigPath, """
-    {
-      "layout_version": 35,
-      "pacing_mode": "manual_slower",
-      "packed_batch_delay_ms": 175
-    }
-    """);
-
-    var settings = new SettingsStore(paths).Load();
-
-    Assert(settings.Paint.PackedBatchLimit == 20, "manual pacing should migrate to maximum batch size");
-    Assert(settings.Paint.PackedBatchPacingMs == 175, "manual pacing should retain its selected interval");
-}
-
-static void LegacyCompatibilityPacingMigratesToSliders()
-{
-    using var temp = new TempHome();
-    var paths = new AppPaths("compatibility-pacing-settings-migration-test");
-    Directory.CreateDirectory(paths.ConfigDirectory);
-    File.WriteAllText(paths.ConfigPath, """
-    {
-      "layout_version": 35,
-      "pacing_mode": "compatibility",
-      "packed_batch_delay_ms": 500
-    }
-    """);
-
-    var settings = new SettingsStore(paths).Load();
-
-    Assert(settings.Paint.PackedBatchLimit == 6, "compatibility mode should migrate to six strokes per RPC");
-    Assert(settings.Paint.PackedBatchPacingMs == 75, "compatibility mode should migrate to 75 ms pacing");
 }
 
 static void LegacyFillPbrDefaultsMigrateToManualMaterial()
@@ -602,42 +421,6 @@ static void LegacyFillPbrDefaultsMigrateToManualMaterial()
            Math.Abs(custom.Paint.FillRoughness - 0.2) < 0.000001 &&
            Math.Abs(custom.Paint.FillEmissive - 0.1) < 0.000001,
         "a non-default Fill PBR choice must not be changed by the migration");
-}
-
-static void SettingsClampTolerance()
-{
-    var settings = new AppSettings();
-    settings.Paint.ColorCompressionTolerance = 150.0;
-    var clamped = SettingsStore.Clamp(settings);
-    Assert(Math.Abs(clamped.Paint.ColorCompressionTolerance - 100.0) < 0.000001, "color compression tolerance should clamp to 100");
-
-    settings.Paint.ColorCompressionTolerance = -10.0;
-    clamped = SettingsStore.Clamp(settings);
-    Assert(Math.Abs(clamped.Paint.ColorCompressionTolerance - 0.0) < 0.000001, "color compression tolerance should clamp to 0");
-}
-
-static void PayloadSendsBatchSliderValues()
-{
-    var settings = new AppSettings();
-    settings.Paint.BatchAutoAdapt = false;
-    settings.Paint.PackedBatchLimit = 7;
-    settings.Paint.PackedBatchPacingMs = 125;
-
-    var payload = BridgePayloadBuilder.BuildPaintPayload(settings, 42, "Game.exe", new PaintRequestOptions());
-    using var document = JsonDocument.Parse(payload);
-    var tuning = document.RootElement.GetProperty("tuning");
-
-    Assert(!tuning.GetProperty("server_batch_auto_adapt").GetBoolean(), "manual batch mode should map directly");
-    Assert(tuning.GetProperty("server_batch_limit").GetInt32() == 7, "batch limit should map directly");
-    Assert(tuning.GetProperty("server_batch_pacing_ms").GetInt32() == 125, "batch pacing should map directly");
-
-    var bridge = File.ReadAllText(Path.Combine(
-        FindRepositoryRoot(),
-        "src", "native", "bridge", "bridge.cpp"));
-    Assert(bridge.Contains("json_bool_field(request,\n                            \"server_batch_auto_adapt\"", StringComparison.Ordinal),
-        "native bridge should read the batch auto-adapt flag");
-    Assert(bridge.Contains("runtime_contract::resolve_configured_pacing(", StringComparison.Ordinal),
-        "native bridge should select automatic or manual pacing from the flag");
 }
 
 static void LocalesHaveCompleteKeys()
@@ -828,12 +611,9 @@ static void BridgeMessagesAreUserFriendly()
     var preview = HostSession.FriendlyBridgeMessage("local preview material texture imported");
     var noPreview = HostSession.FriendlyBridgeMessage("mesh_unpreview_snapshot_unavailable");
     var contextChanged = HostSession.FriendlyBridgeMessage("mesh_paint_context_changed");
-    var componentUnavailable = HostSession.FriendlyBridgeMessage("ServerPackedPaintBatch failed: paint_component_unavailable");
+    var componentUnavailable = HostSession.FriendlyBridgeMessage("PaintAtUVWithBrush failed: paint_component_unavailable");
     var pawnUnavailable = HostSession.FriendlyBridgeMessage("Paint stopped because the local pawn is no longer available");
-    var unsupportedNoResendRoute = HostSession.FriendlyBridgeMessage(
-        "internal no-resend route validation failed for this game build: main_module_build_identity_mismatch");
-    var partialLocalFailure = HostSession.FriendlyBridgeMessage(
-        "Paint strokes were submitted, but local rendering failed: internal_common_no_resend_exception. Do not retry automatically.");
+    var nativeRouteUnavailable = HostSession.FriendlyBridgeMessage("mesh_native_paint_unavailable");
     var cancelledAfterSubmission = HostSession.FriendlyBridgeMessage(
         "paint cancellation arrived after submission; the committed local queue drained");
     var cancelledWithBoundedTail = HostSession.FriendlyBridgeMessage(
@@ -853,43 +633,13 @@ static void BridgeMessagesAreUserFriendly()
     Assert(contextChanged == "Paint: stopped because the game paint component changed.", "paint context change should be friendly");
     Assert(componentUnavailable == "Paint: stopped because the game paint component is unavailable.", "paint component unavailable should be friendly");
     Assert(pawnUnavailable == "Paint: stopped because the local pawn is no longer available.", "pawn unavailable should be friendly");
-    Assert(unsupportedNoResendRoute == "Paint: this game build is not supported.", "unsupported no-resend route should be friendly");
-    Assert(partialLocalFailure == "Paint: strokes were sent, but local rendering failed. Do not retry automatically.", "partial local failure should warn against retry");
+    Assert(nativeRouteUnavailable == "Paint: the game-native paint route is unavailable.", "missing native route should be friendly");
     Assert(cancelledAfterSubmission == "Paint: canceled.",
         "a late cancel that waited for the committed queue must remain a concise cancellation");
     Assert(cancelledWithBoundedTail == "Paint: canceled.",
         "a bounded local queue cancel should remain a concise cancellation");
     Assert(unsafeSampling == "Paint: blocked because the current mesh sampling was unsafe.", "unsafe mesh sampling should be friendly");
     Assert(!alreadyRunning.Contains("mesh", StringComparison.OrdinalIgnoreCase), "internal mesh wording should be hidden");
-}
-
-static void PaintFallbackWarningPreservesNativeReasonAndFixedPacing()
-{
-    const string reason =
-        "the exact local receiver queue could not be measured before any server batch was submitted";
-    var reply = new BridgeReply(
-        true,
-        true,
-        "mesh_first_paint_done",
-        "mesh-first paint completed",
-        $$"""
-        {
-          "success": true,
-          "metadata": {
-            "local_route_mode": "server_packed_fallback",
-            "fallback_reason": "{{reason}}",
-            "fallback_batch_limit": 20,
-            "fallback_pacing_ms": 50
-          }
-        }
-        """);
-
-    var warning = HostSession.PaintFallbackWarning(reply);
-
-    Assert(warning == reason + " (server packed fallback: 20 strokes / 50 ms)",
-        "fallback warning should preserve the native error text and append fixed pacing");
-    Assert(HostSession.PaintFallbackWarning(reply with { Raw = "{\"success\":true}" }) is null,
-        "normal paint replies should not emit a fallback warning");
 }
 
 static void SettingsDetectSupportedSystemLanguage()
@@ -907,16 +657,13 @@ static void SettingsDetectSupportedSystemLanguage()
     }
 }
 
-static void UiSnapshotExposesTwoPassBrushesAndBatchSliders()
+static void UiSnapshotExposesTwoPassBrushes()
 {
     var snapshot = new PaintSnapshot(
         true,
         17.5,
         false,
         7.5,
-        true,
-        20,
-        50,
         false,
         0.0,
         1.0,
@@ -939,16 +686,8 @@ static void UiSnapshotExposesTwoPassBrushesAndBatchSliders()
     Assert(Math.Abs(doc.RootElement.GetProperty("brush1SizeTexels").GetDouble() - 17.5) < 0.000001, "snapshot should expose brush 1");
     Assert(!doc.RootElement.GetProperty("brush2Enabled").GetBoolean(), "snapshot should expose brush 2 enabled");
     Assert(Math.Abs(doc.RootElement.GetProperty("brush2SizeTexels").GetDouble() - 7.5) < 0.000001, "snapshot should expose brush 2");
-    Assert(doc.RootElement.GetProperty("batchAutoAdapt").GetBoolean(), "snapshot should expose batch auto adapt");
-    Assert(doc.RootElement.GetProperty("packedBatchLimit").GetInt32() == 20, "snapshot should expose packedBatchLimit for editing");
-    Assert(doc.RootElement.GetProperty("packedBatchPacingMs").GetInt32() == 50, "snapshot should expose packedBatchPacingMs for editing");
     Assert(!doc.RootElement.TryGetProperty("brushSizeTexels", out _), "snapshot should not expose the removed single-brush field");
     Assert(!doc.RootElement.TryGetProperty("coverageStepTexels", out _), "coverage compatibility should stay internal");
-    Assert(!doc.RootElement.TryGetProperty("pacingMode", out _), "snapshot should not expose removed pacingMode");
-    Assert(!doc.RootElement.TryGetProperty("packedBatchDelayMs", out _), "snapshot should not expose legacy delay wording");
-    Assert(!doc.RootElement.TryGetProperty("adaptiveBatching", out _), "snapshot should not expose adaptiveBatching for editing");
-    Assert(!doc.RootElement.TryGetProperty("strokeDelayMs", out _), "snapshot should not expose strokeDelayMs for editing");
-    Assert(!doc.RootElement.TryGetProperty("batchSize", out _), "snapshot should not expose renamed batchSize");
 }
 
 static void WebUiExposesTwoPassBrushSliders()
@@ -965,17 +704,6 @@ static void WebUiExposesTwoPassBrushSliders()
     Assert(index.IndexOf("id=\"brush-1-size\"", StringComparison.Ordinal) < index.IndexOf("id=\"brush-2-size\"", StringComparison.Ordinal), "brush 1 should appear above brush 2");
     Assert(index.Contains("min=\"10\" max=\"50\" step=\"0.5\"", StringComparison.Ordinal), "brush 1 should expose the 10-50 range");
     Assert(index.Contains("min=\"1\" max=\"10\" step=\"0.5\"", StringComparison.Ordinal), "brush 2 should expose the 1-10 range");
-    Assert(index.Contains("id=\"batch-auto-adapt\"", StringComparison.Ordinal),
-        "geometry controls should expose batch auto adapt");
-    Assert(index.Contains("id=\"packed-batch-limit\" class=\"setting-control\" disabled type=\"range\" min=\"1\" max=\"500\" step=\"1\"", StringComparison.Ordinal),
-        "manual batch limit should expose the 1-500 range");
-    Assert(index.Contains("id=\"packed-batch-pacing\" class=\"setting-control\" disabled type=\"range\" min=\"1\" max=\"500\" step=\"1\"", StringComparison.Ordinal),
-        "manual batch pacing should expose the 1-500 ms range");
-    Assert(app.Contains("paint.batchAutoAdapt", StringComparison.Ordinal) &&
-           app.Contains("!editing || paint.batchAutoAdapt", StringComparison.Ordinal),
-        "manual batch controls should lock while auto adapt is on");
-    Assert(index.Contains("id=\"color-compression-tolerance\"", StringComparison.Ordinal), "web UI should include the color compression tolerance slider");
-    Assert(app.Contains("paint.colorCompressionTolerance", StringComparison.Ordinal), "web UI should bind color compression tolerance");
     Assert(app.Contains("paint.brush1Enabled", StringComparison.Ordinal), "web UI should bind brush 1 enabled");
     Assert(app.Contains("paint.brush1SizeTexels", StringComparison.Ordinal), "web UI should bind brush 1");
     Assert(app.Contains("paint.brush2Enabled", StringComparison.Ordinal), "web UI should bind brush 2 enabled");
@@ -1064,27 +792,15 @@ static void NativeProgressExposesReplayPassState()
     var json = File.ReadAllText(Path.Combine(repository, "src", "native", "bridge", "bridge_json.inc"));
 
     Assert(bridge.Contains("mesh_first_replay_pass_metadata", StringComparison.Ordinal), "native bridge should build pass metadata");
-    Assert(bridge.Contains("replay_server_current", StringComparison.Ordinal), "native progress should expose the server pass");
-    Assert(bridge.Contains("replay_local_current", StringComparison.Ordinal), "native progress should expose the local pass");
+    Assert(!bridge.Contains("replay_server_current", StringComparison.Ordinal), "direct paint must not retain a server cursor");
+    Assert(bridge.Contains("replay_local_offset", StringComparison.Ordinal), "native progress should expose the local pass");
     Assert(bridge.Contains("g_paint_dispatch_message_pending", StringComparison.Ordinal), "scheduler wakeups should be coalesced");
-    Assert(bridge.Contains("defer_user_cancel_until_receiver_drain", StringComparison.Ordinal),
-        "a user cancel after paired submission should retain queue ownership until drain");
-    Assert(bridge.Contains("paired_local_queue_commit_count", StringComparison.Ordinal) &&
-           bridge.Contains("mesh_local_queue_capacity_wait", StringComparison.Ordinal),
-        "paired packed paint should cap local commitment before each server/local batch");
-    Assert(bridge.Contains("cancellation_stopped_further_submission", StringComparison.Ordinal) &&
-           bridge.Contains("job->local_packed_queue_strokes_submitted", StringComparison.Ordinal),
-        "a canceled bounded local tail must report only actually submitted strokes as rendered");
-    Assert(bridge.Contains("force_terminal_idle_local_queue_drain", StringComparison.Ordinal),
-        "shutdown and request timeout should be able to terminalize an idle drain safely");
-    Assert(bridge.Contains("receiver_queue_idle_threshold_reached", StringComparison.Ordinal),
-        "receiver drain should invalidate stale ETA and fail closed after an idle timeout");
+    Assert(bridge.Contains("cancellation_stopped_further_submission", StringComparison.Ordinal),
+        "a canceled native route must report only actually submitted strokes as rendered");
     Assert(json.Contains("replay_current_pass", StringComparison.Ordinal), "compact progress metadata should retain the current pass");
-    Assert(bridge.Contains("production_paint_uses_texture_import", StringComparison.Ordinal) &&
-           bridge.Contains("production_texture_import_requested", StringComparison.Ordinal) &&
-           bridge.Contains("\\\"local_route_mode\\\":\\\"local_paint_at_uv\\\"", StringComparison.Ordinal) &&
-           bridge.Contains("paint_at_uv_with_brush_lockstep", StringComparison.Ordinal),
-        "production paint should replay packed-server strokes through the painter-local paint route");
+    Assert(bridge.Contains("\\\"local_route_mode\\\":\\\"native_recorded_paint\\\"", StringComparison.Ordinal) &&
+           bridge.Contains("paint_at_uv_with_brush_native_replication", StringComparison.Ordinal),
+        "production paint should use the game-native recorded paint route");
     Assert(bridge.Contains("mesh_first_apply_local_material_import_preview", StringComparison.Ordinal) &&
            bridge.Contains("mesh_first_apply_local_material_import_increment", StringComparison.Ordinal) &&
            bridge.Contains("sdk_call_paint_at_uv_with_brush", StringComparison.Ordinal) &&
@@ -1098,25 +814,6 @@ static void NativeProgressExposesReplayPassState()
            json.Contains("local_texture_import_channel_elapsed_ms", StringComparison.Ordinal) &&
            json.Contains("local_texture_import_elapsed_ms", StringComparison.Ordinal),
         "compact preview/import progress and replies should retain texture-import evidence");
-}
-
-static void SettingsClampBatchSliders()
-{
-    var settings = new AppSettings();
-    settings.Paint.PackedBatchLimit = 999;
-    settings.Paint.PackedBatchPacingMs = 750;
-
-    var clamped = SettingsStore.Clamp(settings);
-
-    Assert(clamped.Paint.PackedBatchLimit == 500, "manual batch limit should clamp to the configured maximum");
-    Assert(clamped.Paint.PackedBatchPacingMs == 500, "batch pacing should clamp to maximum interval");
-
-    settings.Paint.PackedBatchLimit = 0;
-    settings.Paint.PackedBatchPacingMs = 0;
-    clamped = SettingsStore.Clamp(settings);
-
-    Assert(clamped.Paint.PackedBatchLimit == 1, "batch limit should clamp to one");
-    Assert(clamped.Paint.PackedBatchPacingMs == 1, "zero manual pacing must clamp to one millisecond");
 }
 
 static void HotkeyValidationRejectsDuplicates()
@@ -1136,9 +833,7 @@ static void HostSessionResetRestoresDefault()
 
     var update = session.UpdateSettings([
         new SettingChange("paint.brush1SizeTexels", JsonSerializer.SerializeToElement(17.5)),
-        new SettingChange("paint.brush2SizeTexels", JsonSerializer.SerializeToElement(7.5)),
-        new SettingChange("paint.packedBatchLimit", JsonSerializer.SerializeToElement(7)),
-        new SettingChange("paint.packedBatchPacingMs", JsonSerializer.SerializeToElement(125))
+        new SettingChange("paint.brush2SizeTexels", JsonSerializer.SerializeToElement(7.5))
     ]);
     Assert(update.Success, update.Message);
     Assert(Math.Abs(session.Settings.Paint.Brush1SizeTexels - 17.5) < 0.000001, "brush 1 should update");
@@ -1148,8 +843,6 @@ static void HostSessionResetRestoresDefault()
     Assert(reset.Success, reset.Message);
     Assert(Math.Abs(session.Settings.Paint.Brush1SizeTexels - new AppSettings().Paint.Brush1SizeTexels) < 0.000001, "brush 1 should reset");
     Assert(Math.Abs(session.Settings.Paint.Brush2SizeTexels - 7.5) < 0.000001, "brush 1 reset must preserve brush 2");
-    Assert(session.Settings.Paint.PackedBatchLimit == 7, "brush-only reset must preserve batch limit");
-    Assert(session.Settings.Paint.PackedBatchPacingMs == 125, "brush-only reset must preserve batch pacing");
 }
 
 static void HostSessionBrushUpdatesAreIndependentAndDetailSyncsCoverage()
@@ -1188,43 +881,6 @@ static void HostSessionRejectsDisablingEveryBrush()
     Assert(!result.Success, "disabling every brush should be rejected");
     Assert(result.Message.Contains("At least one brush", StringComparison.Ordinal), "the rejection should explain the requirement");
     Assert(session.Settings.Paint.Brush2Enabled, "rejected settings must roll back");
-}
-
-static void HostSessionUpdatesBatchSliders()
-{
-    using var temp = new TempHome();
-    var session = new HostSession("host-batch-slider-test");
-
-    var update = session.UpdateSettings([
-        new SettingChange("paint.batchAutoAdapt", JsonSerializer.SerializeToElement(false)),
-        new SettingChange("paint.packedBatchLimit", JsonSerializer.SerializeToElement(7)),
-        new SettingChange("paint.packedBatchPacingMs", JsonSerializer.SerializeToElement(125))
-    ]);
-
-    Assert(update.Success, update.Message);
-    Assert(!session.Settings.Paint.BatchAutoAdapt, "batch auto adapt should be disabled");
-    Assert(session.Settings.Paint.PackedBatchLimit == 7, "batch limit should be applied");
-    Assert(session.Settings.Paint.PackedBatchPacingMs == 125, "batch pacing should be applied");
-
-    var snapshot = session.GetSnapshotAsync().GetAwaiter().GetResult();
-    Assert(!snapshot.Settings.Paint.BatchAutoAdapt, "snapshot should expose manual batching");
-    Assert(snapshot.Settings.Paint.PackedBatchLimit == 7, "snapshot should expose the batch limit slider");
-    Assert(snapshot.Settings.Paint.PackedBatchPacingMs == 125, "snapshot should expose the batch pacing slider");
-}
-
-static void HostSessionQuantizesDecimalBatchSliderUpdates()
-{
-    using var temp = new TempHome();
-    var session = new HostSession("host-batch-slider-decimal-test");
-
-    var update = session.UpdateSettings([
-        new SettingChange("paint.packedBatchLimit", JsonSerializer.SerializeToElement(6.5)),
-        new SettingChange("paint.packedBatchPacingMs", JsonSerializer.SerializeToElement(125.5))
-    ]);
-
-    Assert(update.Success, update.Message);
-    Assert(session.Settings.Paint.PackedBatchLimit == 7, "batch limit should round to the nearest integer step");
-    Assert(session.Settings.Paint.PackedBatchPacingMs == 126, "batch pacing should round to the nearest integer step");
 }
 
 static void HostSessionRollsBackInvalidHotkeyUpdate()
@@ -1364,7 +1020,7 @@ static void HostSessionDoesNotFallbackWhenPreferredProgressIsMalformed()
     Directory.CreateDirectory(session.Paths.BridgeProgressDirectory);
     File.WriteAllText(preferred, "{");
     File.WriteAllText(fallback, """
-    {"stage":"mesh_server_batch","phase":"server_batch","terminal":false,"result":"running","step":50,"total_steps":100,"progress":0.5,"paint_eta_ms":1000,"paint_elapsed_ms":1000}
+    {"stage":"mesh_direct_paint","phase":"local_paint","terminal":false,"result":"running","step":50,"total_steps":100,"progress":0.5,"paint_eta_ms":1000,"paint_elapsed_ms":1000}
     """);
     ConfigureLiveProgressSession(session, preferred);
 
@@ -1382,7 +1038,7 @@ static void HostSessionDoesNotFallbackWhenPreferredProgressIsMissing()
     var fallback = Path.Combine(session.Paths.BridgeProgressDirectory, "other-instance.progress.json");
     Directory.CreateDirectory(session.Paths.BridgeProgressDirectory);
     File.WriteAllText(fallback, """
-    {"stage":"mesh_server_batch","phase":"server_batch","terminal":false,"result":"running","step":50,"total_steps":100,"progress":0.5,"paint_eta_ms":1000,"paint_elapsed_ms":1000}
+    {"stage":"mesh_direct_paint","phase":"local_paint","terminal":false,"result":"running","step":50,"total_steps":100,"progress":0.5,"paint_eta_ms":1000,"paint_elapsed_ms":1000}
     """);
     ConfigureLiveProgressSession(session, preferred);
 
@@ -1400,7 +1056,7 @@ static void HostSessionDoesNotFallbackWhenPreferredProgressIsStale()
     var fallback = Path.Combine(session.Paths.BridgeProgressDirectory, "other-instance.progress.json");
     Directory.CreateDirectory(session.Paths.BridgeProgressDirectory);
     const string validProgress =
-        "{\"stage\":\"mesh_server_batch\",\"phase\":\"server_batch\",\"terminal\":false,\"result\":\"running\",\"step\":50,\"total_steps\":100,\"progress\":0.5,\"paint_eta_ms\":1000,\"paint_elapsed_ms\":1000}";
+        "{\"stage\":\"mesh_direct_paint\",\"phase\":\"local_paint\",\"terminal\":false,\"result\":\"running\",\"step\":50,\"total_steps\":100,\"progress\":0.5,\"paint_eta_ms\":1000,\"paint_elapsed_ms\":1000}";
     File.WriteAllText(preferred, validProgress);
     File.SetLastWriteTimeUtc(preferred, DateTime.UtcNow.AddMinutes(-1));
     File.WriteAllText(fallback, validProgress);
@@ -1412,7 +1068,7 @@ static void HostSessionDoesNotFallbackWhenPreferredProgressIsStale()
         "an existing but stale preferred snapshot must not be replaced by another bridge instance's fresh progress");
 }
 
-static void HostSessionPresentsNativePassProgressAndReceiverQueue()
+static void HostSessionPresentsNativePassProgressAndQueueBackpressure()
 {
     using var temp = new TempHome();
     var session = new HostSession("host-native-pass-progress-test");
@@ -1420,8 +1076,8 @@ static void HostSessionPresentsNativePassProgressAndReceiverQueue()
     Directory.CreateDirectory(session.Paths.BridgeProgressDirectory);
     File.WriteAllText(preferred, """
     {
-      "stage":"mesh_local_queue_drain",
-      "phase":"local_queue_drain",
+      "stage":"mesh_direct_paint_drain",
+      "phase":"local_paint",
       "terminal":false,
       "result":"running",
       "step":813,
@@ -1429,11 +1085,9 @@ static void HostSessionPresentsNativePassProgressAndReceiverQueue()
       "progress":0.145282,
       "paint_eta_ms":58000,
       "paint_elapsed_ms":24000,
-      "replication_queued_stroke_count":999,
-      "local_packed_queue_drain_current_queue":620,
-      "replication_pacing_queue_drain_strokes_per_sec":100,
-      "local_packed_queue_drain_strokes_per_sec":125,
-      "replay_progress_source":"receiver_queue_drain",
+      "native_queue_component_last_strokes":4,
+      "native_queue_target_strokes":4,
+      "replay_progress_source":"native_queue_backpressure",
       "replay_current_pass":"coarse_paint",
       "replay_current_pass_start":109,
       "replay_current_pass_end":1442,
@@ -1447,15 +1101,11 @@ static void HostSessionPresentsNativePassProgressAndReceiverQueue()
     var snapshot = session.GetSnapshotAsync().GetAwaiter().GetResult();
 
     Assert(snapshot.Runtime.ProgressVisible, "valid preferred progress should be visible");
-    Assert(snapshot.Runtime.PaintProgressSource == "receiver_queue_drain", "native progress source should be retained");
+    Assert(snapshot.Runtime.PaintProgressSource == "native_queue_backpressure", "native progress source should be retained");
     Assert(snapshot.Runtime.PaintPass == "Brush 1", "coarse paint should be presented as Brush 1");
     Assert(snapshot.Runtime.PaintPassProgress == "704/1333 (53%)", "pass-local count and percent should be presented together");
     Assert(snapshot.Runtime.PaintPassEta == "7s", "pass ETA should be formatted independently");
     Assert(snapshot.Runtime.PaintEta == "58s", "paint ETA should remain the total ETA");
-    Assert(snapshot.Runtime.Queue.StartsWith("620 strokes", StringComparison.Ordinal),
-        "receiver-drain progress should prefer the exact local drain queue over the generic replication queue");
-    Assert(snapshot.Runtime.Queue.Contains("drain 125/s", StringComparison.Ordinal),
-        "receiver-drain progress should prefer the exact local observed drain rate");
 }
 
 static void HostSessionLogsEachPassTransitionOnce()
@@ -1469,10 +1119,10 @@ static void HostSessionLogsEachPassTransitionOnce()
     WritePass("submission", "coarse_paint", 200, 1333, 5000);
     _ = session.GetSnapshotAsync().GetAwaiter().GetResult();
     _ = session.GetSnapshotAsync().GetAwaiter().GetResult();
-    WritePass("receiver_queue_drain", "coarse_paint", 400, 1333, 4000);
+    WritePass("native_queue_backpressure", "coarse_paint", 400, 1333, 4000);
     _ = session.GetSnapshotAsync().GetAwaiter().GetResult();
     _ = session.GetSnapshotAsync().GetAwaiter().GetResult();
-    WritePass("receiver_queue_drain", "fine_paint", 10, 4154, 50000);
+    WritePass("native_queue_backpressure", "fine_paint", 10, 4154, 50000);
     _ = session.GetSnapshotAsync().GetAwaiter().GetResult();
     _ = session.GetSnapshotAsync().GetAwaiter().GetResult();
 
@@ -1501,6 +1151,23 @@ static void HostSessionLogsEachPassTransitionOnce()
         }
         """);
     }
+}
+
+static void PaintDiagnosticsReportDirectStrokePbrValues()
+{
+    var reply = new BridgeReply(
+        true,
+        true,
+        "mesh_direct_paint_done",
+        "ok",
+        "{\"metadata\":{\"diagnostic_strokes_before_limit\":10,\"diagnostic_strokes_after_limit\":1,\"local_stroke_calls\":1,\"local_stroke_success\":1,\"first_stroke_target_channel\":7,\"first_stroke_metallic\":1,\"first_stroke_roughness\":0,\"first_stroke_emissive\":0}}");
+    var summary = HostSession.PaintDiagnosticSummary(reply);
+
+    Assert(summary is not null &&
+           summary.Contains("diagnostic_strokes_after_limit=1", StringComparison.Ordinal) &&
+           summary.Contains("local_stroke_calls=1", StringComparison.Ordinal) &&
+           summary.Contains("first_stroke_roughness=0", StringComparison.Ordinal),
+        "a one-stroke diagnostic must report the submitted direct call and PBR inputs");
 }
 
 static void HostSessionWarnsWhenCancelHasNoActivePaint()
@@ -2164,8 +1831,8 @@ static void ResearchTextureProbeIsExplicitlyDispatched()
         "bridge request dispatch must include the texture command");
     Assert(native.Contains("matches_texture_export_target", StringComparison.Ordinal),
         "texture command must retain the component selected for its export");
-    Assert(native.Contains("eventwatch_multicast_packed_receiver", StringComparison.Ordinal),
-        "texture command must be able to pin the watched multicast receiver rather than the local pawn");
+    Assert(native.Contains("eventwatch_direct_receiver", StringComparison.Ordinal),
+        "texture command must be able to pin the watched direct receiver rather than the local pawn");
     Assert(native.Contains("research_texture_target_unavailable", StringComparison.Ordinal),
         "an unobserved or stale multicast receiver must fail closed");
 }
@@ -2206,7 +1873,7 @@ static void ResearchRunnerCanIsolateOnePlannedReplayStroke()
         "native selector should rebuild pass boundaries from exactly the selected entry");
 }
 
-static void ResearchRunnerRecordsTwoPassBrushesAndPackedLocalQueueMode()
+static void ResearchRunnerRecordsTwoPassBrushesAndDirectQueueMode()
 {
     var root = FindRepositoryRoot();
     var source = File.ReadAllText(Path.Combine(
@@ -2222,14 +1889,13 @@ static void ResearchRunnerRecordsTwoPassBrushesAndPackedLocalQueueMode()
     Assert(source.Contains("brush_2_enabled = paint.Brush2Enabled", StringComparison.Ordinal), "research artifacts should record brush 2 enabled");
     Assert(source.Contains("brush_2_size_texels = paint.Brush2SizeTexels", StringComparison.Ordinal), "research artifacts should record brush 2");
     Assert(!source.Contains("brush_pipeline_version = 2", StringComparison.Ordinal), "research artifacts should not version the brush pipeline");
-    Assert(source.Contains("paintMode != \"packed-local-queue\"", StringComparison.Ordinal), "research runner should accept packed-local-queue mode");
-    Assert(source.Contains("GetValueOrDefault(\"--paint-mode\", \"packed-local-queue\")", StringComparison.Ordinal), "research runner should default to the production-shaped packed local queue route");
+    Assert(!source.Contains("--paint-mode", StringComparison.Ordinal), "research runner must not reintroduce an alternate paint transport");
     Assert(source.Contains("research_uv_replay_atlas", StringComparison.Ordinal), "research paint should explicitly request a pass-aware UV replay atlas");
     Assert(source.Contains("ResearchUvReplayArtifacts.StageAndRender", StringComparison.Ordinal), "research runs should retain the native replay plan and render its PNG atlas");
     Assert(source.Contains("ResearchTextureDeltaArtifacts.StageAndRender", StringComparison.Ordinal), "texture snapshot runs should retain an actual changed-pixel PNG mask");
     Assert(source.Contains("--texture-discovery-seconds", StringComparison.Ordinal) &&
-           source.Contains("WaitForMulticastPackedReceiverAsync", StringComparison.Ordinal),
-        "joining texture evidence should wait for and pin an observed packed multicast receiver");
+           source.Contains("WaitForDirectReceiverAsync", StringComparison.Ordinal),
+        "joining texture evidence should wait for and pin an observed direct receiver");
     Assert(runtime.Contains("research_texture_expected_component", StringComparison.Ordinal) &&
            native.Contains("research_texture_target_pin_mismatch", StringComparison.Ordinal),
         "joining texture probes must send the discovered receiver address back to the native bridge as a fail-closed pin");
@@ -2272,40 +1938,29 @@ static void ResearchRunnerRecordsTwoPassBrushesAndPackedLocalQueueMode()
         "a texture snapshot must reject scheduled shutdown because it cannot safely produce an after image");
 }
 
-static void UvReplayAtlasSeparatesPassesAndPackedRadii()
+static void UvReplayAtlasSeparatesPassesAndDirectRadii()
 {
     var plan = new UvReplayPlan(
         TextureSize: 128,
         Strokes:
         [
-            new UvReplayStroke(0.25, 0.25, 0.10, 0.20, UvReplayPass.Fill, "front", "torso"),
-            new UvReplayStroke(0.50, 0.50, 0.08, 0.16, UvReplayPass.CoarsePaint, "side", "arm"),
-            new UvReplayStroke(0.75, 0.75, 0.04, 0.08, UvReplayPass.FinePaint, "back", "arm")
+            new UvReplayStroke(0.25, 0.25, 0.10, UvReplayPass.Fill, "front", "torso"),
+            new UvReplayStroke(0.50, 0.50, 0.08, UvReplayPass.CoarsePaint, "side", "arm"),
+            new UvReplayStroke(0.75, 0.75, 0.04, UvReplayPass.FinePaint, "back", "arm")
         ]);
 
     var atlas = UvReplayAtlasRasterizer.Render(plan, tileSize: 64);
-    Assert(atlas.Width == 192 && atlas.Height == 128, "the atlas should be a three-pass by two-radius grid");
+    Assert(atlas.Width == 192 && atlas.Height == 64, "the atlas should be a one-row, three-pass direct-paint grid");
 
     var plannerFillCenter = atlas.RgbaAt(16, 47);
-    var packedFillCenter = atlas.RgbaAt(16, 111);
     Assert(plannerFillCenter.SequenceEqual(UvReplayAtlasRasterizer.FillColor), "fill must occupy the planner row");
-    Assert(packedFillCenter.SequenceEqual(UvReplayAtlasRasterizer.FillColor), "fill must occupy the packed row");
     Assert(atlas.RgbaAt(26, 47).SequenceEqual(UvReplayAtlasRasterizer.BackgroundColor),
-        "planner radius should remain independent from the packed radius");
-    Assert(atlas.RgbaAt(26, 111).SequenceEqual(UvReplayAtlasRasterizer.FillColor),
-        "packed row should render the packed wire radius rather than the planner radius");
+        "the direct planner radius should define the rendered footprint");
     Assert(atlas.RgbaAt(175, 16).SequenceEqual(UvReplayAtlasRasterizer.FineColor),
         "brush 2 must occupy the fine-pass column rather than the coarse column");
 
-    var directOnly = UvReplayAtlasRasterizer.Render(
-        new UvReplayPlan(
-            65_536,
-            [new UvReplayStroke(0.5, 0.5, 0.1, 0.2, UvReplayPass.FinePaint, "front", "arm", false)]),
-        tileSize: 64);
-    Assert(directOnly.RgbaAt(170, 96).SequenceEqual(UvReplayAtlasRasterizer.BackgroundColor),
-        "an unencoded direct route must not fabricate a packed-wire brush footprint");
     var bounded = UvReplayAtlasRasterizer.Render(new UvReplayPlan(65_536, []));
-    Assert(bounded.Width == 3_072 && bounded.Height == 2_048,
+    Assert(bounded.Width == 3_072 && bounded.Height == 1_024,
         "a large game texture should produce a bounded proportional atlas rather than fail or allocate at source size");
 
     var directory = Path.Combine(Path.GetTempPath(), "meccha-uv-atlas-" + Guid.NewGuid().ToString("N"));
@@ -2337,7 +1992,7 @@ static void ResearchReplaySidecarIsStagedAsUvPng()
           "schema": "meccha_uv_replay_plan_v1",
           "texture_size": 64,
           "strokes": [
-            { "u": 0.5, "v": 0.5, "planner_radius_uv": 0.1, "packed_wire_radius_uv": 0.2, "pass": "fine_paint", "region": "front", "body_region": "arm" }
+            { "u": 0.5, "v": 0.5, "planner_radius_uv": 0.1, "pass": "fine_paint", "region": "front", "body_region": "arm" }
           ]
         }
         """);
@@ -2643,15 +2298,20 @@ static void RuntimeLaunchStagesLocalWindowsCopy()
     var start = File.ReadAllText(Path.Combine(root, "scripts", "start.ps1"));
 
     Assert(makefile.Contains("START_PS := scripts/start.ps1", StringComparison.Ordinal) &&
-           makefile.Contains("-File \"$$PS_SCRIPT_WIN\" -SourceExe \"$$EXE_WIN\"", StringComparison.Ordinal),
+           makefile.Contains("-File \"$$PS_SCRIPT_WIN\" -SourceExe \"$$EXE_WIN\" -DiagnosticStrokeLimit", StringComparison.Ordinal),
         "make start must invoke the dedicated staged launcher");
     Assert(start.Contains("[Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)", StringComparison.Ordinal) &&
            start.Contains("MecchaCamouflage\\launch", StringComparison.Ordinal) &&
            start.Contains("Get-FileHash", StringComparison.Ordinal),
         "the launcher must stage a hash-verified executable under LocalAppData");
-    Assert(start.Contains("Start-Process -FilePath $stagedExe -PassThru", StringComparison.Ordinal) &&
-           !start.Contains("-ArgumentList", StringComparison.Ordinal),
-        "an argument-free launch must not pass a null ArgumentList to PowerShell");
+    Assert(start.Contains("$startProcessArguments = @{ FilePath = $stagedExe; PassThru = $true }", StringComparison.Ordinal) &&
+           start.Contains("if ($DiagnosticStrokeLimit -gt 0)", StringComparison.Ordinal) &&
+           start.Contains("$startProcessArguments.ArgumentList", StringComparison.Ordinal) &&
+           start.Contains("Start-Process @startProcessArguments", StringComparison.Ordinal),
+        "an argument-free launch must omit ArgumentList while diagnostic runs pass an explicit limit");
+    Assert(start.Contains("Get-Process -Name $exeBaseName", StringComparison.Ordinal) &&
+           start.Contains("Close it normally before running make start", StringComparison.Ordinal),
+        "the launcher must refuse a duplicate controller rather than orphaning an active bridge");
     Assert(!makefile.Contains("Start-Process", StringComparison.Ordinal),
         "make start must not directly run the build output that a later build must replace");
 }

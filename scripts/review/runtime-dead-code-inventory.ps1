@@ -198,15 +198,15 @@ Write-Utf8Lines -Path (Join-Path $OutDir "tool-availability.txt") -Lines $availa
 $reviewPaths = @("src/native", "src/csharp", "resources", "scripts", "docs") |
     Where-Object { Test-Path (Join-Path $RepoRoot $_) }
 
-Invoke-RgReport -OutputFile "native-hotspots.txt" -Paths $reviewPaths -Pattern "ServerPackedPaintBatch|ServerRelayPackedStrokeBatch|ServerCompactPaintBatch|SendCustomStrokeBatchToServer|ProcessEvent|paint_component|RuntimePaintable|mesh_first|runtime_triangle|preview_only|unpreview_only|PackedPaint|FCompactPaintStroke"
+Invoke-RgReport -OutputFile "native-hotspots.txt" -Paths $reviewPaths -Pattern "PaintAtUVWithBrush|ProcessEvent|paint_component|RuntimePaintable|mesh_first|runtime_triangle|preview_only|unpreview_only|FPaintStroke"
 
-Invoke-RgReport -OutputFile "dynamic-entry-hotspots.txt" -Paths $reviewPaths -Pattern "DllMain|__declspec\s*\(\s*dllexport|GetProcAddress|CreateThread|SetWindowsHookEx|WM_APP|capabilities|paint_full_route|cancel_paint|shutdown|paint_replication_probe|paint_replication_pressure_probe|paint_packed_replay_probe|chrome\.webview|postMessage|WebMessageReceived"
+Invoke-RgReport -OutputFile "dynamic-entry-hotspots.txt" -Paths $reviewPaths -Pattern "DllMain|__declspec\s*\(\s*dllexport|GetProcAddress|CreateThread|SetWindowsHookEx|WM_APP|capabilities|paint_full_route|cancel_paint|shutdown|paint_replication_probe|paint_replication_pressure_probe|chrome\.webview|postMessage|WebMessageReceived"
 
-Invoke-RgReport -OutputFile "research-probes.txt" -Paths $reviewPaths -Pattern "RESEARCH|research|probe|pressure_probe|packed_replay_probe|paint_replication_probe|MECCHA_RESEARCH_ARTIFACTS|debug_artifact|event_watch|dump|trace"
+Invoke-RgReport -OutputFile "research-probes.txt" -Paths $reviewPaths -Pattern "RESEARCH|research|probe|pressure_probe|paint_replication_probe|MECCHA_RESEARCH_ARTIFACTS|debug_artifact|event_watch|dump|trace"
 
-Invoke-RgReport -OutputFile "legacy-fallbacks.txt" -Paths $reviewPaths -Pattern "legacy|fallback|compact|adaptive|replication_pacing|ServerCompactPaintBatch|SendCustomStrokeBatchToServer|server_batch_limit|server_batch_delay|adaptive_batch|serverBatchLimit|adaptiveBatch"
+Invoke-RgReport -OutputFile "legacy-fallbacks.txt" -Paths $reviewPaths -Pattern "legacy|fallback|texture_import|native_queue_backpressure|direct_route_only"
 
-Invoke-RgReport -OutputFile "ui-native-command-surface.txt" -Paths $reviewPaths -Pattern 'chrome\.webview|WebMessageReceived|PostWebMessageAsJson|Invoke|command|type"\s*:\s*"|paint_full_route|cancel_paint|preview|unpreview|capabilities|diagnostic|ServerPackedPaintBatch|replication_pacing|adaptive|serverBatch'
+Invoke-RgReport -OutputFile "ui-native-command-surface.txt" -Paths $reviewPaths -Pattern 'chrome\.webview|WebMessageReceived|PostWebMessageAsJson|Invoke|command|type"\s*:\s*"|paint_full_route|cancel_paint|preview|unpreview|capabilities|diagnostic|PaintAtUVWithBrush|native_queue'
 
 $csprojRoot = Join-Path $RepoRoot "src/csharp"
 if (Test-Path $csprojRoot) {

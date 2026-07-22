@@ -58,31 +58,6 @@ public sealed class SettingsStore
         paint.Brush1SizeTexels = ReadDouble(root, "brush_1_size_texels", paint.Brush1SizeTexels);
         paint.Brush2Enabled = ReadBool(root, "brush_2_enabled", paint.Brush2Enabled);
         paint.Brush2SizeTexels = ReadDouble(root, "brush_2_size_texels", paint.Brush2SizeTexels);
-        paint.BatchAutoAdapt = ReadBool(root, "batch_auto_adapt", paint.BatchAutoAdapt);
-        var hasLegacyPacingMode =
-            root.TryGetPropertyValue("pacing_mode", out var legacyPacingModeValue) &&
-            legacyPacingModeValue is not null;
-        var legacyPacingMode = hasLegacyPacingMode
-            ? legacyPacingModeValue!.GetValue<string>().Trim().ToLowerInvariant()
-            : "";
-        var hasLegacyBatchDelay =
-            root.TryGetPropertyValue("packed_batch_delay_ms", out var legacyBatchDelayValue) &&
-            legacyBatchDelayValue is not null;
-        var legacyBatchDelayMs = ReadInt(root, "packed_batch_delay_ms", 75);
-        paint.PackedBatchLimit = ReadInt(
-            root,
-            "packed_batch_limit",
-            legacyPacingMode == "compatibility" ? 6 : 20);
-        paint.PackedBatchPacingMs = ReadInt(
-            root,
-            "packed_batch_pacing_ms",
-            legacyPacingMode switch
-            {
-                "manual_slower" => legacyBatchDelayMs,
-                "compatibility" => 75,
-                _ when !hasLegacyPacingMode && hasLegacyBatchDelay => legacyBatchDelayMs,
-                _ => 50
-            });
         paint.CoverageStepTexels = CoverageStepFor(paint);
         paint.SideSourceMaxUv = ReadDouble(root, "side_source_max_uv", paint.SideSourceMaxUv);
         paint.FrontBackSourceMaxUv = ReadDouble(root, "front_back_source_max_uv", paint.FrontBackSourceMaxUv);
@@ -153,8 +128,6 @@ public sealed class SettingsStore
 
         settings.Paint.Brush1SizeTexels = Math.Clamp(settings.Paint.Brush1SizeTexels, 10.0, 50.0);
         settings.Paint.Brush2SizeTexels = Math.Clamp(settings.Paint.Brush2SizeTexels, 1.0, 10.0);
-        settings.Paint.PackedBatchLimit = Math.Clamp(settings.Paint.PackedBatchLimit, 1, 500);
-        settings.Paint.PackedBatchPacingMs = Math.Clamp(settings.Paint.PackedBatchPacingMs, 1, 500);
         settings.Paint.CoverageStepTexels = CoverageStepFor(settings.Paint);
         settings.Paint.SideSourceMaxUv = Math.Clamp(settings.Paint.SideSourceMaxUv, 0.001, 0.50);
         settings.Paint.FrontBackSourceMaxUv = Math.Clamp(settings.Paint.FrontBackSourceMaxUv, 0.001, 2.00);
@@ -189,9 +162,6 @@ public sealed class SettingsStore
         brush_1_size_texels = settings.Paint.Brush1SizeTexels,
         brush_2_enabled = settings.Paint.Brush2Enabled,
         brush_2_size_texels = settings.Paint.Brush2SizeTexels,
-        batch_auto_adapt = settings.Paint.BatchAutoAdapt,
-        packed_batch_limit = settings.Paint.PackedBatchLimit,
-        packed_batch_pacing_ms = settings.Paint.PackedBatchPacingMs,
         coverage_step_texels = settings.Paint.CoverageStepTexels,
         side_source_max_uv = settings.Paint.SideSourceMaxUv,
         front_back_source_max_uv = settings.Paint.FrontBackSourceMaxUv,

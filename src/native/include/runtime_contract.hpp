@@ -14,48 +14,21 @@ namespace runtime_contract
     // Supported Shipping build: FProperty ArrayDim@0x30,
     // ElementSize@0x34, PropertyFlags@0x38.
     constexpr std::size_t FPropertyElementSizeOffset = 0x34;
-    constexpr int InternalNoResendMaxCallsPerTick = 6;
-    // Every local no-resend slice yields at least 1 ms. A zero-delay repost can
-    // monopolize the game thread on large texture replays.
-    constexpr int DirectLocalImmediateRepostsPerDeferredWakeup = 0;
-    constexpr int MaximumNetworkBatchLimit = 500;
+    // Keep direct dispatch bounded so one scheduler tick cannot monopolize the
+    // game thread. This is a CPU safety limit, not a network pacing setting.
+    constexpr int NativeRecordedPaintMaxCallsPerTick = 6;
+    // Permit at most a small, game-owned recorded-paint lead. Waiting for zero
+    // serializes every stroke; an unbounded lead recreates the visible dotted
+    // frontier on joining clients.
+    constexpr int NativeRecordedPaintQueueTargetStrokes = 4;
     constexpr int FastLocalCadenceMs = 1;
-    constexpr int IncrementalTextureImportPacingMs = 100;
-    constexpr int IncrementalTextureImportMinimumStrokes = 40;
-    constexpr int FallbackOutgoingStrokesPerBatch = 20;
-    constexpr int FallbackOutgoingBatchesPerSecond = 20;
-    constexpr int FallbackReplicatedStrokesPerTick = 24;
-    constexpr int FallbackRenderTargetWritesPerFrame = 6;
-    constexpr int MinimumNetworkPacingMs = 1;
-    constexpr int MaximumManualNetworkPacingMs = 500;
-    constexpr int ServerPackedFallbackBatchLimit = 20;
-    constexpr int ServerPackedFallbackPacingMs = 50;
     constexpr std::uint64_t LocalDispatchCpuBudgetUs = 4'000;
-
-    // MECCHA CHAMELEON 2.9.0 packed paint wire contract. Keep these values
-    // centralized so the encoder and native regression test cannot silently
-    // disagree about the format-2 layout.
-    constexpr std::uint8_t PackedPaintFormatVersion = 2;
-    constexpr std::size_t PackedPaintHeaderBytes = 21; // version + FGuid + count
-    constexpr std::size_t PackedPaintRecordBytes = 31;
-    constexpr std::size_t PackedPaintRecordAlbedoOffset = 12;
-    constexpr std::size_t PackedPaintRecordMetallicOffset = 16;
-    constexpr std::size_t PackedPaintRecordRoughnessOffset = 17;
-    constexpr std::size_t PackedPaintRecordEmissiveOffset = 18;
-    constexpr std::size_t PackedPaintRecordChannelOffset = 22;
-    constexpr std::size_t PackedPaintRecordWorldRadiusOffset = 23;
-    constexpr std::size_t PackedPaintRecordSubdivisionOffset = 27;
 
     // UE 5.6 packs Metallic, Roughness, and Emissive into one material-properties
     // render target (R/G/B).  Channel 7 updates that target atomically.  Splitting
-    // a sample into channels 5 and 6 doubles the packed work and allowed the
+    // a sample into channels 5 and 6 doubles the material-properties work and allowed the
     // separate local replication route to render a second visible pass.
     constexpr std::array<std::uint8_t, 1> ProductionMaterialPaintChannels{7};
-
-    constexpr std::size_t packed_paint_payload_size(std::size_t stroke_count)
-    {
-        return PackedPaintHeaderBytes + stroke_count * PackedPaintRecordBytes;
-    }
 
     constexpr std::size_t production_material_stroke_count(std::size_t sample_count)
     {
@@ -67,127 +40,13 @@ namespace runtime_contract
         return stroke_index / ProductionMaterialPaintChannels.size();
     }
 
-    static_assert(PackedPaintRecordEmissiveOffset + 4 == PackedPaintRecordChannelOffset,
-                  "packed paint emissive layout mismatch");
-    static_assert(PackedPaintRecordWorldRadiusOffset + sizeof(float) ==
-                      PackedPaintRecordSubdivisionOffset,
-                  "packed paint world-radius layout mismatch");
-    static_assert(PackedPaintRecordSubdivisionOffset + 4 == PackedPaintRecordBytes,
-                  "packed paint record size mismatch");
-
-    // Packed skeletal strokes carry both a UV-space brush radius and an optional
-    // world-space radius.  In the supported Shipping build, compact-stroke
-    // expansion at RVA 0x50F65A0 calls the skeletal preflight at RVA 0x50F6110.
-    // A non-positive world radius is the sentinel that asks that preflight to
-    // derive the world radius from the mesh bounds and UV radius.  Supplying the
-    // normalized UV radius here is not equivalent: it suppresses that conversion
-    // and collapses otherwise large brushes to tiny world-space dots.
-    constexpr float PackedMeshAnchorWorldRadiusAuto = 0.0f;
-    // Production preserves the configured UV radius on the wire. Each anchor's
-    // effective world radius is derived independently from that triangle's
-    // UV-to-world Jacobian; a uniform wire multiplier either leaves holes or
-    // expands one world-space stroke across adjacent mesh surfaces.
-    constexpr double PackedMeshAnchorProductionRadiusScale = 1.0;
-    constexpr bool PackedMeshAnchorProductionUsesTriangleWorldRadius = true;
-    // Research-only dynamic calibration retains the conservative fold/seam
-    // factor for controlled comparisons.
-    constexpr double PackedMeshAnchorCoverageSafetyFactor = 0.91;
-    constexpr int PackedMeshAnchorSubdivisionLevelAuto = 0;
-    constexpr float PackedMeshAnchorSubdivisionPixelSizeAuto = 0.0f;
-    constexpr int PackedMeshAnchorTemplateResolutionAuto = 0;
-
-    constexpr bool packed_mesh_anchor_requests_world_radius_conversion(float effective_world_radius)
-    {
-        return effective_world_radius <= 0.0f;
-    }
-
-    inline bool packed_mesh_anchor_world_radius_contract_valid(float effective_world_radius,
-                                                               float brush_uv_radius)
-    {
-        if (packed_mesh_anchor_requests_world_radius_conversion(effective_world_radius))
-        {
-            return true;
-        }
-        // A derived radius is expressed in world units and must be finite and
-        // materially distinct from the normalized UV radius.  This rejects the
-        // historical bug that copied BrushSettings.Radius into both fields.
-        return std::isfinite(effective_world_radius) &&
-               std::isfinite(brush_uv_radius) &&
-               brush_uv_radius > 0.0f &&
-               effective_world_radius > brush_uv_radius;
-    }
-
-    inline bool resolve_packed_triangle_world_radius(double world_units_per_uv,
-                                                     float brush_uv_radius,
-                                                     float& world_radius)
-    {
-        world_radius = 0.0f;
-        if (!std::isfinite(world_units_per_uv) || world_units_per_uv <= 0.0 ||
-            !std::isfinite(brush_uv_radius) || brush_uv_radius <= 0.0f ||
-            brush_uv_radius > 1.0f)
-        {
-            return false;
-        }
-        const double resolved = world_units_per_uv * static_cast<double>(brush_uv_radius);
-        if (!std::isfinite(resolved) || resolved <= static_cast<double>(brush_uv_radius))
-        {
-            return false;
-        }
-        world_radius = static_cast<float>(resolved);
-        return std::isfinite(world_radius) && world_radius > brush_uv_radius;
-    }
-
-    // BrushSettings.Radius is kept in planner/direct-UV units.  Only the packed
-    // wire representation receives the mesh calibration so research direct and
-    // internal-common routes cannot accidentally inherit the packed receiver's
-    // normalization.  Returning the rounded float lets validation and encoding
-    // use the exact same value without mutating the source stroke.
-    inline bool resolve_packed_wire_brush_radius(float source_uv_radius,
-                                                 double packed_wire_scale,
-                                                 float& wire_uv_radius)
-    {
-        wire_uv_radius = 0.0f;
-        if (!std::isfinite(source_uv_radius) || source_uv_radius <= 0.0f ||
-            source_uv_radius > 1.0f || !std::isfinite(packed_wire_scale) ||
-            packed_wire_scale <= 0.0)
-        {
-            return false;
-        }
-        const double scaled = static_cast<double>(source_uv_radius) * packed_wire_scale;
-        if (!std::isfinite(scaled) || scaled <= 0.0 || scaled > 1.0)
-        {
-            return false;
-        }
-        const float rounded = static_cast<float>(scaled);
-        if (!std::isfinite(rounded) || rounded <= 0.0f || rounded > 1.0f)
-        {
-            return false;
-        }
-        wire_uv_radius = rounded;
-        return true;
-    }
-
-    // The compact decoder copies these fields verbatim into FPaintStroke before
-    // running the skeletal-stroke preflight.  A non-positive value asks that
-    // preflight to populate the component's native subdivision contract.  Do
-    // not synthesize brush diameter or texture size into these wire fields.
-    constexpr bool packed_mesh_anchor_requests_native_subdivision_preflight(
-        int effective_subdivision_level,
-        float effective_subdivision_pixel_size,
-        int effective_template_resolution)
-    {
-        return effective_subdivision_level <= 0 &&
-               effective_subdivision_pixel_size <= 0.0f &&
-               effective_template_resolution <= 0;
-    }
-
-    // Receiver order in packed record bytes 23..26 (decoded into compact-stroke
-    // fields at later offsets): subdivision level u8, subdivision pixel size
-    // u8, template resolution u16 LE.
-    constexpr std::array<std::uint8_t, 4> packed_mesh_anchor_auto_subdivision_tail()
-    {
-        return {0, 0, 0, 0};
-    }
+    // Direct paint delegates mesh-radius and subdivision interpretation to the
+    // game. These sentinel values preserve that native behavior for anchored
+    // strokes without carrying a second transport-specific contract.
+    constexpr float GamePaintMeshAnchorWorldRadiusAuto = 0.0f;
+    constexpr int GamePaintMeshAnchorSubdivisionLevelAuto = 0;
+    constexpr float GamePaintMeshAnchorSubdivisionPixelSizeAuto = 0.0f;
+    constexpr int GamePaintMeshAnchorTemplateResolutionAuto = 0;
 
     // UObject flags are checked against Shipping disassembly for the supported
     // build.  0x20000000 is intentionally not rejected: it is not an object
@@ -205,33 +64,6 @@ namespace runtime_contract
         return (object_flags & ObjectRejectMask) == 0 && (class_flags & ClassRejectMask) == 0;
     }
 
-    constexpr bool packed_manager_precommit_matches(std::uintptr_t captured_manager,
-                                                     std::uintptr_t resolved_manager)
-    {
-        return captured_manager != 0 && resolved_manager == captured_manager;
-    }
-
-    constexpr bool paired_paint_cancel_safe_to_observe(bool paired_mode,
-                                                       int server_strokes_sent,
-                                                       int local_strokes_submitted)
-    {
-        return !paired_mode || server_strokes_sent == local_strokes_submitted;
-    }
-
-    struct PacingDecision
-    {
-        int remote_batch_limit;
-        int remote_delay_ms;
-        int local_batch_limit;
-        int local_delay_ms;
-        bool used_contract_fallback;
-    };
-
-    constexpr int positive_or(int value, int fallback)
-    {
-        return value > 0 ? value : fallback;
-    }
-
     constexpr int min_value(int left, int right)
     {
         return left < right ? left : right;
@@ -247,158 +79,9 @@ namespace runtime_contract
         return min_value(max_value(value, minimum), maximum);
     }
 
-    constexpr int ceil_div(int numerator, int denominator)
-    {
-        return denominator > 0 ? (numerator + denominator - 1) / denominator : numerator;
-    }
-
-    constexpr PacingDecision resolve_pacing(int requested_batch_limit,
-                                            int requested_pacing_ms,
-                                            int max_outgoing_strokes_per_batch,
-                                            int max_outgoing_network_batches_per_second,
-                                            int max_replicated_strokes_per_tick,
-                                            int max_render_target_writes_per_frame)
-    {
-        const bool fallback = max_outgoing_strokes_per_batch <= 0 ||
-                              max_outgoing_network_batches_per_second <= 0 ||
-                              max_replicated_strokes_per_tick <= 0 ||
-                              max_render_target_writes_per_frame <= 0;
-        const int outgoing_strokes = positive_or(max_outgoing_strokes_per_batch, FallbackOutgoingStrokesPerBatch);
-        const int outgoing_batches = positive_or(max_outgoing_network_batches_per_second, FallbackOutgoingBatchesPerSecond);
-        const int replicated_strokes = positive_or(max_replicated_strokes_per_tick, FallbackReplicatedStrokesPerTick);
-        const int render_writes = positive_or(max_render_target_writes_per_frame, FallbackRenderTargetWritesPerFrame);
-        const int requested_batch = clamp_value(requested_batch_limit, 1, MaximumNetworkBatchLimit);
-        const int requested_delay = clamp_value(requested_pacing_ms,
-                                                MinimumNetworkPacingMs,
-                                                MaximumManualNetworkPacingMs);
-        const int automatic_remote_batch = min_value(requested_batch, min_value(outgoing_strokes, replicated_strokes));
-        const int automatic_remote_delay = max_value(requested_delay,
-                                                     max_value(MinimumNetworkPacingMs,
-                                                               ceil_div(1000, outgoing_batches)));
-        const int local_batch = min_value(InternalNoResendMaxCallsPerTick, render_writes);
-        return {automatic_remote_batch,
-                automatic_remote_delay,
-                local_batch,
-                FastLocalCadenceMs,
-                fallback};
-    }
-
-    constexpr PacingDecision resolve_configured_pacing(
-        bool auto_adapt,
-        int requested_batch_limit,
-        int requested_pacing_ms,
-        int max_outgoing_strokes_per_batch,
-        int max_outgoing_network_batches_per_second,
-        int max_replicated_strokes_per_tick,
-        int max_render_target_writes_per_frame)
-    {
-        if (auto_adapt)
-        {
-            return resolve_pacing(MaximumNetworkBatchLimit,
-                                  MinimumNetworkPacingMs,
-                                  max_outgoing_strokes_per_batch,
-                                  max_outgoing_network_batches_per_second,
-                                  max_replicated_strokes_per_tick,
-                                  max_render_target_writes_per_frame);
-        }
-        const int manual_delay_ms = clamp_value(requested_pacing_ms,
-                                                MinimumNetworkPacingMs,
-                                                MaximumManualNetworkPacingMs);
-        return {clamp_value(requested_batch_limit, 1, MaximumNetworkBatchLimit),
-                manual_delay_ms,
-                min_value(InternalNoResendMaxCallsPerTick,
-                          positive_or(max_render_target_writes_per_frame, FallbackRenderTargetWritesPerFrame)),
-                min_value(FastLocalCadenceMs, manual_delay_ms),
-                false};
-    }
-
-    constexpr bool production_paint_uses_texture_import(bool auto_adapt,
-                                                        bool normal_paint_requires_packed,
-                                                        bool local_visual_sync_requested,
-                                                        bool research_artifacts)
-    {
-        (void)auto_adapt;
-        (void)normal_paint_requires_packed;
-        (void)local_visual_sync_requested;
-        (void)research_artifacts;
-        // Texture import remains the preview/restore transport.  For normal
-        // packed paint, replay the already-submitted strokes through the
-        // validated local paint function so painter-side rendering follows the
-        // same channel semantics as the game, including explicit Emissive
-        // clearing.
-        return false;
-    }
-
-    constexpr int incremental_texture_import_chunk_limit(int server_batch_limit)
-    {
-        return max_value(IncrementalTextureImportMinimumStrokes,
-                         clamp_value(server_batch_limit, 1, MaximumNetworkBatchLimit));
-    }
-
-    constexpr std::size_t incremental_texture_import_count(std::size_t server_offset,
-                                                           std::size_t local_offset,
-                                                           std::size_t total_strokes,
-                                                           std::size_t max_strokes,
-                                                           std::size_t pass_boundary)
-    {
-        const std::size_t submitted = std::min(server_offset, total_strokes);
-        const std::size_t imported = std::min(local_offset, total_strokes);
-        if (submitted <= imported)
-        {
-            return 0;
-        }
-        const std::size_t available = submitted - imported;
-        const std::size_t bounded_max = std::max<std::size_t>(1, max_strokes);
-        const std::size_t boundary = std::min(pass_boundary, total_strokes);
-        const std::size_t before_boundary = boundary > imported
-                                                ? boundary - imported
-                                                : available;
-        return std::min(available, std::min(bounded_max, before_boundary));
-    }
-
-    constexpr bool server_only_replay_complete(bool local_visual_sync_enabled,
-                                               bool local_texture_import_started,
-                                               bool server_texture_sync_started,
-                                               bool server_packed_fallback,
-                                               int server_batch_failures,
-                                               int server_strokes_sent,
-                                               int total_strokes)
-    {
-        return !local_visual_sync_enabled &&
-               (server_packed_fallback ||
-                (!local_texture_import_started && !server_texture_sync_started)) &&
-               server_batch_failures == 0 &&
-               server_strokes_sent == total_strokes;
-    }
-
-    constexpr bool uses_fast_local_dispatch_wakeup(bool internal_no_resend_local_apply,
-                                                   bool local_packed_queue,
-                                                   bool local_work_remaining)
-    {
-        return internal_no_resend_local_apply &&
-               !local_packed_queue &&
-               local_work_remaining;
-    }
-
-    constexpr bool should_immediately_repost_direct_local(
-        bool fast_local_dispatch_wakeup,
-        int immediate_reposts_since_deferred_wakeup)
-    {
-        return fast_local_dispatch_wakeup &&
-               immediate_reposts_since_deferred_wakeup <
-                   DirectLocalImmediateRepostsPerDeferredWakeup;
-    }
-
-    constexpr double parallel_lane_eta_ms(double server_eta_ms, double local_eta_ms)
-    {
-        return server_eta_ms < 0.0 || local_eta_ms < 0.0
-                   ? -1.0
-                   : (server_eta_ms > local_eta_ms ? server_eta_ms : local_eta_ms);
-    }
-
     // EPaintChannel: 0..3 address one render target, All addresses four, and
     // AlbedoMetallicRoughness addresses three. UE 5.6's AMRE (7) uses the
-    // one packed material-properties target. The game limit is expressed in
+    // one material-properties target. The game limit is expressed in
     // render-target writes, not paint-stroke calls.
     constexpr int paint_channel_write_cost(int target_channel)
     {
@@ -429,61 +112,6 @@ namespace runtime_contract
     constexpr int recurring_scheduler_delay_ms(int requested_delay_ms)
     {
         return max_value(1, requested_delay_ms);
-    }
-
-    // The paired packed path must never place more than one configured batch
-    // ahead of the painter's exact component queue.  An unavailable queue
-    // observation is unsafe: do not submit another paired server/local batch.
-    constexpr int paired_local_queue_available_capacity(int configured_batch_limit,
-                                                        int queued_strokes)
-    {
-        if (queued_strokes < 0)
-        {
-            return 0;
-        }
-        return max_value(0, max_value(1, configured_batch_limit) - queued_strokes);
-    }
-
-    constexpr int paired_local_queue_commit_count(int requested_strokes,
-                                                  int configured_batch_limit,
-                                                  int queued_strokes)
-    {
-        return min_value(max_value(0, requested_strokes),
-                         paired_local_queue_available_capacity(configured_batch_limit, queued_strokes));
-    }
-
-    constexpr bool paired_local_queue_cancel_needs_drain(bool cancel_requested,
-                                                         int queued_strokes)
-    {
-        return cancel_requested && queued_strokes > 0;
-    }
-
-    // The supported manager appends strokes in order and advances one processed
-    // cursor.  Once a job owns an initially empty component queue, submitted -
-    // queued is therefore a conservative render-queue cursor.  Preserve the
-    // previous value so a transient foreign queue increase cannot move UI pass
-    // progress backwards.
-    constexpr int receiver_queue_rendered_strokes(int submitted_strokes,
-                                                   int queued_strokes,
-                                                   int previous_rendered_strokes)
-    {
-        const int submitted = max_value(0, submitted_strokes);
-        const int queued = max_value(0, queued_strokes);
-        const int observed = clamp_value(submitted - queued, 0, submitted);
-        return clamp_value(max_value(previous_rendered_strokes, observed), 0, submitted);
-    }
-
-    constexpr bool receiver_queue_drain_complete(int queued_strokes,
-                                                  int consecutive_zero_observations)
-    {
-        return queued_strokes == 0 && consecutive_zero_observations >= 2;
-    }
-
-    constexpr bool receiver_queue_idle_threshold_reached(int queued_strokes,
-                                                          std::uint64_t idle_ms,
-                                                          std::uint64_t threshold_ms)
-    {
-        return queued_strokes > 0 && threshold_ms > 0 && idle_ms >= threshold_ms;
     }
 
     struct SpatialScanlineKey
@@ -769,17 +397,4 @@ namespace runtime_contract
         return enabled && current_generation == captured_generation;
     }
 
-    constexpr bool requires_internal_no_resend(bool preview_only,
-                                                bool unpreview_only,
-                                                bool research_artifacts,
-                                                bool research_combined_no_resend)
-    {
-        return !preview_only &&
-               !unpreview_only &&
-               // The direct reflected UFunction initiates game replication a
-               // second time. Production instead pairs its one ServerPacked
-               // submission with the validated internal renderer that does not
-               // resend. Research retains an explicit opt-in to compare routes.
-               (!research_artifacts || research_combined_no_resend);
-    }
 }

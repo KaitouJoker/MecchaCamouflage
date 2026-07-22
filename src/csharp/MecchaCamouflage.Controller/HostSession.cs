@@ -6,8 +6,6 @@ namespace MecchaCamouflage.Controller;
 
 public sealed class HostSession
 {
-    private const int DefaultPackedBatchLimit = 20;
-    private const int DefaultPackedPacingMs = 50;
     private const int NativeCancelAdmissionRetryAttempts = 40;
     private static readonly TimeSpan NativeCancelAdmissionRetryDelay = TimeSpan.FromMilliseconds(25);
 
@@ -17,9 +15,6 @@ public sealed class HostSession
         "paint.brush1SizeTexels",
         "paint.brush2Enabled",
         "paint.brush2SizeTexels",
-        "paint.batchAutoAdapt",
-        "paint.packedBatchLimit",
-        "paint.packedBatchPacingMs",
         "paint.autoMaterial",
         "paint.metallic",
         "paint.roughness",
@@ -49,7 +44,7 @@ public sealed class HostSession
         AcceptedAwaitingTerminal
     }
 
-    public HostSession(string version)
+    public HostSession(string version, int diagnosticStrokeLimit = 0)
     {
         Paths = new AppPaths(version);
         DiagnosticsState.EnsureInitialized(Paths, version);
@@ -57,6 +52,7 @@ public sealed class HostSession
         Settings = Store.Load();
         Log = new RuntimeLog(Paths);
         Runtime = new RuntimeBridgeService(Paths, Log);
+        this.diagnosticStrokeLimit = Math.Clamp(diagnosticStrokeLimit, 0, 10_000);
     }
 
     public LocalizationCatalog Localization { get; } = LocalizationCatalog.Load();
@@ -83,6 +79,7 @@ public sealed class HostSession
     private int paintRequestDispatchGeneration;
     private readonly object replayPassLogGate = new();
     private readonly HashSet<string> loggedReplayPasses = new(StringComparer.Ordinal);
+    private readonly int diagnosticStrokeLimit;
 
     public async Task<UiSnapshot> GetSnapshotAsync(CancellationToken cancellationToken = default)
     {
@@ -192,9 +189,6 @@ public sealed class HostSession
                 next.Paint.Brush2Enabled = defaults.Paint.Brush2Enabled;
                 next.Paint.Brush2SizeTexels = defaults.Paint.Brush2SizeTexels;
                 next.Paint.CoverageStepTexels = defaults.Paint.CoverageStepTexels;
-                next.Paint.BatchAutoAdapt = defaults.Paint.BatchAutoAdapt;
-                next.Paint.PackedBatchLimit = defaults.Paint.PackedBatchLimit;
-                next.Paint.PackedBatchPacingMs = defaults.Paint.PackedBatchPacingMs;
                 break;
             case "paint.material":
             case "material":
@@ -304,7 +298,11 @@ public sealed class HostSession
                 Settings,
                 process.Id,
                 Settings.GameProcessName,
-                new PaintRequestOptions(previewOnly, unpreviewOnly, BuildFeatures.ResearchArtifactsEnabled));
+                new PaintRequestOptions(
+                    PreviewOnly: previewOnly,
+                    UnPreviewOnly: unpreviewOnly,
+                    ResearchArtifacts: BuildFeatures.ResearchArtifactsEnabled,
+                    DiagnosticStrokeLimit: diagnosticStrokeLimit));
             if (!TryBeginPaintDispatch(runGeneration))
             {
                 const string canceledBeforeDispatch = "Paint: canceled.";
@@ -312,9 +310,12 @@ public sealed class HostSession
                 return new HostCommandResult(false, canceledBeforeDispatch);
             }
             var response = await Runtime.SendPaintAsync(payload, cancellationToken);
-            var fallbackWarning = PaintFallbackWarning(response);
-            if (fallbackWarning is not null)
-                Log.Warn(fallbackWarning);
+            if (diagnosticStrokeLimit > 0)
+            {
+                var diagnostic = PaintDiagnosticSummary(response);
+                if (!string.IsNullOrEmpty(diagnostic))
+                    Log.Info(diagnostic);
+            }
             var message = FriendlyBridgeMessage(response.Message.Length > 0 ? response.Message : response.Stage);
             if (response.Success)
             {
@@ -604,41 +605,6 @@ public sealed class HostSession
         }
     }
 
-    public static string? PaintFallbackWarning(BridgeReply response)
-    {
-        if (string.IsNullOrWhiteSpace(response.Raw))
-            return null;
-        try
-        {
-            using var doc = JsonDocument.Parse(response.Raw);
-            if (!doc.RootElement.TryGetProperty("metadata", out var metadata) ||
-                metadata.ValueKind != JsonValueKind.Object ||
-                !metadata.TryGetProperty("local_route_mode", out var routeMode) ||
-                !metadata.TryGetProperty("fallback_reason", out var reasonElement) ||
-                string.IsNullOrWhiteSpace(reasonElement.GetString()) ||
-                !metadata.TryGetProperty("fallback_batch_limit", out var batchElement) ||
-                !batchElement.TryGetInt32(out var batchLimit) ||
-                !metadata.TryGetProperty("fallback_pacing_ms", out var pacingElement) ||
-                !pacingElement.TryGetInt32(out var pacingMs))
-            {
-                return null;
-            }
-
-            var fallbackLabel = routeMode.GetString() switch
-            {
-                "server_packed_fallback" => "server packed fallback",
-                _ => null
-            };
-            return fallbackLabel is null
-                ? null
-                : $"{reasonElement.GetString()} ({fallbackLabel}: {batchLimit} strokes / {pacingMs} ms)";
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
     /// <summary>
     /// The friendly failure text is deliberately identical for every cause, which leaves a user
     /// report with nothing to act on. Carry the native failure fields alongside it in the log.
@@ -657,11 +623,7 @@ public sealed class HostSession
             }
             string[] fields =
             [
-                "local_visual_sync_failure",
-                "local_packed_queue_resolver_status",
-                "local_packed_queue_resolver_failure",
-                "server_packed_source_id_failure",
-                "packed_ignored_reason"
+                "local_visual_sync_failure"
             ];
             var parts = new List<string>();
             foreach (var field in fields)
@@ -674,6 +636,50 @@ public sealed class HostSession
                 parts.Add(field + "=" + text);
             }
             return parts.Count == 0 ? null : string.Join(" | ", parts);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    public static string? PaintDiagnosticSummary(BridgeReply response)
+    {
+        if (string.IsNullOrWhiteSpace(response.Raw))
+            return null;
+        try
+        {
+            using var document = JsonDocument.Parse(response.Raw);
+            if (!document.RootElement.TryGetProperty("metadata", out var metadata) ||
+                metadata.ValueKind != JsonValueKind.Object)
+            {
+                return null;
+            }
+            var values = new List<string>();
+            foreach (var name in new[]
+                     {
+                         "diagnostic_strokes_before_limit",
+                         "diagnostic_strokes_after_limit",
+                         "local_stroke_calls",
+                         "local_stroke_success",
+                         "local_stroke_failures",
+                         "native_queue_recorded_last_strokes",
+                         "native_queue_component_last_strokes",
+                         "native_queue_component_peak_strokes",
+                         "native_queue_waits",
+                         "first_stroke_target_channel",
+                         "first_stroke_metallic",
+                         "first_stroke_roughness",
+                         "first_stroke_emissive"
+                     })
+            {
+                if (metadata.TryGetProperty(name, out var value) &&
+                    value.ValueKind is JsonValueKind.Number or JsonValueKind.String)
+                {
+                    values.Add(name + "=" + value.ToString());
+                }
+            }
+            return values.Count == 0 ? null : "Paint diagnostic: " + string.Join(" | ", values);
         }
         catch
         {
@@ -779,26 +785,8 @@ public sealed class HostSession
             return "Paint: stopped because the game paint component is unavailable.";
         if (lower.Contains("unsafe color-transfer candidates"))
             return "Paint: blocked because the current mesh sampling was unsafe.";
-        if (lower is "mesh_server_packed_batch_unavailable" || lower.Contains("serverpackedpaintbatch is unavailable"))
-            return "Packed multiplayer paint sync is unavailable.";
-        if (lower is "mesh_server_packed_batch_incompatible" || lower.Contains("serverpackedpaintbatch requires"))
-            return "Paint failed because strokes could not be packed.";
-        if (lower is "mesh_server_packed_source_id_unavailable" || lower.Contains("source id is unavailable"))
-        {
-            // The bridge distinguishes paint_component_unavailable, source_id_read_failed,
-            // and source_id_zero. Dropping that suffix made every user report identical and
-            // undiagnosable, so keep it alongside the friendly text.
-            var separator = value.LastIndexOf(": ", StringComparison.Ordinal);
-            var reason = separator < 0 ? string.Empty : value[(separator + 2)..].Trim();
-            return reason.Length == 0
-                ? "Packed multiplayer paint source id is unavailable."
-                : "Packed multiplayer paint source id is unavailable (" + reason + ").";
-        }
-        if (lower is "mesh_internal_no_resend_resolver_failed" ||
-            (lower.Contains("internal no-resend route") && lower.Contains("failed")))
-            return "Paint: this game build is not supported.";
-        if (lower is "mesh_server_batch_failed")
-            return "Paint: failed while sending strokes.";
+        if (lower is "mesh_native_paint_unavailable" || lower.Contains("paintatuvwithbrush is unavailable"))
+            return "Paint: the game-native paint route is unavailable.";
 
         return value
             .Replace("mesh-first ", "", StringComparison.OrdinalIgnoreCase)
@@ -836,9 +824,6 @@ public sealed class HostSession
         var passEta = "-";
         var eta = "-";
         var elapsed = "-";
-        var batch = "-";
-        var pacing = "-";
-        var queue = "-";
         if (progress is not null)
         {
             percent = progress.TotalSteps > 0
@@ -850,15 +835,12 @@ public sealed class HostSession
             passEta = FormatDuration(progress.ReplayCurrentPassEtaMs);
             eta = FormatEta(progress);
             elapsed = FormatDuration(progress.PaintElapsedMs);
-            batch = FormatBatch(progress);
-            pacing = FormatPacing(progress);
-            queue = FormatQueue(progress);
         }
 
         return new UiSnapshot(
             VersionInfo.Current,
             Settings.Language,
-            new RuntimeSnapshot(process, bridge, service, percent, progressSource, pass, passProgress, passEta, eta, elapsed, batch, pacing, queue, Log.Text, PaintRunning, progress is not null, DiagnosticsState.Snapshot(Paths)),
+            new RuntimeSnapshot(process, bridge, service, percent, progressSource, pass, passProgress, passEta, eta, elapsed, Log.Text, PaintRunning, progress is not null, DiagnosticsState.Snapshot(Paths)),
             ToSnapshot(Settings),
             ToSnapshot(defaults),
             BuildResetSnapshot(Settings, defaults),
@@ -875,9 +857,6 @@ public sealed class HostSession
                 paint.Brush1SizeTexels,
                 paint.Brush2Enabled,
                 paint.Brush2SizeTexels,
-                paint.BatchAutoAdapt,
-                paint.PackedBatchLimit,
-                paint.PackedBatchPacingMs,
                 paint.AutoMaterial,
                 paint.Metallic,
                 paint.Roughness,
@@ -902,75 +881,13 @@ public sealed class HostSession
                 settings.StopHotkey));
     }
 
-    private static string FormatBatch(ProgressSnapshot progress)
-    {
-        var effectiveBatch = EffectiveBatch(progress);
-        if (progress.ReplicationPacingEnabled && effectiveBatch > 0)
-        {
-            var max = progress.ReplicationPacingResolvedBatchLimit > 0 ? progress.ReplicationPacingResolvedBatchLimit : progress.ReplicationPacingRequestedBatchLimit;
-            return max > 0 ? $"{effectiveBatch}/{max}" : effectiveBatch.ToString(System.Globalization.CultureInfo.InvariantCulture);
-        }
-        var batch = effectiveBatch;
-        return batch > 0 ? batch.ToString(System.Globalization.CultureInfo.InvariantCulture) : "-";
-    }
-
-    private static string FormatPacing(ProgressSnapshot progress)
-    {
-        var pacing = EffectivePacing(progress);
-        return pacing >= 0 ? $"{pacing}ms" : "-";
-    }
-
-    private static int EffectiveBatch(ProgressSnapshot progress)
-    {
-        if (progress.ReplicationPacingEnabled && progress.ReplicationPacingBatchLimit > 0)
-            return progress.ReplicationPacingBatchLimit;
-        if (progress.ServerBatchLimit > 0)
-            return progress.ServerBatchLimit;
-        return DefaultPackedBatchLimit;
-    }
-
-    private static int EffectivePacing(ProgressSnapshot progress)
-    {
-        if (progress.ReplicationPacingEnabled && progress.ReplicationPacingMs > 0)
-            return progress.ReplicationPacingMs;
-        if (progress.ServerBatchPacingMs > 0)
-            return progress.ServerBatchPacingMs;
-        return DefaultPackedPacingMs;
-    }
-
-    private static string FormatQueue(ProgressSnapshot progress)
-    {
-        var queueCount = string.Equals(progress.ReplayProgressSource, "receiver_queue_drain", StringComparison.OrdinalIgnoreCase) &&
-                         progress.LocalPackedQueueDrainCurrentQueue >= 0
-            ? progress.LocalPackedQueueDrainCurrentQueue
-            : progress.ReplicationQueuedStrokeCount;
-        if (queueCount < 0)
-            return "-";
-        var strokes = queueCount == 1 ? "stroke" : "strokes";
-        var drainRate = string.Equals(progress.ReplayProgressSource, "receiver_queue_drain", StringComparison.OrdinalIgnoreCase) &&
-                        progress.LocalPackedQueueDrainStrokesPerSec > 0.0 &&
-                        double.IsFinite(progress.LocalPackedQueueDrainStrokesPerSec)
-            ? progress.LocalPackedQueueDrainStrokesPerSec
-            : progress.ReplicationPacingQueueDrainStrokesPerSec;
-        if (drainRate > 0.0 && double.IsFinite(drainRate))
-        {
-            var drain = drainRate >= 10.0
-                ? Math.Round(drainRate).ToString(System.Globalization.CultureInfo.InvariantCulture)
-                : Math.Round(drainRate, 1).ToString(System.Globalization.CultureInfo.InvariantCulture);
-            return $"{queueCount} {strokes} (drain {drain}/s)";
-        }
-        return $"{queueCount} {strokes}";
-    }
-
     private static ResetSnapshot BuildResetSnapshot(AppSettings settings, AppSettings defaults)
     {
         var map = ResetKeys.ToDictionary(key => key, key => !SettingEquals(settings, defaults, key), StringComparer.OrdinalIgnoreCase);
         var sections = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase)
         {
             ["paint.geometry"] = map["paint.brush1Enabled"] || map["paint.brush1SizeTexels"] ||
-                                 map["paint.brush2Enabled"] || map["paint.brush2SizeTexels"] ||
-                                 map["paint.batchAutoAdapt"] || map["paint.packedBatchLimit"] ||
-                                 map["paint.packedBatchPacingMs"],
+                                 map["paint.brush2Enabled"] || map["paint.brush2SizeTexels"],
             ["paint.material"] = map["paint.autoMaterial"] || map["paint.metallic"] || map["paint.roughness"] || map["paint.emissive"],
             ["regions"] = map["paint.frontRegionMode"] || map["paint.sideRegionMode"] || map["paint.backRegionMode"],
             ["fill.material"] = map["paint.fillColor"] || map["paint.fillMetallic"] || map["paint.fillRoughness"] || map["paint.fillEmissive"],
@@ -986,9 +903,6 @@ public sealed class HostSession
         "paint.brush1SizeTexels" => Nearly(left.Paint.Brush1SizeTexels, right.Paint.Brush1SizeTexels),
         "paint.brush2Enabled" => left.Paint.Brush2Enabled == right.Paint.Brush2Enabled,
         "paint.brush2SizeTexels" => Nearly(left.Paint.Brush2SizeTexels, right.Paint.Brush2SizeTexels),
-        "paint.batchAutoAdapt" => left.Paint.BatchAutoAdapt == right.Paint.BatchAutoAdapt,
-        "paint.packedBatchLimit" => left.Paint.PackedBatchLimit == right.Paint.PackedBatchLimit,
-        "paint.packedBatchPacingMs" => left.Paint.PackedBatchPacingMs == right.Paint.PackedBatchPacingMs,
         "paint.autoMaterial" => left.Paint.AutoMaterial == right.Paint.AutoMaterial,
         "paint.metallic" => Nearly(left.Paint.Metallic, right.Paint.Metallic),
         "paint.roughness" => Nearly(left.Paint.Roughness, right.Paint.Roughness),
@@ -1023,9 +937,6 @@ public sealed class HostSession
                 settings.Paint.Brush2SizeTexels = defaults.Paint.Brush2SizeTexels;
                 settings.Paint.CoverageStepTexels = SettingsStore.CoverageStepFor(settings.Paint);
                 break;
-            case "paint.batchAutoAdapt": settings.Paint.BatchAutoAdapt = defaults.Paint.BatchAutoAdapt; break;
-            case "paint.packedBatchLimit": settings.Paint.PackedBatchLimit = defaults.Paint.PackedBatchLimit; break;
-            case "paint.packedBatchPacingMs": settings.Paint.PackedBatchPacingMs = defaults.Paint.PackedBatchPacingMs; break;
             case "paint.autoMaterial": settings.Paint.AutoMaterial = defaults.Paint.AutoMaterial; break;
             case "paint.metallic": settings.Paint.Metallic = defaults.Paint.Metallic; break;
             case "paint.roughness": settings.Paint.Roughness = defaults.Paint.Roughness; break;
@@ -1061,9 +972,6 @@ public sealed class HostSession
                 settings.Paint.Brush2SizeTexels = value.GetDouble();
                 settings.Paint.CoverageStepTexels = SettingsStore.CoverageStepFor(settings.Paint);
                 break;
-            case "paint.batchAutoAdapt": settings.Paint.BatchAutoAdapt = value.GetBoolean(); break;
-            case "paint.packedBatchLimit": settings.Paint.PackedBatchLimit = RoundedInteger(value); break;
-            case "paint.packedBatchPacingMs": settings.Paint.PackedBatchPacingMs = RoundedInteger(value); break;
             case "paint.autoMaterial": settings.Paint.AutoMaterial = value.GetBoolean(); break;
             case "paint.metallic": settings.Paint.Metallic = value.GetDouble(); break;
             case "paint.roughness": settings.Paint.Roughness = value.GetDouble(); break;
@@ -1280,8 +1188,7 @@ public sealed class HostSession
     private static bool ShouldLogFailureProgress(ProgressSnapshot progress)
     {
         var phase = progress.Phase.Trim().ToLowerInvariant();
-        return phase is "server_batch" or "local_sync" or "local_texture_import" or "texture_sync_observe" or "server_texture_sync" or "failed" or "cancelled" ||
-               phase.StartsWith("mesh_server_batch", StringComparison.OrdinalIgnoreCase) ||
+        return phase is "failed" or "cancelled" ||
                phase.StartsWith("mesh_paint_", StringComparison.OrdinalIgnoreCase);
     }
 
@@ -1315,7 +1222,7 @@ public sealed class HostSession
             : Math.Clamp(progress.Progress * 100.0, 0.0, 100.0);
         var rounded = (int)Math.Round(percent);
         var pass = FormatReplayPass(progress);
-        return $"Paint: overall {rounded}% {ProgressBar(rounded)} | pass {pass} | pass ETA {FormatDuration(progress.ReplayCurrentPassEtaMs)} | total ETA {FormatEta(progress)} | batch {FormatBatch(progress)} | pacing {FormatPacing(progress)} | queue {FormatQueue(progress)} | elapsed {FormatDuration(progress.PaintElapsedMs)}";
+        return $"Paint: overall {rounded}% {ProgressBar(rounded)} | pass {pass} | pass ETA {FormatDuration(progress.ReplayCurrentPassEtaMs)} | total ETA {FormatEta(progress)} | elapsed {FormatDuration(progress.PaintElapsedMs)}";
     }
 
     private static string FormatReplayPass(ProgressSnapshot progress)
@@ -1342,7 +1249,8 @@ public sealed class HostSession
 
     private static string ReplayProgressStageLabel(string value) => value.Trim().ToLowerInvariant() switch
     {
-        "receiver_queue_drain" => "painting",
+        "local_direct_submission" => "painting",
+        "native_queue_backpressure" => "painting",
         "submission" => "queueing",
         _ => ""
     };
@@ -1393,38 +1301,15 @@ public sealed class HostSession
                 Int(root, "step", 0),
                 Int(root, "total_steps", Int(root, "total_strokes", 0)),
                 Number(root, "progress", 0.0),
-                Int(root, "server_batch_limit", -1),
-                Int(root, "server_batch_pacing_ms", Int(root, "server_batch_delay_ms", -1)),
                 Number(root, "paint_eta_ms", -1.0),
                 Number(root, "paint_elapsed_ms", Number(root, "elapsed_ms", -1.0)),
-                Bool(root, "replication_pacing_enabled", Bool(root, "adaptive_batch_enabled", false)),
-                Int(root, "replication_pacing_requested_batch_limit", Int(root, "adaptive_requested_batch_limit", -1)),
-                Int(root, "replication_pacing_resolved_batch_limit", Int(root, "adaptive_resolved_batch_limit", -1)),
-                Int(root, "replication_pacing_requested_ms",
-                    Int(root, "replication_pacing_requested_delay_ms", Int(root, "adaptive_requested_delay_ms", -1))),
-                Int(root, "replication_pacing_batch_limit", Int(root, "adaptive_batch_limit", -1)),
-                Int(root, "replication_pacing_ms",
-                    Int(root, "replication_pacing_delay_ms", Int(root, "adaptive_delay_ms", -1))),
-                Text(root, "replication_pacing_pressure_level", Text(root, "adaptive_pressure_level", "unknown")),
-                Int(root, "replication_pacing_backoff_count", Int(root, "adaptive_backoff_count", 0)),
-                Number(root, "replication_pacing_queue_drain_strokes_per_sec", Number(root, "adaptive_queue_drain_strokes_per_sec", -1.0)),
-                Number(root, "replication_pacing_send_strokes_per_sec", Number(root, "adaptive_send_strokes_per_sec", -1.0)),
-                Number(root, "replication_pacing_model_eta_ms", Number(root, "adaptive_model_eta_ms", -1.0)),
-                Int(root, "replication_queued_batch_count", -1),
-                Int(root, "replication_queued_stroke_count", -1),
-                Int(root, "replication_max_strokes_per_tick", -1),
-                Number(root, "replication_estimated_ticks_to_drain", -1.0),
                 Text(root, "replay_current_pass", ""),
                 Int(root, "replay_current_pass_start", -1),
                 Int(root, "replay_current_pass_end", -1),
-                Int(root, "replay_server_offset", -1),
-                Int(root, "replay_local_offset", -1),
                 Text(root, "replay_progress_source", ""),
                 Int(root, "replay_current_pass_completed", -1),
                 Int(root, "replay_current_pass_total", -1),
-                Number(root, "replay_current_pass_eta_ms", -1.0),
-                Int(root, "local_packed_queue_drain_current_queue", -1),
-                Number(root, "local_packed_queue_drain_strokes_per_sec", -1.0));
+                Number(root, "replay_current_pass_eta_ms", -1.0));
         }
         catch
         {

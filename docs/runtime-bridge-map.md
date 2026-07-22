@@ -42,10 +42,9 @@ assertions without a binary-layout test or live verification.
 
 ### LEGACY_FALLBACK
 
-Old compact/adaptive/send-custom paint paths are not the normal user-facing
-route. Keep old route names in inventory and event-watch searches when they are
-useful regression indicators, but do not reintroduce automatic fallback from the
-packed production route.
+There is no legacy paint transport to retain. Do not reintroduce compact,
+adaptive, send-custom, packed, no-resend, or receiver-queue paint paths. A
+missing direct `PaintAtUVWithBrush` schema is an explicit paint failure.
 
 ### RESEARCH_ONLY
 
@@ -70,14 +69,8 @@ helper still needed for issue triage.
   lifecycle.
 - C# / WebView2 / bridge IPC command names and response shape.
 - UE object scanning, reflection lookup, `ProcessEvent`, and RPC wrappers.
-- `ServerPackedPaintBatch` default route, packed payload layout, and validated
-  internal anti-echo local apply.
-- Packed mesh-anchor radius units: UV radius and effective world radius are
-  distinct fields. Production keeps the packed-wire scale at `1.0` and derives
-  one effective world radius per anchor triangle from its UV-to-world Jacobian.
-  Uniform scale and mesh-average calibration are research-only.
-- Packed effective subdivision fields are level/pixel-size/template-resolution,
-  not diameter metadata; production sends all-zero native-preflight sentinels.
+- Game-native `PaintAtUVWithBrush` production route and bounded per-tick
+  dispatch.
 - Async paint lifecycle, queue draining, cancellation, and pawn/component guards.
 - Preview/unpreview texture import/export and local snapshot behavior.
 - Runtime asset cache repair, startup diagnostics, injector diagnostics, and
@@ -97,7 +90,7 @@ coverage.
   planning.
 - Preview/unpreview texture channel export/import and local snapshot handling.
 - Paint sample generation and material/color transfer.
-- Packed paint serialization and `ServerPackedPaintBatch` RPC dispatch.
+- Per-stroke game-native paint dispatch.
 - Async paint job lifecycle, progress sidecar writing, cancellation, and guards.
 - Research/probe commands and bridge IPC dispatch.
 

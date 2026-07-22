@@ -86,7 +86,7 @@ These require MECCHA CHAMELEON.
   - test Preview Paint and Preview Fill separately. Front defaults to Fill, so
     changing Paint PBR alone must not be used to judge a Front Fill preview.
   - with a controlled manual value such as `M=.21/R=.83/E=.47`, the selected
-    packed PBR texture changes to approximately `R=54/G=212/B=120` in both
+    material-properties texture changes to approximately `R=54/G=212/B=120` in both
     Preview Paint and Preview Fill. Restore on the same bridge and verify the
     original snapshot returns.
   - with Auto Detect enabled, record `material_properties_candidates`,
@@ -99,7 +99,8 @@ These require MECCHA CHAMELEON.
   - with any one region set to Fill, the initial fixed-100 Fill pass covers
     Front, Side, and Back (including Paint/Skip regions), then enabled Brushes
     overwrite only Paint regions.
-  - progress shows packed pacing and queue/drain data.
+  - progress reports native queue backpressure, submitted strokes, and
+    completed strokes. It must not report completion while the queue is nonzero.
 - Delete the LocalAppData runtime cache and restart.
   - cache rebuilds automatically.
   - WebView2 starts from the installed Evergreen Runtime, or prompts to install it with the embedded bootstrapper.
@@ -144,28 +145,18 @@ Collect these separately for painter-as-host and painter-as-joining-client:
   because the controller pawn changed
 - crashes, disconnects, lobby returns, freezes, missing paint, or partial paint
 - event-watch counts if available:
-  - `ServerPackedPaintBatch > 0`
-  - `SendCustomStrokeBatchToServer == 0`
-  - `ServerRelayPackedStrokeBatch == 0`
-  - production does not use reflected `PaintAtUVWithBrush`
-  - legacy full-stroke multicast calls are `0`
+  - `PaintAtUVWithBrush > 0`
+  - no alternate paint sender is present
 - production-route metadata:
-  - `local_route_mode == "validated_no_resend_direct"`
-  - `local_apply_route == "internal_common_no_resend"`
+  - `local_route_mode == "native_recorded_paint"`
+  - `local_paint_rpc == "PaintAtUVWithBrush"`
   - `local_texture_import_started == false`
   - `local_render_target_write_budget`, `local_cpu_budget_yields`, and
     `local_dispatch_total_ms` are captured with the run. Do not lower the
     recurring scheduler below its 1 ms safety floor merely to improve this
     measurement.
-  - a missing packed schema, source ID, or internal no-resend resolver fails
-    explicitly; it must not silently choose texture import, reflected local
-    paint, or a receiver-queue route
-  - `packed_mesh_radius_scale_effective == 1.0` in production
-  - `packed_mesh_radius_scale_source == production_triangle_world_radius_per_stroke`
-  - `replay_triangle_world_radius_normalization == per_stroke`
-  - packed mesh-average calibration is not required and cannot block production paint
-  - per-pass effective subdivision level/pixel-size/template-resolution are
-    all zero sentinels before packed decode
+  - missing `PaintAtUVWithBrush` fails explicitly before any stroke is sent;
+    it must not silently choose texture import or another paint transport
 - before/after texture probes show a nontrivial changed-texel area on the
   painter's resolved component after terminal completion. Record
   `texture_delta.pixels_changed_any_channel` and its ratio; checksum inequality
@@ -174,13 +165,12 @@ Collect these separately for painter-as-host and painter-as-joining-client:
   require both replication queues to return to zero. Inspect the coordinate
   dump or the character as well: a regular point grid with gaps is a failure
   even when changed-texel count is nontrivial
-- normal Paint must not apply the completed Preview texture at start. Confirm
-  the painter progresses through Fill and enabled Brush passes while the
-  internal no-resend renderer follows submitted server work. When investigating
+  - normal Paint must not apply the completed Preview texture at start. Confirm
+    the painter progresses through Fill and enabled Brush passes while the
+    game-owned recorded-paint queue follows submitted direct work. When investigating
   FPS drops, record `local_dispatch_total_ms`, `local_cpu_budget_yields`, and
   `local_write_budget_yields`; do not remove the 1 ms scheduler yield to make
   a one-off benchmark faster.
 
-Do not release if joining-client paint crashes the server, or if other clients
-finish closer to the old multi-minute replication drain path than to the new
-packed route.
+Do not release if joining-client paint crashes the game, or if other clients
+remain visibly behind after the native queue reaches zero.

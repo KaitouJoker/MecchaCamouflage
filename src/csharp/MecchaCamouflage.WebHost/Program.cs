@@ -34,7 +34,7 @@ internal static class Program
             DiagnosticsState.SetStartupPhase("application_configuration");
             ApplicationConfiguration.Initialize();
             DiagnosticsState.SetStartupPhase("main_form_create");
-            using var form = new MainForm(new HostSession(VersionInfo.Current));
+            using var form = new MainForm(new HostSession(VersionInfo.Current, ReadDiagnosticStrokeLimit(args)));
             DiagnosticsState.SetStartupPhase("application_run");
             Application.Run(form);
             DiagnosticsState.SetStartupPhase("application_exit");
@@ -50,5 +50,22 @@ internal static class Program
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
         }
+    }
+
+    private static int ReadDiagnosticStrokeLimit(string[] args)
+    {
+        for (var index = 0; index < args.Length; ++index)
+        {
+            if (!string.Equals(args[index], "--diagnostic-stroke-limit", StringComparison.Ordinal))
+                continue;
+            if (++index >= args.Length ||
+                !int.TryParse(args[index], out var value) ||
+                value is < 1 or > 10_000)
+            {
+                throw new ArgumentException("--diagnostic-stroke-limit must be an integer from 1 through 10000.");
+            }
+            return value;
+        }
+        return 0;
     }
 }

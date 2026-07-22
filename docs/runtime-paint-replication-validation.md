@@ -1,175 +1,48 @@
 # Runtime Paint Replication Validation
 
-This document records the durable conclusions from the Issue #87 multiplayer
-paint investigation. It is not a release claim: a result is valid only for the
-tested game build, topology, and route described here.
+This checklist validates the direct `PaintAtUVWithBrush` route. It supersedes
+historical payload, receiver-queue, and custom batching experiments.
 
-Runtime logs, event-watch data, texture exports, screenshots, and injected
-artifacts are intentionally kept outside the repository. The relevant runner
-and collection procedure are documented in
-[`scripts/research/README.md`](../scripts/research/README.md).
+## Preconditions
 
-The normal ReleaseSingleFile build does not compile the research runner or
-enable WebView DevTools through `MECCHA_RESEARCH_ARTIFACTS`. Use the explicit
-research build script when those capabilities are required.
+- Use a current game build and a fresh direct bridge instance.
+- Capture the selected game PID, bridge instance ID, and game module identity.
+- Keep the normal scheduler floor at one millisecond.
+- Use a small controlled region before a full Fill/Brush run.
 
-## Evidence Terms
+## Manual material validation
 
-- **Verified**: supported by code inspection and one or more runtime probes,
-  event-watch captures, queue snapshots, texture exports, or controlled A/B
-  tests.
-- **Tested**: exercised in a named runtime topology, but not generalized beyond
-  it.
-- **Unverified**: plausible or observed once, but insufficient for a product or
-  release claim.
+1. With Auto Detect off, use distinguishable Paint and Fill M/R/E values.
+2. Verify the first-stroke metadata contains the requested values and channel 7.
+3. Export the selected component before and after. Confirm Metallic, Roughness,
+   and Emissive values change together as one material-properties target.
+4. Run Preview Paint and Preview Fill separately, then Unpreview on the same
+   bridge instance. Preview is not evidence for normal paint replication.
 
-## Production Route
+## Auto Detect validation
 
-Normal multiplayer paint uses independent server and painter-local lanes:
+1. Enable Auto Detect for Paint with manual values that differ from the expected
+   dominant material.
+2. Record candidates, selection, and first-stroke M/R/E.
+3. Confirm Fill still uses manual values.
+4. Treat a global `M=0/R=1/E=0` result as valid only when it is the selected
+   game pattern, not because the bridge silently overwrote the request.
 
-- `RuntimePaintableComponent.ServerPackedPaintBatch` sends the server batch.
-- The painter applies successfully submitted AMRE strokes through the validated
-  internal no-resend renderer. M/R/E are one packed material-properties
-  texture (`R/G/B`); production does not split them into separate strokes.
-- The game module identity and resolved RVAs are diagnostics, not version gates.
-- A missing packed schema, source ID, or internal no-resend resolver fails with
-  its native reason; it does not substitute texture import, reflected local
-  paint, a receiver queue, compact/adaptive routes, or texture-sync transport.
-- Auto Adapt defaults ON and derives the fastest safe batch/pacing values from
-  readable game-owned limits, falling back to 20 strokes / 50 ms when those
-  properties are unavailable. Its controls are disabled while ON. With Auto
-  Adapt OFF, both server controls are editable from 1--500. The local renderer
-  remains bounded by its render-target write and CPU budgets in both modes.
+## Queue and cancellation validation
 
-Auto Detect is a global material-pattern selection, not a per-stroke material
-sampler. It uses the game-provided dominant pattern including M/R/E for Paint
-regions and records the candidates, selection, and first-stroke values. Fill
-always uses its explicit manual PBR controls.
+1. Record `local_strokes_submitted`, `local_strokes_synced`, and
+   `native_queue_target_strokes` throughout the job.
+2. Confirm ETA uses confirmed progress rather than submission count.
+3. Confirm terminal completion happens only after the observed queue is idle.
+4. Cancel during active paint. The job must stop submitting new strokes and end
+   as cancelled after already recorded work drains naturally.
+5. Verify the game remains responsive; do not reduce the scheduler below one
+   millisecond or write into internal queues to make this faster.
 
-Brush 1 and Brush 2 are independently enabled. Brush 1 ranges from 10--50
-texels, defaults to 25, and defaults OFF. Brush 2 ranges from 1--10 texels,
-defaults to 5, and defaults ON. At least one brush must remain enabled. The
-planner emits one 100-texel Fill pass over all mesh regions if any region
-selects `Fill`, including regions configured as Paint or Skip. It then emits
-only the enabled paint passes for Paint regions in Brush 1 then Brush 2 order.
-Coverage uses the smallest enabled brush. No packed batch crosses a pass
-boundary. Within each pass, samples from all mesh regions are ordered from the
-top of the current camera view to the bottom using the current skinned-pose
-world positions; the profile reference pose is not used for replay order.
+## Multiplayer validation
 
-Production preserves the configured packed-wire UV radius at scale `1.0`. Each
-mesh-anchor stroke derives its effective world radius from its own cached
-triangle's UV-to-world Jacobian and serializes that value per stroke; a batch
-does not reuse its largest triangle radius. A live Brush 2 size-5 check changed
-74 texels, compared with 21 for the game bounds sentinel at scale 1.0 and 517
-for the old uniform 3.5 wire scale. Uniform scale and mesh-average calibration
-remain research-only A/B controls and cannot block normal paint.
-
-On the production route, completion means server batch submission and the
-internal painter-local renderer completed their bounded work. Preview and
-Unpreview alone use channel export/import. Neither result proves that another
-client has presented its final pixels.
-
-## Packed Receiver Research Cancellation
-
-The explicit `packed-local-queue` research route retains this cancellation
-model; it is not the normal production route:
-
-- Before each paired server/local commit, the exact local component queue is
-  read. Only enough strokes to keep `queued + nextBatch <= configuredBatchLimit`
-  are submitted.
-- If a precommit route/queue probe becomes unavailable, future local enqueue is
-  disabled and unsent server batches continue at 20/50. Already submitted local
-  work is not rewritten or purged.
-- Once a cancel is latched, no later server RPC or local enqueue starts.
-- Already committed work, at most one configured batch ahead locally, drains
-  naturally through the game queue before the terminal result is emitted.
-- The implementation never calls `ClearRecordedStrokes`, rewrites queue memory,
-  or attempts to purge remote queues.
-- The terminal UI text is simply `Paint: canceled.`; pending acknowledgement is
-  `Paint: cancel requested.`
-
-On the host, a 400-stroke run at 20/50 with cancellation after three seconds
-submitted 204 paired strokes, left 196 unsubmitted, never exceeded the 20-stroke
-local queue cap, and terminalized only after two zero-queue observations. This
-verifies host-local cancellation behavior. It does not retroactively stop work
-already delivered to a joining client.
-
-## Historical Joining-Client Throughput
-
-The following Issue #87 measurements predate the v1.6.2 internal no-resend
-production route. They remain useful as an investigation baseline only; do not
-use them as v1.6.2 performance acceptance criteria.
-
-In a host plus Hyper-V joining-client comparison with variable colors and 400
-planned strokes:
-
-| Measurement | Observed result |
-| --- | ---: |
-| Host sender at 20/50 | about 272 strokes/s |
-| Joining-client renderer drain | about 30--31.5 strokes/s |
-| Host local renderer drain | about 54.7 strokes/s |
-
-The sender stayed within its configured transport contract, but it outran the
-joining client's game-owned renderer, so a remote backlog was expected. This
-does not prove that Hyper-V alone caused the difference; it has not been
-repeated on comparable physical joining hardware.
-
-There is intentionally no profile that slows a host to the slowest receiver.
-That policy cannot resolve the reciprocal case where a joining client initiates
-paint, and it would require receiver-specific acknowledgements that the current
-route does not provide.
-
-In a later session, a fresh joining-client observer saw zero
-`MulticastPackedPaintBatch` calls for 60 seconds. That session therefore did
-not establish a valid multiplayer delivery path, and no remote cancel or PNG
-claim was made from it. Confirm the game topology before repeating a
-joining-client measurement.
-
-## Brush 2 Seam Finding
-
-The apparent oversized Brush 2 mark at the arm/torso seam is not Brush 1
-leaking into the fine pass. A one-stroke Fine-pass experiment showed the
-expected Brush 2 planner and packed-wire radius, and no packed batch crossed a
-pass boundary.
-
-The packed receiver instead applies a world-space sphere that can reach a
-physically adjacent but separate UV island. In the measured case, the direct
-UV reference produced one 314-texel blob; the packed host and joining receiver
-both produced the same two blobs totaling 298 texels. Reducing the global
-packed radius removed the cross-island mark only by reducing coverage to about
-10% of the direct reference.
-
-The current packed record has no UV-island clip field. A silent radius reduction,
-stroke skip, or direct-UV fallback would trade the seam for underpaint and is
-not a production fix. A real fix requires a validated UV-island-clipped packed
-primitive, or an explicitly accepted coverage-erosion policy.
-
-## Rejected Texture Multicast Candidate
-
-`MulticastSyncChannelData` was tested only as a research candidate while the
-host queue was empty. The host could execute a local 4 MiB Albedo loopback,
-change one deterministic texel, and restore the original hash. A VM observer
-received zero `MulticastSyncChannelData` calls during a 60-second discovery
-window.
-
-Therefore this call is **not validated as multiplayer transport** in this game.
-The experiment was stopped before compression, other channels, queued-paint
-mixing, or any fallback work. Its sender, runner option, and native command are
-not part of the source or release path.
-
-## Release Boundary
-
-Before making a multiplayer release claim, collect fresh evidence for both
-host-initiated and joining-client-initiated paint:
-
-1. Verify the players are on the intended multiplayer topology.
-2. Capture event-watch evidence for packed delivery and absence of legacy
-   fallback routes.
-3. Record sender counts, local queues, joining queues, and queue-zero times.
-4. Export the selected texture before and after queue drain, and retain a
-   changed-texel image rather than relying on checksum inequality alone.
-5. Keep host-local terminal and remote visual completion as separate facts.
-
-Do not claim EOS packet-level behavior, loss recovery, or remote GPU
-presentation without measurements that specifically prove those properties.
+Run the same controlled paint with the painter as host and as joining client.
+For both roles, record painter/receiver completion times and direct queue data.
+The result is invalid if the game crashes, the receiver displays a long dotted
+frontier while the queue is unbounded, or a terminal result precedes queue
+drain.

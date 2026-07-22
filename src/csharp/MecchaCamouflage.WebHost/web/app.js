@@ -163,7 +163,7 @@ function buildProgressLine(runtime) {
     return "";
   }
   const percent = Math.max(0, Math.min(100, Math.round(runtime.progressPercent)));
-  const passStage = runtime.paintProgressSource === "receiver_queue_drain"
+  const passStage = runtime.paintProgressSource === "native_queue_backpressure"
     ? "painting"
     : runtime.paintProgressSource === "submission"
       ? "queueing"
@@ -175,9 +175,6 @@ function buildProgressLine(runtime) {
     `pass ${pass || "-"}`,
     `pass ETA ${runtime.paintPassEta || "-"}`,
     `total ETA ${runtime.paintEta || "-"}`,
-    `batch ${runtime.batch || "-"}`,
-    `pacing ${runtime.pacing || "-"}`,
-    `queue ${runtime.queue || "-"}`,
     `elapsed ${runtime.paintElapsed || "-"}`
   ].join(" | ");
   return `${logPrefix("INFO")} Paint: overall ${percent}% ${progressBar(percent)} | ${detail}`;
@@ -269,10 +266,6 @@ function renderSettings(snapshot) {
   setNumberPair("brush-1-size", "brush-1-size-number", paint.brush1SizeTexels);
   setChecked("brush-2-enabled", paint.brush2Enabled);
   setNumberPair("brush-2-size", "brush-2-size-number", paint.brush2SizeTexels);
-  setNumberPair("color-compression-tolerance", "color-compression-tolerance-number", paint.colorCompressionTolerance);
-  setChecked("batch-auto-adapt", paint.batchAutoAdapt);
-  setNumberPair("packed-batch-limit", "packed-batch-limit-number", paint.packedBatchLimit);
-  setNumberPair("packed-batch-pacing", "packed-batch-pacing-number", paint.packedBatchPacingMs);
   setChecked("auto-material", paint.autoMaterial);
   setNumberPair("metallic", "metallic-number", paint.metallic);
   setNumberPair("roughness", "roughness-number", paint.roughness);
@@ -324,18 +317,6 @@ function renderSettings(snapshot) {
     "brush-2-size",
     "brush-2-size-number"
   ], !editing || !paint.brush2Enabled);
-
-  setDisabled([
-    "color-compression-tolerance",
-    "color-compression-tolerance-number"
-  ], !editing);
-
-  setDisabled([
-    "packed-batch-limit",
-    "packed-batch-limit-number",
-    "packed-batch-pacing",
-    "packed-batch-pacing-number"
-  ], !editing || paint.batchAutoAdapt);
 
   const fillLocked = !editing || !usesFill(paint);
   byId("fill-section").classList.toggle("disabled", !usesFill(paint));
@@ -567,10 +548,6 @@ function diffSnapshots(before, after) {
     "paint.brush1SizeTexels",
     "paint.brush2Enabled",
     "paint.brush2SizeTexels",
-    "paint.colorCompressionTolerance",
-    "paint.batchAutoAdapt",
-    "paint.packedBatchLimit",
-    "paint.packedBatchPacingMs",
     "paint.autoMaterial",
     "paint.metallic",
     "paint.roughness",
@@ -783,10 +760,6 @@ document.addEventListener("DOMContentLoaded", () => {
   bindRangePair("brush-1-size", "brush-1-size-number", "paint.brush1SizeTexels");
   bindCheckbox("brush-2-enabled", "paint.brush2Enabled");
   bindRangePair("brush-2-size", "brush-2-size-number", "paint.brush2SizeTexels");
-  bindRangePair("color-compression-tolerance", "color-compression-tolerance-number", "paint.colorCompressionTolerance");
-  bindCheckbox("batch-auto-adapt", "paint.batchAutoAdapt");
-  bindRangePair("packed-batch-limit", "packed-batch-limit-number", "paint.packedBatchLimit");
-  bindRangePair("packed-batch-pacing", "packed-batch-pacing-number", "paint.packedBatchPacingMs");
   bindCheckbox("auto-material", "paint.autoMaterial");
   bindRangePair("metallic", "metallic-number", "paint.metallic");
   bindRangePair("roughness", "roughness-number", "paint.roughness");

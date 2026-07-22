@@ -91,11 +91,9 @@ public static class ResearchUvReplayArtifacts
                 RequiredDouble(item, "u"),
                 RequiredDouble(item, "v"),
                 RequiredDouble(item, "planner_radius_uv"),
-                RequiredDouble(item, "packed_wire_radius_uv"),
                 RequiredPass(item),
                 RequiredText(item, "region"),
-                RequiredText(item, "body_region"),
-                OptionalBool(item, "packed_wire_radius_available", defaultValue: true)));
+                RequiredText(item, "body_region")));
         }
         return new UvReplayPlan(size, parsed);
     }
@@ -115,18 +113,6 @@ public static class ResearchUvReplayArtifacts
             throw new InvalidDataException("native replay-plan stroke has no valid " + name);
         }
         return value.GetString()!;
-    }
-
-    private static bool OptionalBool(JsonElement item, string name, bool defaultValue)
-    {
-        if (!item.TryGetProperty(name, out var value))
-            return defaultValue;
-        return value.ValueKind switch
-        {
-            JsonValueKind.True => true,
-            JsonValueKind.False => false,
-            _ => throw new InvalidDataException("native replay-plan stroke has no valid " + name)
-        };
     }
 
     private static UvReplayPass RequiredPass(JsonElement item)

@@ -11,18 +11,15 @@ public enum UvReplayPass
 }
 
 /// <summary>
-/// One actual (post-limit) stroke from the native replay plan. The two radii deliberately stay
-/// separate: the first is the planner UV radius and the second is what the packed encoder sent.
+/// One actual (post-limit) stroke from the native direct-paint replay plan.
 /// </summary>
 public sealed record UvReplayStroke(
     double U,
     double V,
     double PlannerRadiusUv,
-    double PackedWireRadiusUv,
     UvReplayPass Pass,
     string Region,
-    string BodyRegion,
-    bool PackedWireRadiusAvailable = true);
+    string BodyRegion);
 
 /// <summary>Portable representation of the native research-only UV replay sidecar.</summary>
 public sealed record UvReplayPlan(int TextureSize, IReadOnlyList<UvReplayStroke> Strokes);
@@ -41,8 +38,8 @@ public sealed record UvReplayAtlas(int Width, int Height, byte[] Rgba)
 
 /// <summary>
 /// Produces a pass-aware UV diagnostic, not a simulation of the game's mesh/world-space brush.
-/// The atlas is three columns (Fill, Coarse/Brush 1, Fine/Brush 2) by two rows (planner and
-/// packed-wire radii). This makes a radius or pass serialization error immediately visible.
+/// The atlas is three columns (Fill, Coarse/Brush 1, Fine/Brush 2), all rendered from the
+/// direct planner radius that the game receives.
 /// </summary>
 public static class UvReplayAtlasRasterizer
 {
@@ -50,7 +47,6 @@ public static class UvReplayAtlasRasterizer
     public static readonly byte[] FillColor = [255, 170, 64, 255];
     public static readonly byte[] CoarseColor = [255, 96, 196, 255];
     public static readonly byte[] FineColor = [70, 210, 255, 255];
-    public static readonly byte[] UnavailableColor = [148, 148, 164, 255];
 
     public static UvReplayAtlas Render(UvReplayPlan plan, int? tileSize = null)
     {
@@ -63,7 +59,7 @@ public static class UvReplayAtlasRasterizer
             throw new ArgumentOutOfRangeException(nameof(tileSize), "The UV replay tile size must be from 16 through 2048.");
 
         var width = checked(size * 3);
-        var height = checked(size * 2);
+        var height = size;
         var rgba = new byte[checked(width * height * 4)];
         for (var offset = 0; offset < rgba.Length; offset += 4)
         {
@@ -73,7 +69,6 @@ public static class UvReplayAtlasRasterizer
             rgba[offset + 3] = BackgroundColor[3];
         }
 
-        var packedUnavailablePasses = new HashSet<UvReplayPass>();
         foreach (var stroke in plan.Strokes)
         {
             if (!IsFiniteUv(stroke.U) || !IsFiniteUv(stroke.V))
@@ -81,13 +76,7 @@ public static class UvReplayAtlasRasterizer
             var column = PassColumn(stroke.Pass);
             var color = PassColor(stroke.Pass);
             DrawCircle(rgba, width, height, column * size, 0, size, stroke.U, stroke.V, stroke.PlannerRadiusUv, color);
-            if (stroke.PackedWireRadiusAvailable)
-                DrawCircle(rgba, width, height, column * size, size, size, stroke.U, stroke.V, stroke.PackedWireRadiusUv, color);
-            else
-                packedUnavailablePasses.Add(stroke.Pass);
         }
-        foreach (var pass in packedUnavailablePasses)
-            DrawUnavailableMarker(rgba, width, PassColumn(pass) * size, size, size);
 
         return new UvReplayAtlas(width, height, rgba);
     }
@@ -149,26 +138,6 @@ public static class UvReplayAtlasRasterizer
         }
     }
 
-    private static void DrawUnavailableMarker(byte[] rgba, int imageWidth, int tileLeft, int tileTop, int tileSize)
-    {
-        var marker = Math.Clamp(tileSize / 12, 3, 16);
-        var centerX = tileLeft + tileSize / 2;
-        var centerY = tileTop + tileSize / 2;
-        for (var delta = -marker; delta <= marker; ++delta)
-        {
-            SetPixel(rgba, imageWidth, centerX + delta, centerY + delta, UnavailableColor);
-            SetPixel(rgba, imageWidth, centerX + delta, centerY - delta, UnavailableColor);
-        }
-    }
-
-    private static void SetPixel(byte[] rgba, int imageWidth, int x, int y, byte[] color)
-    {
-        var offset = checked((y * imageWidth + x) * 4);
-        rgba[offset] = color[0];
-        rgba[offset + 1] = color[1];
-        rgba[offset + 2] = color[2];
-        rgba[offset + 3] = color[3];
-    }
 }
 
 /// <summary>Minimal dependency-free PNG writer for research artifacts.</summary>

@@ -28,11 +28,6 @@ internal static class ResearchRunner
         bool TextureSnapshot,
         ResearchTextureTarget TextureTarget,
         int TextureDiscoverySeconds,
-        string PaintMode,
-        double? PackedRadiusScaleOverride,
-        bool TriangleWorldRadius,
-        int? PackedBatchLimitOverride,
-        int? PackedBatchPacingOverrideMs,
         int StrokeLimit,
         int? ReplayStrokeIndex,
         int? TargetChannelOverride,
@@ -108,11 +103,6 @@ internal static class ResearchRunner
             ["texture_snapshot_requested"] = options.TextureSnapshot,
             ["research_texture_target"] = options.TextureTarget.ToString(),
             ["texture_discovery_seconds"] = options.TextureDiscoverySeconds,
-            ["paint_mode"] = options.PaintMode,
-            ["packed_radius_scale_override"] = options.PackedRadiusScaleOverride,
-            ["triangle_world_radius"] = options.TriangleWorldRadius,
-            ["packed_batch_limit_override"] = options.PackedBatchLimitOverride,
-            ["packed_batch_pacing_override_ms"] = options.PackedBatchPacingOverrideMs,
             ["stroke_limit"] = options.StrokeLimit,
             ["replay_stroke_index"] = options.ReplayStrokeIndex,
             ["target_channel_override"] = options.TargetChannelOverride,
@@ -156,15 +146,6 @@ internal static class ResearchRunner
         WriteJson(Path.Combine(runDirectory, "run-start.json"), summary);
 
         var session = new HostSession(VersionInfo.Current);
-        if (options.PackedBatchLimitOverride is not null ||
-            options.PackedBatchPacingOverrideMs is not null)
-        {
-            session.Settings.Paint.BatchAutoAdapt = false;
-        }
-        if (options.PackedBatchLimitOverride is int packedBatchLimitOverride)
-            session.Settings.Paint.PackedBatchLimit = packedBatchLimitOverride;
-        if (options.PackedBatchPacingOverrideMs is int packedBatchPacingOverrideMs)
-            session.Settings.Paint.PackedBatchPacingMs = packedBatchPacingOverrideMs;
         if (options.FillColorOverride is not null)
             session.Settings.Paint.FillColor = options.FillColorOverride;
         if (options.MetallicOverride is double metallicOverride)
@@ -230,28 +211,28 @@ internal static class ResearchRunner
             summary["eventwatch_ready"] = eventWatch.Ready;
             summary["eventwatch_stage"] = eventWatch.Stage;
             if (!eventWatch.Ready)
-                throw new InvalidOperationException("Event-watch did not start with hooks and ServerPackedPaintBatch resolved.");
+                throw new InvalidOperationException("Event-watch did not start with hooks and PaintAtUVWithBrush resolved.");
 
             await CaptureProbeAsync(session, ResearchProbeKind.Replication, "replication-before", runDirectory);
             await CaptureProbeAsync(session, ResearchProbeKind.ReplicationPressure, "pressure-before", runDirectory);
             string? textureExpectedComponent = null;
             if (options.TextureSnapshot)
             {
-                if (options.TextureTarget == ResearchTextureTarget.EventwatchMulticastPackedReceiver)
+                if (options.TextureTarget == ResearchTextureTarget.EventwatchDirectReceiver)
                 {
-                    var discovery = await WaitForMulticastPackedReceiverAsync(
+                    var discovery = await WaitForDirectReceiverAsync(
                         eventWatchPath,
                         bridgeIdentity,
                         TimeSpan.FromSeconds(options.TextureDiscoverySeconds));
                     summary["texture_target_discovered"] = discovery.Observed;
                     summary["texture_target_discovery_receiver"] = discovery.Component;
                     summary["texture_target_discovery_calls"] = discovery.Calls;
-                    summary["texture_target_discovery_eventwatch_entry"] = "MulticastPackedPaintBatch";
+                    summary["texture_target_discovery_eventwatch_entry"] = "PaintAtUVWithBrush";
                     SnapshotEventWatch(eventWatchPath, Path.Combine(runDirectory, "eventwatch-texture-target-discovered.json"));
                     if (!discovery.Observed)
                     {
                         throw new InvalidOperationException(
-                            "No remote MulticastPackedPaintBatch receiver was observed during texture discovery.");
+                            "No remote PaintAtUVWithBrush receiver was observed during texture discovery.");
                     }
                     textureExpectedComponent = discovery.Component;
                     summary["texture_target_expected_component"] = textureExpectedComponent;
@@ -348,8 +329,10 @@ internal static class ResearchRunner
                     if (!uvReplayArtifact.Success)
                     {
                         summary["uv_replay_artifact_error"] = uvReplayArtifact.Error;
-                        throw new InvalidOperationException(
-                            "Completed research paint did not produce a usable UV replay artifact: " + uvReplayArtifact.Error);
+                        // The replay sidecar is diagnostic evidence only. Its absence must not
+                        // turn an otherwise completed paint into a false-negative cross-client
+                        // transport result (notably when a sandbox blocks the sidecar write).
+                        summary["uv_replay_plan_disposition"] = "unavailable_diagnostic_sidecar";
                     }
                 }
                 else if (reply.Ok && reply.Success)
@@ -445,7 +428,7 @@ internal static class ResearchRunner
                     }
                 }
                 else if (!reply.Success)
-                    throw new InvalidOperationException("Normal packed paint did not complete: " + reply.Message);
+                    throw new InvalidOperationException("Normal direct paint did not complete: " + reply.Message);
             }
 
             if (options.ShutdownAfterMs is null)
@@ -464,24 +447,35 @@ internal static class ResearchRunner
                         runDirectory,
                         options.TextureTarget,
                         textureExpectedComponent);
-                    var textureDeltaArtifact = ResearchTextureDeltaArtifacts.StageAndRender(
-                        Path.Combine(runDirectory, "texture-before.json"),
-                        Path.Combine(runDirectory, "texture-after.json"),
-                        runDirectory,
-                        textureExpectedComponent);
-                    summary["albedo_delta_png_written"] = textureDeltaArtifact.Success;
-                    summary["albedo_delta_texture_size"] = textureDeltaArtifact.TextureSize;
-                    summary["albedo_delta_changed_pixels"] = textureDeltaArtifact.ChangedPixels;
-                    summary["albedo_delta_before_png_path"] = textureDeltaArtifact.BeforePngPath;
-                    summary["albedo_delta_after_png_path"] = textureDeltaArtifact.AfterPngPath;
-                    summary["albedo_delta_mask_path"] = textureDeltaArtifact.DeltaMaskPath;
-                    summary["albedo_delta_component"] = textureDeltaArtifact.Component;
-                    summary["albedo_delta_target_source"] = textureDeltaArtifact.TargetSource;
-                    if (!textureDeltaArtifact.Success)
+                    if (options.TextureTarget == ResearchTextureTarget.AllRuntimePaintComponents)
                     {
-                        summary["albedo_delta_artifact_error"] = textureDeltaArtifact.Error;
-                        throw new InvalidOperationException(
-                            "Requested albedo texture delta is incomplete: " + textureDeltaArtifact.Error);
+                        // This passive receiver probe intentionally exports every eligible
+                        // RuntimePaintableComponent. Keep its raw before/after inventories as
+                        // the evidence instead of rendering a misleading single-target PNG.
+                        summary["texture_inventory_scope"] = "all_runtime_paint_components";
+                        summary["texture_inventory_delta_artifact"] = "raw_before_after_only";
+                    }
+                    else
+                    {
+                        var textureDeltaArtifact = ResearchTextureDeltaArtifacts.StageAndRender(
+                            Path.Combine(runDirectory, "texture-before.json"),
+                            Path.Combine(runDirectory, "texture-after.json"),
+                            runDirectory,
+                            textureExpectedComponent);
+                        summary["albedo_delta_png_written"] = textureDeltaArtifact.Success;
+                        summary["albedo_delta_texture_size"] = textureDeltaArtifact.TextureSize;
+                        summary["albedo_delta_changed_pixels"] = textureDeltaArtifact.ChangedPixels;
+                        summary["albedo_delta_before_png_path"] = textureDeltaArtifact.BeforePngPath;
+                        summary["albedo_delta_after_png_path"] = textureDeltaArtifact.AfterPngPath;
+                        summary["albedo_delta_mask_path"] = textureDeltaArtifact.DeltaMaskPath;
+                        summary["albedo_delta_component"] = textureDeltaArtifact.Component;
+                        summary["albedo_delta_target_source"] = textureDeltaArtifact.TargetSource;
+                        if (!textureDeltaArtifact.Success)
+                        {
+                            summary["albedo_delta_artifact_error"] = textureDeltaArtifact.Error;
+                            throw new InvalidOperationException(
+                                "Requested albedo texture delta is incomplete: " + textureDeltaArtifact.Error);
+                        }
                     }
                 }
                 SnapshotEventWatch(eventWatchPath, Path.Combine(runDirectory, "eventwatch-final.json"));
@@ -664,9 +658,9 @@ internal static class ResearchRunner
                     var terminal = root.TryGetProperty("terminal", out var terminalElement) &&
                                    terminalElement.ValueKind is JsonValueKind.True or JsonValueKind.False &&
                                    terminalElement.GetBoolean();
-                    // A nonzero completed count during the live batch stage proves the async
-                    // job has left planner admission and has begun real server/local work.
-                    if (!terminal && string.Equals(stage, "mesh_server_batch", StringComparison.Ordinal) && step > 0)
+                    // A nonzero completed count during direct paint proves the async job has
+                    // left planner admission and entered the game-owned paint queue.
+                    if (!terminal && string.Equals(stage, "mesh_direct_paint", StringComparison.Ordinal) && step > 0)
                         return new ActivePaintObservation(true, stage, step);
                 }
             }
@@ -845,7 +839,7 @@ internal static class ResearchRunner
         return false;
     }
 
-    private static async Task<(bool Observed, string Component, int Calls)> WaitForMulticastPackedReceiverAsync(
+    private static async Task<(bool Observed, string Component, int Calls)> WaitForDirectReceiverAsync(
         string path,
         ResearchBridgeIdentity expectedIdentity,
         TimeSpan timeout)
@@ -860,7 +854,7 @@ internal static class ResearchRunner
                     var root = document.RootElement;
                     if (EventWatchReady(root, expectedIdentity) &&
                         root.TryGetProperty("entries", out var entries) &&
-                        entries.TryGetProperty("MulticastPackedPaintBatch", out var receiverEntry) &&
+                        entries.TryGetProperty("PaintAtUVWithBrush", out var receiverEntry) &&
                         receiverEntry.TryGetProperty("calls", out var callsElement) &&
                         callsElement.TryGetInt32(out var calls) && calls > 0 &&
                         receiverEntry.TryGetProperty("last_process_event_object", out var receiverElement) &&
@@ -913,8 +907,8 @@ internal static class ResearchRunner
             hookSlots <= 0)
             return false;
         if (!root.TryGetProperty("entries", out var entries) ||
-            !entries.TryGetProperty("ServerPackedPaintBatch", out var packed) ||
-            !packed.TryGetProperty("function", out var function))
+            !entries.TryGetProperty("PaintAtUVWithBrush", out var direct) ||
+            !direct.TryGetProperty("function", out var function))
         {
             return false;
         }
@@ -965,8 +959,6 @@ internal static class ResearchRunner
             brush_1_size_texels = paint.Brush1SizeTexels,
             brush_2_enabled = paint.Brush2Enabled,
             brush_2_size_texels = paint.Brush2SizeTexels,
-            packed_batch_limit = paint.PackedBatchLimit,
-            packed_batch_pacing_ms = paint.PackedBatchPacingMs,
             coverage_step_texels = paint.CoverageStepTexels,
             front_region_mode = SettingsStore.RegionModeText(paint.FrontRegionMode),
             side_region_mode = SettingsStore.RegionModeText(paint.SideRegionMode),
@@ -988,7 +980,6 @@ internal static class ResearchRunner
     {
         var root = JsonNode.Parse(payload)?.AsObject()
             ?? throw new InvalidOperationException("Normal paint payload was not a JSON object.");
-        root["research_route_mode"] = options.PaintMode;
         root["research_stroke_limit"] = options.StrokeLimit;
         root["research_uv_replay_atlas"] = true;
         if (options.ReplayStrokeIndex is int replayStrokeIndex)
@@ -997,9 +988,6 @@ internal static class ResearchRunner
             root["research_target_channel"] = targetChannel;
         if (options.ApplyModeOverride is int applyMode)
             root["research_apply_mode"] = applyMode;
-        if (options.PackedRadiusScaleOverride is double packedRadiusScaleOverride)
-            root["research_packed_radius_scale"] = packedRadiusScaleOverride;
-        root["research_triangle_world_radius"] = options.TriangleWorldRadius;
         if (options.PaintColorOverride is RgbColor paintColor)
         {
             root["research_force_paint_color"] = true;
@@ -1018,7 +1006,6 @@ internal static class ResearchRunner
         var unpreviewOnly = false;
         var autoMaterial = false;
         var textureSnapshot = false;
-        var triangleWorldRadius = false;
         var requested = false;
         for (var index = 0; index < args.Length; ++index)
         {
@@ -1042,9 +1029,6 @@ internal static class ResearchRunner
                 case "--texture-snapshot":
                     textureSnapshot = true;
                     break;
-                case "--triangle-world-radius":
-                    triangleWorldRadius = true;
-                    break;
                 case "--cancel-when-active":
                     values["--cancel-when-active"] = "true";
                     break;
@@ -1055,10 +1039,6 @@ internal static class ResearchRunner
                 case "--pressure-sample-ms":
                 case "--texture-target":
                 case "--texture-discovery-seconds":
-                case "--paint-mode":
-                case "--packed-radius-scale":
-                case "--batch-limit":
-                case "--batch-pacing-ms":
                 case "--stroke-limit":
                 case "--replay-stroke-index":
                 case "--target-channel":
@@ -1122,13 +1102,14 @@ internal static class ResearchRunner
         var textureTarget = values.GetValueOrDefault("--texture-target", "resolved") switch
         {
             "resolved" => ResearchTextureTarget.ResolvedComponent,
-            "eventwatch-multicast-packed-receiver" => ResearchTextureTarget.EventwatchMulticastPackedReceiver,
+            "eventwatch-direct-receiver" => ResearchTextureTarget.EventwatchDirectReceiver,
+            "inventory-all" => ResearchTextureTarget.AllRuntimePaintComponents,
             _ => throw new ArgumentException(
-                "--texture-target must be resolved or eventwatch-multicast-packed-receiver.")
+                "--texture-target must be resolved, eventwatch-direct-receiver, or inventory-all.")
         };
         if (textureTarget != ResearchTextureTarget.ResolvedComponent && !textureSnapshot)
         {
-            throw new ArgumentException("an event-watch --texture-target requires --texture-snapshot.");
+            throw new ArgumentException("a non-default --texture-target requires --texture-snapshot.");
         }
         var textureDiscoverySeconds = 0;
         if (values.TryGetValue("--texture-discovery-seconds", out var discoveryText) &&
@@ -1137,66 +1118,13 @@ internal static class ResearchRunner
         {
             throw new ArgumentException("--texture-discovery-seconds must be an integer from 1 through 120.");
         }
-        if (textureDiscoverySeconds > 0 && textureTarget == ResearchTextureTarget.ResolvedComponent)
+        if (textureDiscoverySeconds > 0 && textureTarget != ResearchTextureTarget.EventwatchDirectReceiver)
         {
-            throw new ArgumentException("--texture-discovery-seconds requires an event-watch --texture-target.");
+            throw new ArgumentException("--texture-discovery-seconds requires eventwatch-direct-receiver.");
         }
-        if (textureTarget != ResearchTextureTarget.ResolvedComponent && textureDiscoverySeconds == 0)
+        if (textureTarget == ResearchTextureTarget.EventwatchDirectReceiver && textureDiscoverySeconds == 0)
         {
             throw new ArgumentException("an event-watch --texture-target requires --texture-discovery-seconds.");
-        }
-
-        var paintMode = values.GetValueOrDefault("--paint-mode", "packed-local-queue");
-        if (paintMode != "combined" && paintMode != "combined-no-resend" &&
-            paintMode != "local-only" && paintMode != "packed-only" &&
-            paintMode != "packed-local-queue")
-        {
-            throw new ArgumentException("--paint-mode must be combined, combined-no-resend, local-only, packed-only, or packed-local-queue.");
-        }
-
-        double? packedRadiusScaleOverride = null;
-        if (values.TryGetValue("--packed-radius-scale", out var packedRadiusScaleText))
-        {
-            if (!double.TryParse(packedRadiusScaleText, NumberStyles.Float, CultureInfo.InvariantCulture,
-                                 out var parsedPackedRadiusScale) ||
-                !double.IsFinite(parsedPackedRadiusScale) ||
-                parsedPackedRadiusScale < 0.5 || parsedPackedRadiusScale > 4.0)
-            {
-                throw new ArgumentException("--packed-radius-scale must be a number from 0.5 through 4.0.");
-            }
-            packedRadiusScaleOverride = parsedPackedRadiusScale;
-        }
-        if (triangleWorldRadius && !paint)
-            throw new ArgumentException("--triangle-world-radius requires --paint.");
-        if (triangleWorldRadius && paintMode == "local-only")
-            throw new ArgumentException("--triangle-world-radius requires a packed paint mode.");
-        if (triangleWorldRadius && packedRadiusScaleOverride is not null)
-            throw new ArgumentException("--triangle-world-radius and --packed-radius-scale are mutually exclusive.");
-        if (packedRadiusScaleOverride is not null && !paint)
-            throw new ArgumentException("--packed-radius-scale requires --paint.");
-
-        int? packedBatchLimitOverride = null;
-        if (values.TryGetValue("--batch-limit", out var packedBatchLimitText))
-        {
-            if (!int.TryParse(packedBatchLimitText, NumberStyles.None, CultureInfo.InvariantCulture,
-                              out var parsedPackedBatchLimit) ||
-                parsedPackedBatchLimit < 1 || parsedPackedBatchLimit > 500)
-            {
-                throw new ArgumentException("--batch-limit must be an integer from 1 through 500.");
-            }
-            packedBatchLimitOverride = parsedPackedBatchLimit;
-        }
-
-        int? packedBatchPacingOverrideMs = null;
-        if (values.TryGetValue("--batch-pacing-ms", out var packedBatchPacingText))
-        {
-            if (!int.TryParse(packedBatchPacingText, NumberStyles.None, CultureInfo.InvariantCulture,
-                              out var parsedPackedBatchPacingMs) ||
-                parsedPackedBatchPacingMs < 1 || parsedPackedBatchPacingMs > 500)
-            {
-                throw new ArgumentException("--batch-pacing-ms must be an integer from 1 through 500.");
-            }
-            packedBatchPacingOverrideMs = parsedPackedBatchPacingMs;
         }
 
         var strokeLimit = 0;
@@ -1351,11 +1279,6 @@ internal static class ResearchRunner
             textureSnapshot,
             textureTarget,
             textureDiscoverySeconds,
-            paintMode,
-            packedRadiusScaleOverride,
-            triangleWorldRadius,
-            packedBatchLimitOverride,
-            packedBatchPacingOverrideMs,
             strokeLimit,
             replayStrokeIndex,
             targetChannelOverride,

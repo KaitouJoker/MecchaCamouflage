@@ -1,4 +1,5 @@
 NATIVE_APPLY_MODE ?= mesh_first_paint
+DIAGNOSTIC_STROKE_LIMIT ?= 0
 RESEARCH_ARTIFACTS ?= $(MECCHA_RESEARCH_ARTIFACTS)
 VERSION ?= $(shell git describe --tags --exact-match 2>/dev/null || git describe --tags --dirty --always 2>/dev/null || printf dev)
 BUILD_PS := scripts/build.ps1
@@ -50,9 +51,9 @@ start:
 	@if command -v powershell.exe >/dev/null 2>&1; then \
 		PS_SCRIPT_WIN="$$(if command -v wslpath >/dev/null 2>&1; then wslpath -w "$(START_PS)"; else printf '%s' "$(START_PS)"; fi)"; \
 		EXE_WIN="$$(if command -v wslpath >/dev/null 2>&1; then wslpath -w "$(START_EXE)"; else printf '%s' "$(START_EXE)"; fi)"; \
-		powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$$PS_SCRIPT_WIN" -SourceExe "$$EXE_WIN"; \
+		powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$$PS_SCRIPT_WIN" -SourceExe "$$EXE_WIN" -DiagnosticStrokeLimit "$(DIAGNOSTIC_STROKE_LIMIT)"; \
 	elif command -v pwsh >/dev/null 2>&1; then \
-		pwsh -NoProfile -ExecutionPolicy Bypass -File "$(START_PS)" -SourceExe "$(START_EXE)"; \
+		pwsh -NoProfile -ExecutionPolicy Bypass -File "$(START_PS)" -SourceExe "$(START_EXE)" -DiagnosticStrokeLimit "$(DIAGNOSTIC_STROKE_LIMIT)"; \
 	else \
 		echo "PowerShell runtime not found." >&2; exit 127; \
 	fi
