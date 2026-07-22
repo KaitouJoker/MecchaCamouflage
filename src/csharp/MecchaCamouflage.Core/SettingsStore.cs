@@ -98,6 +98,7 @@ public sealed class SettingsStore
         paint.FillMetallic = ReadDouble(root, "fill_metallic", paint.FillMetallic);
         paint.FillRoughness = ReadDouble(root, "fill_roughness", paint.FillRoughness);
         paint.FillEmissive = ReadDouble(root, "fill_emissive", paint.FillEmissive);
+        paint.ColorCompressionTolerance = ReadDouble(root, "color_compression_tolerance", paint.ColorCompressionTolerance);
         var hasPersistedFillPbr =
             root.TryGetPropertyValue("fill_metallic", out _) &&
             root.TryGetPropertyValue("fill_roughness", out _) &&
@@ -163,6 +164,7 @@ public sealed class SettingsStore
         settings.Paint.FillMetallic = Math.Clamp(settings.Paint.FillMetallic, 0.0, 1.0);
         settings.Paint.FillRoughness = Math.Clamp(settings.Paint.FillRoughness, 0.0, 1.0);
         settings.Paint.FillEmissive = Math.Clamp(settings.Paint.FillEmissive, 0.0, 1.0);
+        settings.Paint.ColorCompressionTolerance = Math.Clamp(settings.Paint.ColorCompressionTolerance, 0.0, 100.0);
         return settings;
     }
 
@@ -203,7 +205,8 @@ public sealed class SettingsStore
         fill_color = settings.Paint.FillColor.ToHex(),
         fill_metallic = settings.Paint.FillMetallic,
         fill_roughness = settings.Paint.FillRoughness,
-        fill_emissive = settings.Paint.FillEmissive
+        fill_emissive = settings.Paint.FillEmissive,
+        color_compression_tolerance = settings.Paint.ColorCompressionTolerance
     };
 
     public static double CoverageStepFor(PaintSettings paint)

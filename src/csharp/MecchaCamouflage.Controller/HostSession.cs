@@ -889,7 +889,8 @@ public sealed class HostSession
                 paint.FillMetallic,
                 paint.FillRoughness,
                 paint.FillEmissive,
-                paint.UsesFill),
+                paint.UsesFill,
+                paint.ColorCompressionTolerance),
             new AppSnapshot(
                 settings.GameProcessName,
                 settings.AlwaysOnTop,
@@ -999,6 +1000,7 @@ public sealed class HostSession
         "paint.fillMetallic" => Nearly(left.Paint.FillMetallic, right.Paint.FillMetallic),
         "paint.fillRoughness" => Nearly(left.Paint.FillRoughness, right.Paint.FillRoughness),
         "paint.fillEmissive" => Nearly(left.Paint.FillEmissive, right.Paint.FillEmissive),
+        "paint.colorCompressionTolerance" => Nearly(left.Paint.ColorCompressionTolerance, right.Paint.ColorCompressionTolerance),
         "app.processName" => left.GameProcessName == right.GameProcessName,
         "app.alwaysOnTop" => left.AlwaysOnTop == right.AlwaysOnTop,
         "app.opacity" => Nearly(left.Opacity, right.Opacity),
@@ -1035,6 +1037,7 @@ public sealed class HostSession
             case "paint.fillMetallic": settings.Paint.FillMetallic = defaults.Paint.FillMetallic; break;
             case "paint.fillRoughness": settings.Paint.FillRoughness = defaults.Paint.FillRoughness; break;
             case "paint.fillEmissive": settings.Paint.FillEmissive = defaults.Paint.FillEmissive; break;
+            case "paint.colorCompressionTolerance": settings.Paint.ColorCompressionTolerance = defaults.Paint.ColorCompressionTolerance; break;
             case "app.processName": settings.GameProcessName = defaults.GameProcessName; break;
             case "app.alwaysOnTop": settings.AlwaysOnTop = defaults.AlwaysOnTop; break;
             case "app.opacity": settings.Opacity = defaults.Opacity; break;
@@ -1076,6 +1079,7 @@ public sealed class HostSession
             case "paint.fillMetallic": settings.Paint.FillMetallic = value.GetDouble(); break;
             case "paint.fillRoughness": settings.Paint.FillRoughness = value.GetDouble(); break;
             case "paint.fillEmissive": settings.Paint.FillEmissive = value.GetDouble(); break;
+            case "paint.colorCompressionTolerance": settings.Paint.ColorCompressionTolerance = value.GetDouble(); break;
             case "app.language": settings.Language = value.GetString() ?? settings.Language; break;
             case "app.processName": settings.GameProcessName = value.GetString() ?? settings.GameProcessName; break;
             case "app.alwaysOnTop": settings.AlwaysOnTop = value.GetBoolean(); break;

@@ -32,6 +32,7 @@ var tests = new List<(string Name, Action Run)>
     ("legacy compatibility pacing migrates to sliders", LegacyCompatibilityPacingMigratesToSliders),
     ("legacy mirror-like Fill PBR defaults migrate to manual material", LegacyFillPbrDefaultsMigrateToManualMaterial),
     ("settings clamp batch sliders", SettingsClampBatchSliders),
+    ("settings clamp clamps tolerance within range", SettingsClampTolerance),
     ("locales have complete keys", LocalesHaveCompleteKeys),
     ("color parser accepts rrggbb", ColorParserAcceptsHex),
     ("runtime log keeps repeated guard messages", RuntimeLogKeepsRepeatedGuardMessages),
@@ -603,6 +604,18 @@ static void LegacyFillPbrDefaultsMigrateToManualMaterial()
         "a non-default Fill PBR choice must not be changed by the migration");
 }
 
+static void SettingsClampTolerance()
+{
+    var settings = new AppSettings();
+    settings.Paint.ColorCompressionTolerance = 150.0;
+    var clamped = SettingsStore.Clamp(settings);
+    Assert(Math.Abs(clamped.Paint.ColorCompressionTolerance - 100.0) < 0.000001, "color compression tolerance should clamp to 100");
+
+    settings.Paint.ColorCompressionTolerance = -10.0;
+    clamped = SettingsStore.Clamp(settings);
+    Assert(Math.Abs(clamped.Paint.ColorCompressionTolerance - 0.0) < 0.000001, "color compression tolerance should clamp to 0");
+}
+
 static void PayloadSendsBatchSliderValues()
 {
     var settings = new AppSettings();
@@ -961,6 +974,8 @@ static void WebUiExposesTwoPassBrushSliders()
     Assert(app.Contains("paint.batchAutoAdapt", StringComparison.Ordinal) &&
            app.Contains("!editing || paint.batchAutoAdapt", StringComparison.Ordinal),
         "manual batch controls should lock while auto adapt is on");
+    Assert(index.Contains("id=\"color-compression-tolerance\"", StringComparison.Ordinal), "web UI should include the color compression tolerance slider");
+    Assert(app.Contains("paint.colorCompressionTolerance", StringComparison.Ordinal), "web UI should bind color compression tolerance");
     Assert(app.Contains("paint.brush1Enabled", StringComparison.Ordinal), "web UI should bind brush 1 enabled");
     Assert(app.Contains("paint.brush1SizeTexels", StringComparison.Ordinal), "web UI should bind brush 1");
     Assert(app.Contains("paint.brush2Enabled", StringComparison.Ordinal), "web UI should bind brush 2 enabled");

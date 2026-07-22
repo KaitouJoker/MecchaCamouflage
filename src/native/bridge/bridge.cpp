@@ -11624,6 +11624,7 @@ namespace
         const double fill_metallic = clamp_range(json_number_field(request, "fill_metallic", 1.0), 0.0, 1.0);
         const double fill_roughness = clamp_range(json_number_field(request, "fill_roughness", 0.0), 0.0, 1.0);
         const double fill_emissive = clamp_range(json_number_field(request, "fill_emissive", 0.0), 0.0, 1.0);
+        const double tuning_color_compression_tolerance = clamp_range(json_number_field(request, "color_compression_tolerance", 0.0), 0.0, 100.0);
         const bool research_force_paint_color =
             research_artifacts && !preview_only && !unpreview_only &&
             json_bool_field(request, "research_force_paint_color", false);
@@ -11764,6 +11765,7 @@ namespace
         metadata += ",\"fill_metallic\":" + std::to_string(fill_metallic);
         metadata += ",\"fill_roughness\":" + std::to_string(fill_roughness);
         metadata += ",\"fill_emissive\":" + std::to_string(fill_emissive);
+        metadata += ",\"color_compression_tolerance\":" + std::to_string(tuning_color_compression_tolerance);
         metadata += ",\"replication_pacing_requested_enabled\":" + std::string(json_bool(tuning_replication_pacing_enabled));
         metadata += ",\"replication_pacing_enabled\":" +
                     std::string(json_bool(normal_paint_requires_packed && tuning_replication_pacing_enabled));
@@ -13092,6 +13094,23 @@ namespace
         double replay_triangle_world_scale_max = 0.0;
         runtime_contract::ReplayPass previous_pass = runtime_contract::ReplayPass::Fill;
         runtime_contract::SpatialScanlineKey previous_spatial_key{};
+        // Build 2D spatial grid for UV partitioning to enable O(1) local neighbor lookups for adaptive brush sizing
+        int grid_size_2d = 128;
+        if (plan_samples.size() > 200000) grid_size_2d = 256;
+        if (plan_samples.size() > 500000) grid_size_2d = 512;
+        std::vector<std::vector<std::size_t>> spatial_grid_2d(static_cast<std::size_t>(grid_size_2d * grid_size_2d));
+        if (tuning_color_compression_tolerance > 0.0)
+        {
+            for (std::size_t i = 0; i < plan_samples.size(); ++i)
+            {
+                const auto& s = plan_samples[i];
+                int cell_u = std::clamp<int>(static_cast<int>(s.u * grid_size_2d), 0, grid_size_2d - 1);
+                int cell_v = std::clamp<int>(static_cast<int>(s.v * grid_size_2d), 0, grid_size_2d - 1);
+                spatial_grid_2d[static_cast<std::size_t>(cell_v * grid_size_2d + cell_u)].push_back(i);
+            }
+        }
+
+        std::vector<bool> painted(plan_samples.size(), false);
         bool have_previous_partition_entry = false;
         for (const auto& entry : replay_plan.entries)
         {
@@ -13107,6 +13126,10 @@ namespace
                                      1,
                                      "two-brush planner returned an invalid sample index",
                                      metadata + ",\"replay_blocked\":true");
+            }
+            if (painted[entry.sample_index])
+            {
+                continue;
             }
             if (!have_previous_partition_entry || entry.pass != previous_pass)
             {
@@ -13181,11 +13204,70 @@ namespace
                                            stroke_emissive,
                                            apply_mode);
             }
-            const auto& stroke_brush = fill_mode
-                                           ? fill_brush
-                                           : (entry.pass == runtime_contract::ReplayPass::CoarsePaint
-                                                  ? brush_1
-                                                  : brush_2);
+            auto stroke_brush = fill_mode
+                                    ? fill_brush
+                                    : (entry.pass == runtime_contract::ReplayPass::CoarsePaint
+                                           ? brush_1
+                                           : brush_2);
+
+            // Dynamic brush size / color compression optimization for Paint mode
+            if (!fill_mode && tuning_color_compression_tolerance > 0.0)
+            {
+                const double base_radius_uv = stroke_brush.Radius;
+                const double margin_uv = 0.8 / static_cast<double>(std::max(1, active_texture_size));
+                double chosen_multiplier = 1.0;
+                double threshold = (tuning_color_compression_tolerance / 100.0) * std::sqrt(3.0);
+                double threshold_sq = threshold * threshold;
+                double multipliers[] = { 4.0, 3.0, 2.0, 1.5 };
+                for (double m : multipliers)
+                {
+                    double R_uv = m * base_radius_uv;
+                    double R_check_uv = std::max(0.0, R_uv - margin_uv);
+                    double R_check_uv_sq = R_check_uv * R_check_uv;
+                    bool valid = true;
+
+                    int min_cu = std::clamp<int>(static_cast<int>((sample.u - R_check_uv) * grid_size_2d), 0, grid_size_2d - 1);
+                    int max_cu = std::clamp<int>(static_cast<int>((sample.u + R_check_uv) * grid_size_2d), 0, grid_size_2d - 1);
+                    int min_cv = std::clamp<int>(static_cast<int>((sample.v - R_check_uv) * grid_size_2d), 0, grid_size_2d - 1);
+                    int max_cv = std::clamp<int>(static_cast<int>((sample.v + R_check_uv) * grid_size_2d), 0, grid_size_2d - 1);
+
+                    for (int cv = min_cv; cv <= max_cv; ++cv)
+                    {
+                        for (int cu = min_cu; cu <= max_cu; ++cu)
+                        {
+                            const auto& cell_indices = spatial_grid_2d[static_cast<std::size_t>(cv * grid_size_2d + cu)];
+                            for (std::size_t j : cell_indices)
+                            {
+                                const auto& other = plan_samples[j];
+                                if (other.region != sample.region) continue;
+                                if (other.unsafe) continue;
+
+                                double du = other.u - sample.u;
+                                double dv = other.v - sample.v;
+                                if (du * du + dv * dv > R_check_uv_sq) continue;
+
+                                double diff_sq = (sample.r - other.r) * (sample.r - other.r) +
+                                                 (sample.g - other.g) * (sample.g - other.g) +
+                                                 (sample.b - other.b) * (sample.b - other.b);
+                                if (diff_sq > threshold_sq)
+                                {
+                                    valid = false;
+                                    break;
+                                }
+                            }
+                            if (!valid) break;
+                        }
+                        if (!valid) break;
+                    }
+
+                    if (valid)
+                    {
+                        chosen_multiplier = m;
+                        break;
+                    }
+                }
+                stroke_brush.Radius *= static_cast<float>(chosen_multiplier);
+            }
             auto stroke = use_mesh_anchors
                               ? sdk_make_mesh_anchor_stroke(sample.u,
                                                             sample.v,
@@ -13255,6 +13337,50 @@ namespace
                 ++replay_triangle_anchors;
             strokes.push_back(std::move(stroke));
 
+            painted[entry.sample_index] = true;
+
+            // Mark neighbor samples as painted/covered by the dynamic brush stroke so redundant strokes are skipped
+            if (!fill_mode && tuning_color_compression_tolerance > 0.0)
+            {
+                const double margin_uv = 0.8 / static_cast<double>(std::max(1, active_texture_size));
+                const double R_skip_uv = std::max(0.0, static_cast<double>(stroke_brush.Radius) - margin_uv);
+                const double R_skip_uv_sq = R_skip_uv * R_skip_uv;
+                const double threshold = (tuning_color_compression_tolerance / 100.0) * std::sqrt(3.0);
+                const double threshold_sq = threshold * threshold;
+
+                int min_cu = std::clamp<int>(static_cast<int>((sample.u - R_skip_uv) * grid_size_2d), 0, grid_size_2d - 1);
+                int max_cu = std::clamp<int>(static_cast<int>((sample.u + R_skip_uv) * grid_size_2d), 0, grid_size_2d - 1);
+                int min_cv = std::clamp<int>(static_cast<int>((sample.v - R_skip_uv) * grid_size_2d), 0, grid_size_2d - 1);
+                int max_cv = std::clamp<int>(static_cast<int>((sample.v + R_skip_uv) * grid_size_2d), 0, grid_size_2d - 1);
+
+                for (int cv = min_cv; cv <= max_cv; ++cv)
+                {
+                    for (int cu = min_cu; cu <= max_cu; ++cu)
+                    {
+                        const auto& cell_indices = spatial_grid_2d[static_cast<std::size_t>(cv * grid_size_2d + cu)];
+                        for (std::size_t j : cell_indices)
+                        {
+                            if (painted[j]) continue;
+                            const auto& other = plan_samples[j];
+                            if (other.region != sample.region) continue;
+                            if (other.unsafe) continue;
+
+                            double du = other.u - sample.u;
+                            double dv = other.v - sample.v;
+                            if (du * du + dv * dv > R_skip_uv_sq) continue;
+
+                            double diff_sq = (sample.r - other.r) * (sample.r - other.r) +
+                                             (sample.g - other.g) * (sample.g - other.g) +
+                                             (sample.b - other.b) * (sample.b - other.b);
+                            if (diff_sq <= threshold_sq)
+                            {
+                                painted[j] = true;
+                            }
+                        }
+                    }
+                }
+            }
+
             if (fill_mode)
                 ++replay_fill;
             else
@@ -13278,6 +13404,14 @@ namespace
                 ++replay_back;
                 fill_mode ? ++replay_back_fill : ++replay_back_paint;
             }
+        }
+        // Sort non-fill (paint) strokes by brush radius descending so larger dynamic strokes execute first,
+        // preventing large expanded strokes from overwriting smaller detail strokes painted earlier.
+        if (tuning_color_compression_tolerance > 0.0 && strokes.size() > static_cast<std::size_t>(replay_fill))
+        {
+            std::stable_sort(strokes.begin() + replay_fill, strokes.end(), [](const auto& a, const auto& b) {
+                return a.BrushSettings.Radius > b.BrushSettings.Radius;
+            });
         }
         metadata += ",\"replay_pass_order\":\"fill,coarse_paint,fine_paint\"";
         metadata += ",\"replay_region_order\":\"current_camera_scanline_across_regions\"";
