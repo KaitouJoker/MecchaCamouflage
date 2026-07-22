@@ -50,7 +50,8 @@ public static class BridgePayloadBuilder
                 ["fill_color_b"] = ToUnit(paint.FillColor.B),
                 ["fill_metallic"] = paint.FillMetallic,
                 ["fill_roughness"] = paint.FillRoughness,
-                ["fill_emissive"] = paint.FillEmissive
+                ["fill_emissive"] = paint.FillEmissive,
+                ["color_compression_tolerance"] = paint.ColorCompressionTolerance
             }
         };
         return JsonSerializer.Serialize(payload) + "\n";

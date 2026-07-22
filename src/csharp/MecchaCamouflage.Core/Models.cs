@@ -58,6 +58,7 @@ public sealed class PaintSettings
     public double FillMetallic { get; set; } = 1.0;
     public double FillRoughness { get; set; } = 0.0;
     public double FillEmissive { get; set; } = 0.0;
+    public double ColorCompressionTolerance { get; set; } = 0.0;
 
     public bool UsesFill =>
         FrontRegionMode == RegionMode.Fill ||

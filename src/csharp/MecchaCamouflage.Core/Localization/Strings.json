@@ -89,7 +89,8 @@
     "toast.hotkey.unsupported": "Only F1-F24 are supported.",
     "toast.hotkey.duplicate": "{0} is already assigned.",
     "toast.editing.hotkey.blocked": "Finish or cancel settings edit before using hotkeys.",
-    "error.settings.not.saved": "Settings were not saved."
+    "error.settings.not.saved": "Settings were not saved.",
+    "color.compression.tolerance": "Color compression tolerance"
   },
   "ja": {
     "app.title": "Meccha Camouflage",
@@ -181,7 +182,8 @@
     "toast.hotkey.unsupported": "F1-F24 のみ対応しています。",
     "toast.hotkey.duplicate": "{0} はすでに割り当て済みです。",
     "toast.editing.hotkey.blocked": "ホットキーを使う前に編集を保存またはキャンセルしてください。",
-    "error.settings.not.saved": "設定を保存できませんでした。"
+    "error.settings.not.saved": "設定を保存できませんでした。",
+    "color.compression.tolerance": "色圧縮許容誤差"
   },
   "ko": {
     "app.title": "Meccha Camouflage",
@@ -273,7 +275,8 @@
     "toast.hotkey.unsupported": "F1-F24만 지원합니다.",
     "toast.hotkey.duplicate": "{0}은(는) 이미 지정되었습니다.",
     "toast.editing.hotkey.blocked": "핫키를 사용하기 전에 편집을 저장하거나 취소하세요.",
-    "error.settings.not.saved": "설정을 저장하지 못했습니다."
+    "error.settings.not.saved": "설정을 저장하지 못했습니다.",
+    "color.compression.tolerance": "색상 압축 허용 오차"
   },
   "es": {
     "app.title": "Meccha Camouflage",
@@ -365,7 +368,8 @@
     "toast.hotkey.unsupported": "Solo se admiten F1-F24.",
     "toast.hotkey.duplicate": "{0} ya está asignada.",
     "toast.editing.hotkey.blocked": "Guarda o cancela la edición antes de usar atajos.",
-    "error.settings.not.saved": "No se pudieron guardar los ajustes."
+    "error.settings.not.saved": "No se pudieron guardar los ajustes.",
+    "color.compression.tolerance": "Tolerancia de compresión de color"
   },
   "fr": {
     "app.title": "Meccha Camouflage",
@@ -457,7 +461,8 @@
     "toast.hotkey.unsupported": "Seules F1-F24 sont prises en charge.",
     "toast.hotkey.duplicate": "{0} est déjà attribuée.",
     "toast.editing.hotkey.blocked": "Enregistrez ou annulez les modifications avant d'utiliser les raccourcis.",
-    "error.settings.not.saved": "Les paramètres n’ont pas été enregistrés."
+    "error.settings.not.saved": "Les paramètres n’ont pas été enregistrés.",
+    "color.compression.tolerance": "Tolérance de compression des couleurs"
   },
   "de": {
     "app.title": "Meccha Camouflage",
@@ -549,7 +554,8 @@
     "toast.hotkey.unsupported": "Nur F1-F24 werden unterstützt.",
     "toast.hotkey.duplicate": "{0} ist bereits belegt.",
     "toast.editing.hotkey.blocked": "Speichern oder abbrechen, bevor Hotkeys verwendet werden.",
-    "error.settings.not.saved": "Einstellungen wurden nicht gespeichert."
+    "error.settings.not.saved": "Einstellungen wurden nicht gespeichert.",
+    "color.compression.tolerance": "Farbkompressionstoleranz"
   },
   "pt-BR": {
     "app.title": "Meccha Camouflage",
@@ -641,7 +647,8 @@
     "toast.hotkey.unsupported": "Apenas F1-F24 são suportadas.",
     "toast.hotkey.duplicate": "{0} já está atribuída.",
     "toast.editing.hotkey.blocked": "Salve ou cancele a edição antes de usar atalhos.",
-    "error.settings.not.saved": "As configurações não foram salvas."
+    "error.settings.not.saved": "As configurações não foram salvas.",
+    "color.compression.tolerance": "Tolerância de compressão de cores"
   },
   "zh-Hans": {
     "app.title": "Meccha Camouflage",
@@ -733,7 +740,8 @@
     "toast.hotkey.unsupported": "仅支持 F1-F24。",
     "toast.hotkey.duplicate": "{0} 已被分配。",
     "toast.editing.hotkey.blocked": "使用热键前请先保存或取消编辑。",
-    "error.settings.not.saved": "设置未保存。"
+    "error.settings.not.saved": "设置未保存。",
+    "color.compression.tolerance": "颜色压缩容差"
   },
   "zh-Hant": {
     "app.title": "Meccha Camouflage",
@@ -825,7 +833,8 @@
     "toast.hotkey.unsupported": "僅支援 F1-F24。",
     "toast.hotkey.duplicate": "{0} 已被指派。",
     "toast.editing.hotkey.blocked": "使用快捷鍵前請先儲存或取消編輯。",
-    "error.settings.not.saved": "設定未儲存。"
+    "error.settings.not.saved": "設定未儲存。",
+    "color.compression.tolerance": "顏色壓縮容差"
   },
   "ru": {
     "app.title": "Meccha Camouflage",
@@ -917,7 +926,8 @@
     "toast.hotkey.unsupported": "Поддерживаются только F1-F24.",
     "toast.hotkey.duplicate": "{0} уже назначена.",
     "toast.editing.hotkey.blocked": "Сохраните или отмените правку перед горячими клавишами.",
-    "error.settings.not.saved": "Настройки не сохранены."
+    "error.settings.not.saved": "Настройки не сохранены.",
+    "color.compression.tolerance": "Допуск сжатия цвета"
   },
   "pl": {
     "app.title": "Meccha Camouflage",
@@ -1009,7 +1019,8 @@
     "toast.hotkey.unsupported": "Obsługiwane są tylko F1-F24.",
     "toast.hotkey.duplicate": "{0} jest już przypisany.",
     "toast.editing.hotkey.blocked": "Zapisz lub anuluj edycję przed użyciem skrótów.",
-    "error.settings.not.saved": "Nie zapisano ustawień."
+    "error.settings.not.saved": "Nie zapisano ustawień.",
+    "color.compression.tolerance": "Tolerancja kompresji kolorów"
   },
   "tr": {
     "app.title": "Meccha Camouflage",
@@ -1101,7 +1112,8 @@
     "toast.hotkey.unsupported": "Yalnızca F1-F24 desteklenir.",
     "toast.hotkey.duplicate": "{0} zaten atanmış.",
     "toast.editing.hotkey.blocked": "Kısayolları kullanmadan önce düzenlemeyi kaydedin veya iptal edin.",
-    "error.settings.not.saved": "Ayarlar kaydedilmedi."
+    "error.settings.not.saved": "Ayarlar kaydedilmedi.",
+    "color.compression.tolerance": "Renk sıkıştırma toleransı"
   },
   "id": {
     "app.title": "Meccha Camouflage",
@@ -1193,7 +1205,8 @@
     "toast.hotkey.unsupported": "Hanya F1-F24 yang didukung.",
     "toast.hotkey.duplicate": "{0} sudah dipakai.",
     "toast.editing.hotkey.blocked": "Simpan atau batalkan edit sebelum memakai hotkey.",
-    "error.settings.not.saved": "Pengaturan tidak tersimpan."
+    "error.settings.not.saved": "Pengaturan tidak tersimpan.",
+    "color.compression.tolerance": "Toleransi kompresi warna"
   },
   "it": {
     "app.title": "Meccha Camouflage",
@@ -1285,7 +1298,8 @@
     "toast.hotkey.unsupported": "Sono supportati solo F1-F24.",
     "toast.hotkey.duplicate": "{0} è già assegnato.",
     "toast.editing.hotkey.blocked": "Salva o annulla la modifica prima degli hotkey.",
-    "error.settings.not.saved": "Impostazioni non salvate."
+    "error.settings.not.saved": "Impostazioni non salvate.",
+    "color.compression.tolerance": "Tolleranza di compressione del colore"
   },
   "nl": {
     "app.title": "Meccha Camouflage",
@@ -1377,7 +1391,8 @@
     "toast.hotkey.unsupported": "Alleen F1-F24 worden ondersteund.",
     "toast.hotkey.duplicate": "{0} is al toegewezen.",
     "toast.editing.hotkey.blocked": "Sla op of annuleer de bewerking voordat je sneltoetsen gebruikt.",
-    "error.settings.not.saved": "Instellingen zijn niet opgeslagen."
+    "error.settings.not.saved": "Instellingen zijn niet opgeslagen.",
+    "color.compression.tolerance": "Kleurcompressietolerantie"
   },
   "vi": {
     "app.title": "Meccha Camouflage",
@@ -1469,6 +1484,7 @@
     "toast.hotkey.unsupported": "Chỉ hỗ trợ F1-F24.",
     "toast.hotkey.duplicate": "{0} đã được gán.",
     "toast.editing.hotkey.blocked": "Lưu hoặc hủy chỉnh sửa trước khi dùng phím tắt.",
-    "error.settings.not.saved": "Chưa lưu được cài đặt."
+    "error.settings.not.saved": "Chưa lưu được cài đặt.",
+    "color.compression.tolerance": "Dung sai nén màu"
   }
 }
