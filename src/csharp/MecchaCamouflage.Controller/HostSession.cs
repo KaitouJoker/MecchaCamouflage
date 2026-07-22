@@ -62,6 +62,7 @@ public sealed class HostSession
     public bool PaintRunning { get; private set; }
     private readonly SemaphoreSlim bridgeWarmupGate = new(1, 1);
     private readonly object paintStateGate = new();
+    private ImagePaintOptions? imagePaint;
     private DateTimeOffset nextBridgeWarmupAttempt;
     private DateTimeOffset currentPaintStartedAt = DateTimeOffset.MinValue;
     private bool finalProgressLogged;
@@ -71,6 +72,15 @@ public sealed class HostSession
     private int nextPaintGeneration;
     private int activePaintGeneration;
     private int cancelPaintGeneration;
+
+    public void SetImagePaint(ImagePaintOptions? image)
+    {
+        lock (paintStateGate)
+            imagePaint = image;
+        Log.Info(image is null
+            ? "Image paint: cleared; F1 will use normal camouflage."
+            : $"Image paint: armed for F1 ({image.Width}x{image.Height}, {image.Placement}, wrap={image.WrapMode}, body={image.BodyType})." );
+    }
     // This becomes non-zero only immediately before the authenticated paint request begins.
     // A stop during process/bridge attachment must latch locally instead of asking native to
     // cancel a job which does not exist yet and then allowing the late send to proceed.
@@ -297,7 +307,8 @@ public sealed class HostSession
                     PreviewOnly: previewOnly,
                     UnPreviewOnly: unpreviewOnly,
                     ResearchArtifacts: BuildFeatures.ResearchArtifactsEnabled,
-                    DiagnosticStrokeLimit: diagnosticStrokeLimit));
+                    DiagnosticStrokeLimit: diagnosticStrokeLimit,
+                    Image: imagePaint));
             if (!TryBeginPaintDispatch(runGeneration))
             {
                 const string canceledBeforeDispatch = "Paint: canceled.";

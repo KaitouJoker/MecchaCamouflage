@@ -3,17 +3,21 @@ using System.Text.Json;
 
 namespace MecchaCamouflage.Core;
 
+public sealed record ImagePaintOptions(int Width, int Height, string RgbaHex, string AlphaMode, RgbColor BackgroundColor, string Placement, string WrapMode, string BodyType, string FileName);
+
 public sealed record PaintRequestOptions(
     bool PreviewOnly = false,
     bool UnPreviewOnly = false,
     bool ResearchArtifacts = false,
-    int DiagnosticStrokeLimit = 0);
+    int DiagnosticStrokeLimit = 0,
+    ImagePaintOptions? Image = null);
 
 public static class BridgePayloadBuilder
 {
     public static string BuildPaintPayload(AppSettings settings, int processId, string processName, PaintRequestOptions options)
     {
         var paint = SettingsStore.Clamp(settings).Paint;
+        var image = options.Image;
         var payload = new Dictionary<string, object?>
         {
             ["type"] = "paint_full_route",
@@ -47,7 +51,19 @@ public static class BridgePayloadBuilder
                 ["fill_roughness"] = paint.FillRoughness,
                 ["fill_emissive"] = paint.FillEmissive,
                 ["color_compression_tolerance"] = paint.ColorCompressionTolerance
-            }
+            },
+            ["image_paint_enabled"] = image is not null && !options.PreviewOnly && !options.UnPreviewOnly,
+            ["image_paint_width"] = image?.Width ?? 0,
+            ["image_paint_height"] = image?.Height ?? 0,
+            ["image_paint_rgba_hex"] = image?.RgbaHex ?? "",
+            ["image_paint_alpha_mode"] = image?.AlphaMode ?? "skip",
+            ["image_paint_background_r"] = ToUnit(image?.BackgroundColor.R ?? 255),
+            ["image_paint_background_g"] = ToUnit(image?.BackgroundColor.G ?? 255),
+            ["image_paint_background_b"] = ToUnit(image?.BackgroundColor.B ?? 255),
+            ["image_paint_placement"] = image?.Placement ?? "fit",
+            ["image_paint_wrap_mode"] = image?.WrapMode ?? "base",
+            ["image_paint_body_type"] = image?.BodyType ?? "round",
+            ["image_paint_file_name"] = image?.FileName ?? ""
         };
         if (options.DiagnosticStrokeLimit > 0)
             payload["diagnostic_stroke_limit"] = Math.Clamp(options.DiagnosticStrokeLimit, 1, 10_000);

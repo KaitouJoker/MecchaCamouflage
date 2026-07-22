@@ -47,6 +47,7 @@ var tests = new List<(string Name, Action Run)>
     ("settings detect supported system language", SettingsDetectSupportedSystemLanguage),
     ("ui snapshot exposes a single brush", UiSnapshotExposesSingleBrush),
     ("web ui exposes one brush slider and compression tolerance", WebUiExposesSingleBrushSliderAndCompressionTolerance),
+    ("web ui image picker previews fit crop and transparency", WebUiImagePickerPreviewsFitCropAndTransparency),
     ("web UI keeps theme color on readonly range and checkbox controls", WebUiKeepsThemeColorOnReadonlyControls),
     ("web ui renders pass progress and total eta", WebUiRendersPassProgressAndTotalEta),
     ("raw hotkeys suppress repeat until key-up", RawHotkeysSuppressRepeatUntilKeyUp),
@@ -342,10 +343,10 @@ static void NativeAutoMaterialDetectsEmissiveAndReportsLocalPacing()
            bridge.Contains("first_stroke_emissive", StringComparison.Ordinal),
         "Auto Detect must cover Paint, preserve an explicit Fill material, use the UE5.6 Emissive-aware pattern layout, and expose numeric candidates for runtime verification");
     Assert(bridge.Contains("tuning_auto_material && any_paint_region", StringComparison.Ordinal) &&
-           bridge.Contains("const double stroke_metallic = fill_metallic", StringComparison.Ordinal) &&
-           bridge.Contains("const double stroke_roughness = fill_roughness", StringComparison.Ordinal) &&
-           bridge.Contains("const double stroke_emissive = fill_emissive", StringComparison.Ordinal),
-        "Auto Detect must not override manual Metallic, Roughness, or Emissive values on Fill strokes");
+           bridge.Contains("image_paint_enabled ? 0.0 : fill_metallic", StringComparison.Ordinal) &&
+           bridge.Contains("image_paint_enabled ? 1.0 : fill_roughness", StringComparison.Ordinal) &&
+           bridge.Contains("image_paint_enabled ? 0.0 : fill_emissive", StringComparison.Ordinal),
+        "normal Fill must retain manual PBR values while imported-image reset strokes explicitly clear emissive");
     Assert(bridge.Contains("local_cpu_budget_us", StringComparison.Ordinal) &&
            bridge.Contains("local_render_target_write_budget", StringComparison.Ordinal) &&
            bridge.Contains("local_logical_sample_batch_limit", StringComparison.Ordinal),
@@ -732,6 +733,84 @@ static void WebUiKeepsThemeColorOnReadonlyControls()
         "passive themed controls must reject keyboard and label-driven edits outside Edit mode, including dependent locks");
     Assert(app.Contains("document.activeElement === control", StringComparison.Ordinal),
         "locking a previously focused themed control must blur it before keyboard input can change its visible value");
+}
+
+static void WebUiImagePickerPreviewsFitCropAndTransparency()
+{
+    var repository = FindRepositoryRoot();
+    var index = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "index.html"));
+    var app = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "app.js"));
+    var styles = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "styles.css"));
+
+    Assert(index.Contains("id=\"image-picker-input\"", StringComparison.Ordinal) &&
+           index.Contains("accept=\".png,.jpg,.jpeg,image/png,image/jpeg\"", StringComparison.Ordinal),
+        "image picker should accept local PNG and JPEG files");
+    Assert(index.Contains("data-image-placement=\"fit\"", StringComparison.Ordinal) &&
+           index.Contains("data-image-placement=\"crop\"", StringComparison.Ordinal),
+        "image picker should expose Fit and Crop placement");
+    Assert(index.Contains("data-alpha-mode=\"skip\"", StringComparison.Ordinal) &&
+           index.Contains("data-alpha-mode=\"background\"", StringComparison.Ordinal),
+        "image picker should expose unpainted and background transparency choices");
+    Assert(index.IndexOf("id=\"image-picker-section\"", StringComparison.Ordinal) >
+           index.IndexOf("id=\"fill-section\"", StringComparison.Ordinal),
+        "image picker should appear below the Fill controls");
+    Assert(index.Contains(">Leave unpainted<", StringComparison.Ordinal) &&
+           !index.Contains("PNG only", StringComparison.Ordinal) &&
+           !index.Contains("How it works", StringComparison.Ordinal) &&
+           !index.Contains("Nothing leaves your computer", StringComparison.Ordinal) &&
+           index.Contains("transparent areas at the default body color", StringComparison.Ordinal) &&
+           index.IndexOf("image-picker-disclaimer", StringComparison.Ordinal) >
+           index.IndexOf("image-picker-background-row", StringComparison.Ordinal),
+        "image picker should use compact labels and explain repeat whole-body painting");
+    Assert(index.Contains("data-wrap-mode=\"base\"", StringComparison.Ordinal) &&
+           index.Contains("data-wrap-mode=\"meet\"", StringComparison.Ordinal) &&
+           index.Contains("data-wrap-mode=\"full\"", StringComparison.Ordinal) &&
+           index.Contains("data-image-count=\"1\"", StringComparison.Ordinal) &&
+           index.Contains("data-image-count=\"2\"", StringComparison.Ordinal) &&
+           index.Contains("data-mirror-mode=\"none\"", StringComparison.Ordinal) &&
+           index.Contains("data-mirror-mode=\"mirror\"", StringComparison.Ordinal) &&
+           index.Contains(">Multiple images<", StringComparison.Ordinal) &&
+           index.Contains("Choose image", StringComparison.Ordinal) &&
+           index.Contains("id=\"image-picker-reset-placement\"", StringComparison.Ordinal) &&
+           index.Contains("id=\"image-design-save\"", StringComparison.Ordinal) &&
+           index.Contains("id=\"image-design-load\"", StringComparison.Ordinal) &&
+           index.Contains("id=\"image-layer-list\"", StringComparison.Ordinal) &&
+           index.Contains("id=\"crop-editor-dialog\"", StringComparison.Ordinal) &&
+           index.Contains("id=\"crop-editor-selection\"", StringComparison.Ordinal) &&
+           index.Contains("multiple", StringComparison.Ordinal) &&
+           index.Contains("(or drop)", StringComparison.Ordinal) &&
+           !index.Contains("data-body-type=\"cube\"", StringComparison.Ordinal) &&
+           index.Contains("value=\"#BCBCBC\"", StringComparison.Ordinal),
+        "image picker should expose drag/drop, placement, wrapping, saved designs, and the default body gray");
+    Assert(app.Contains("URL.createObjectURL(file)", StringComparison.Ordinal) &&
+           app.Contains("URL.revokeObjectURL", StringComparison.Ordinal) &&
+           app.Contains("imagePickerMaximumBytes", StringComparison.Ordinal) &&
+           app.Contains("imagePickerMaximumEdge", StringComparison.Ordinal),
+        "image picker should preview locally and validate resource limits");
+    Assert(app.Contains("function armImagePaint()", StringComparison.Ordinal) &&
+           app.Contains("send(\"setImagePaint\"", StringComparison.Ordinal) &&
+           app.Contains("imagePaintMapWidth = 512", StringComparison.Ordinal) &&
+           app.Contains("function drawPlacedImage", StringComparison.Ordinal) &&
+           app.Contains("function buildWrapAtlas", StringComparison.Ordinal) &&
+           app.Contains("function renderWrapEditor", StringComparison.Ordinal) &&
+           app.Contains("function beginImageEditorDrag", StringComparison.Ordinal) &&
+           app.Contains("function bindImageDropTarget", StringComparison.Ordinal) &&
+           app.Contains("function syncMirroredLayer()", StringComparison.Ordinal) &&
+           app.Contains("MecchaCamouflageImageDesigns", StringComparison.Ordinal) &&
+           app.Contains("function saveCurrentImageDesign()", StringComparison.Ordinal) &&
+           app.Contains("function loadSelectedImageDesign()", StringComparison.Ordinal) &&
+           app.Contains("function addImagePickerFiles", StringComparison.Ordinal) &&
+           app.Contains("function openCropEditor", StringComparison.Ordinal) &&
+           app.Contains("function updateCropEditorZoom", StringComparison.Ordinal) &&
+           app.Contains("crop: image.crop ? clone(image.crop) : null", StringComparison.Ordinal) &&
+           app.Contains("generation !== imagePaintArmGeneration", StringComparison.Ordinal),
+        "image picker should arm the bounded four-panel atlas shown by its editor");
+    Assert(styles.Contains(".image-picker-preview canvas", StringComparison.Ordinal) &&
+           styles.Contains("touch-action: none", StringComparison.Ordinal) &&
+           styles.Contains(".image-drop-button.drag-over", StringComparison.Ordinal) &&
+           styles.Contains(".crop-editor-selection", StringComparison.Ordinal) &&
+           styles.Contains(".image-picker-preview.checkerboard", StringComparison.Ordinal),
+        "image preview should expose the four-view canvas editor and visible transparency");
 }
 
 static void WebUiRendersPassProgressAndTotalEta()

@@ -794,6 +794,8 @@ public sealed class MainForm : Form
             case "setWindowState":
                 PersistWindowSnapshot();
                 return new { success = true };
+            case "setImagePaint":
+                return HandleSetImagePaint(command.Payload);
             case "paint":
                 return ApplyResult(await RunPaintCommandAsync(previewOnly: false, unpreviewOnly: false));
             case "preview":
@@ -805,6 +807,38 @@ public sealed class MainForm : Form
             default:
                 return new { success = false, message = "Unknown command: " + command.Command };
         }
+    }
+
+    private object HandleSetImagePaint(JsonElement payload)
+    {
+        if (!payload.TryGetProperty("enabled", out var enabledValue) || !enabledValue.GetBoolean())
+        {
+            session.SetImagePaint(null);
+            return new { success = true, armed = false };
+        }
+        var width = payload.GetProperty("width").GetInt32();
+        var height = payload.GetProperty("height").GetInt32();
+        var rgbaHex = payload.GetProperty("rgbaHex").GetString() ?? "";
+        var alphaMode = payload.GetProperty("alphaMode").GetString() ?? "skip";
+        var backgroundText = payload.GetProperty("backgroundColor").GetString() ?? "#FFFFFF";
+        var placement = payload.GetProperty("placement").GetString() ?? "fit";
+        var wrapMode = payload.GetProperty("wrapMode").GetString() ?? "base";
+        var bodyType = payload.TryGetProperty("bodyType", out var bodyTypeValue) ? bodyTypeValue.GetString() ?? "round" : "round";
+        var fileName = payload.GetProperty("fileName").GetString() ?? "image";
+        if (width is < 1 or > 512 || height is < 1 or > 128 || rgbaHex.Length != width * height * 8)
+            return new { success = false, message = "The prepared image data is invalid." };
+        if (alphaMode is not ("skip" or "background"))
+            return new { success = false, message = "The transparency option is invalid." };
+        if (placement is not ("fit" or "crop"))
+            return new { success = false, message = "The image placement option is invalid." };
+        if (wrapMode is not ("base" or "meet" or "full"))
+            return new { success = false, message = "The image wrap option is invalid." };
+        if (bodyType is not ("round" or "cube"))
+            return new { success = false, message = "The preview body option is invalid." };
+        if (!RgbColor.TryParse(backgroundText, out var backgroundColor))
+            return new { success = false, message = "The background color is invalid." };
+        session.SetImagePaint(new ImagePaintOptions(width, height, rgbaHex, alphaMode, backgroundColor, placement, wrapMode, bodyType, fileName));
+        return new { success = true, armed = true };
     }
 
     private async Task<HostCommandResult> RunPaintCommandAsync(bool previewOnly, bool unpreviewOnly)

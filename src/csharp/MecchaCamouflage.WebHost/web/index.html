@@ -115,6 +115,101 @@
               </label>
             </div>
           </div>
+
+            <div class="group image-picker-group" id="image-picker-section">
+              <div class="group-title">Image import preview</div>
+              <p class="image-picker-copy">Choose an image, then press F1.</p>
+              <input id="image-picker-input" type="file" accept=".png,.jpg,.jpeg,image/png,image/jpeg" hidden>
+              <input id="image-picker-input-2" type="file" accept=".png,.jpg,.jpeg,image/png,image/jpeg" multiple hidden>
+              <div class="image-picker-option image-picker-top-option">
+                <strong>Images</strong>
+                <div class="segmented image-picker-segmented" role="group" aria-label="Number of images">
+                  <button class="active" type="button" data-image-count="1" aria-pressed="true">1 image</button>
+                  <button type="button" data-image-count="2" aria-pressed="false">Multiple images</button>
+                </div>
+              </div>
+              <div class="image-picker-actions">
+                <button id="image-picker-choose" class="primary image-drop-button" type="button">Choose image <span>(or drop)</span></button>
+                <button id="image-picker-clear" type="button" disabled>Clear</button>
+                <span id="image-picker-filename" class="image-picker-filename">No image selected</span>
+              </div>
+              <div id="image-picker-actions-2" class="image-picker-actions image-picker-second" hidden>
+                <button id="image-picker-choose-2" class="primary image-drop-button" type="button">Add images <span>(or drop)</span></button>
+                <button id="image-picker-clear-2" type="button" disabled>Clear added</button>
+                <span id="image-picker-filename-2" class="image-picker-filename">Add as many images as you want</span>
+                <div id="image-layer-list" class="image-layer-list"></div>
+              </div>
+              <div id="image-picker-preview" class="image-picker-preview checkerboard" aria-live="polite">
+                <span id="image-picker-empty" class="image-picker-empty">Choose an image to open the four-view editor</span>
+                <canvas id="image-wrap-editor" width="512" height="220" hidden></canvas>
+                <div id="image-picker-sources" hidden></div>
+              </div>
+              <div id="image-editor-mode-summary" class="image-editor-mode-summary">Meet at sides • Fit • Background #BCBCBC</div>
+              <div class="image-editor-tools">
+                <div id="image-picker-metadata" class="image-picker-metadata"></div>
+                <button id="image-picker-reset-placement" type="button" disabled>Reset placement</button>
+              </div>
+              <div class="image-picker-options">
+                <div id="image-picker-mirror-row" class="image-picker-option">
+                  <strong>Other side</strong>
+                  <div class="segmented image-picker-segmented" role="group" aria-label="Other side image behavior">
+                    <button class="active" type="button" data-mirror-mode="none" aria-pressed="true">None</button>
+                    <button type="button" data-mirror-mode="mirror" aria-pressed="false">Mirror image</button>
+                  </div>
+                </div>
+                <div id="image-picker-placement-row" class="image-picker-option">
+                  <strong>Whole-body placement</strong>
+                  <div class="segmented image-picker-segmented" role="group" aria-label="Image placement">
+                    <button class="active" type="button" data-image-placement="fit" aria-pressed="true">Fit</button>
+                    <button type="button" data-image-placement="crop" aria-pressed="false">Crop</button>
+                  </div>
+                  <small class="image-option-help">Fit shows everything. Crop lets you choose the part to keep.</small>
+                </div>
+                <div id="image-layer-snap-row" class="image-picker-option" hidden>
+                  <strong>Place selected image</strong>
+                  <div class="segmented image-picker-segmented image-picker-four" role="group" aria-label="Selected image panel">
+                    <button type="button" data-snap-panel="0">Front</button>
+                    <button type="button" data-snap-panel="1">Right</button>
+                    <button type="button" data-snap-panel="2">Back</button>
+                    <button type="button" data-snap-panel="3">Left</button>
+                  </div>
+                </div>
+                <div class="image-picker-option">
+                  <strong>Transparent pixels</strong>
+                  <div class="segmented image-picker-segmented" role="group" aria-label="Transparent pixel behavior">
+                    <button type="button" data-alpha-mode="skip" aria-pressed="false">Leave unpainted</button>
+                    <button class="active" type="button" data-alpha-mode="background" aria-pressed="true">Paint background</button>
+                  </div>
+                </div>
+                <label id="image-picker-background-row" class="field image-picker-background disabled">
+                  <span>Background color</span>
+                  <input id="image-picker-background" class="color-picker" type="color" value="#BCBCBC" disabled>
+                </label>
+                <div id="image-picker-wrap-row" class="image-picker-option">
+                  <strong>Wrap</strong>
+                  <div class="segmented image-picker-segmented image-picker-three" role="group" aria-label="Image wrap behavior">
+                    <button type="button" data-wrap-mode="base" aria-pressed="false">Base sides</button>
+                    <button class="active" type="button" data-wrap-mode="meet" aria-pressed="true">Meet at sides</button>
+                    <button type="button" data-wrap-mode="full" aria-pressed="false">Full wrap</button>
+                  </div>
+                </div>
+              </div>
+              <p class="image-picker-disclaimer"><strong>PNG transparency:</strong> Leave unpainted keeps transparent areas at the default body color. JPG and JPEG files have no transparent areas.</p>
+              <div class="image-design-library">
+                <strong>Saved designs</strong>
+                <div class="image-design-save-row">
+                  <input id="image-design-name" type="text" maxlength="60" placeholder="Design name">
+                  <button id="image-design-save" type="button" disabled>Save design</button>
+                </div>
+                <div class="image-design-load-row">
+                  <select id="image-design-list" aria-label="Saved designs">
+                    <option value="">No saved designs</option>
+                  </select>
+                  <button id="image-design-load" type="button" disabled>Load</button>
+                  <button id="image-design-delete" type="button" disabled>Delete</button>
+                </div>
+              </div>
+            </div>
           </div>
 
           <div class="sub-panel">
@@ -220,6 +315,27 @@
       <strong data-i18n="dialog.hotkey.title">Press a function key</strong>
       <span id="hotkey-dialog-message" data-i18n="dialog.hotkey.supported">F1-F24 are supported.</span>
       <span class="hotkey-help" data-i18n="dialog.hotkey.cancel">Esc to cancel.</span>
+    </div>
+  </div>
+
+  <div id="crop-editor-dialog" class="crop-editor-dialog" hidden>
+    <div class="crop-editor-card" role="dialog" aria-modal="true" aria-labelledby="crop-editor-title">
+      <strong id="crop-editor-title">Choose what to crop</strong>
+      <span class="crop-editor-help">Drag the box over the part you want to keep.</span>
+      <div class="crop-editor-stage-wrap">
+        <div id="crop-editor-stage" class="crop-editor-stage">
+          <img id="crop-editor-image" alt="Image being cropped">
+          <div id="crop-editor-selection" class="crop-editor-selection"></div>
+        </div>
+      </div>
+      <label class="crop-editor-zoom">
+        <span>Zoom</span>
+        <input id="crop-editor-zoom" type="range" min="100" max="400" step="1" value="100">
+      </label>
+      <div class="crop-editor-actions">
+        <button id="crop-editor-cancel" type="button">Cancel</button>
+        <button id="crop-editor-use" class="primary" type="button">Use crop</button>
+      </div>
     </div>
   </div>
 
