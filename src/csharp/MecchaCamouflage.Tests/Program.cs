@@ -20,6 +20,9 @@ var tests = new List<(string Name, Action Run)>
     ("native warms an unavailable triangle cache before it blocks paint", NativeWarmsUnavailableTriangleCache),
     ("native accepts verified direct triangle order despite duplicate UV islands", NativeAcceptsVerifiedDirectTriangleOrder),
     ("native image paint resolves its derived reference profile from the raw profile", NativeImagePaintResolvesDerivedReferenceProfile),
+    ("native image paint exposes deterministic planner telemetry", NativeImagePaintExposesDeterministicPlannerTelemetry),
+    ("native image paint uses the live profile when the selected body differs", NativeImagePaintUsesLiveProfileWhenSelectedBodyDiffers),
+    ("image unpreview omits paint-plan diagnostics", ImageUnpreviewOmitsPaintPlanDiagnostics),
     ("custom freecam surface is absent", CustomFreecamSurfaceIsAbsent),
     ("spectator paint resolution requires local controller identity", SpectatorPaintResolutionRequiresLocalControllerIdentity),
     ("diagnostic stroke limit requires explicit option", DiagnosticStrokeLimitRequiresExplicitOption),
@@ -771,6 +774,52 @@ static void NativeImagePaintResolvesDerivedReferenceProfile()
         "Image Paint must retain the raw profile for live-mesh identity and select its matching derived profile for the fixed natural-standing reference pose");
 }
 
+static void NativeImagePaintExposesDeterministicPlannerTelemetry()
+{
+    var root = FindRepositoryRoot();
+    var bridge = ReadRepositoryText(Path.Combine(root, "src", "native", "bridge", "bridge.cpp"));
+    var contract = ReadRepositoryText(Path.Combine(root, "src", "native", "include", "runtime_contract.hpp"));
+    var bridgeJson = ReadRepositoryText(Path.Combine(root, "src", "native", "bridge", "bridge_json.inc"));
+
+    Assert(bridge.Contains("image_paint_mapping_ms", StringComparison.Ordinal) &&
+           bridge.Contains("image_paint_mapping_workers", StringComparison.Ordinal) &&
+           bridge.Contains("image_paint_candidate_ms", StringComparison.Ordinal) &&
+           bridge.Contains("image_paint_mapping_parallel", StringComparison.Ordinal),
+        "Image Paint must report its canonical mapping and game-thread candidate phases separately");
+    Assert(contract.Contains("adaptive_plan_avx2_available", StringComparison.Ordinal) &&
+           contract.Contains("adaptive_plan_worker_count", StringComparison.Ordinal),
+        "the shared adaptive planner must expose its CPU-safe execution mode to Image Paint");
+    Assert(bridgeJson.Contains("image_paint_mapping_ms", StringComparison.Ordinal) &&
+           bridgeJson.Contains("image_paint_candidate_ms", StringComparison.Ordinal) &&
+           bridgeJson.Contains("adaptive_plan_worker_count", StringComparison.Ordinal),
+        "the compact production bridge response must retain Image Paint planner telemetry");
+}
+
+static void NativeImagePaintUsesLiveProfileWhenSelectedBodyDiffers()
+{
+    var root = FindRepositoryRoot();
+    var bridge = ReadRepositoryText(Path.Combine(root, "src", "native", "bridge", "bridge.cpp"));
+    var bridgeJson = ReadRepositoryText(Path.Combine(root, "src", "native", "bridge", "bridge_json.inc"));
+
+    Assert(!bridge.Contains("The selected image body does not match the live mesh profile", StringComparison.Ordinal) &&
+           bridge.Contains("image_paint_requested_body_type", StringComparison.Ordinal) &&
+           bridge.Contains("image_paint_body_type_source", StringComparison.Ordinal) &&
+           bridge.Contains("live_profile", StringComparison.Ordinal) &&
+           bridgeJson.Contains("image_paint_requested_body_type", StringComparison.Ordinal) &&
+           bridgeJson.Contains("image_paint_body_type_source", StringComparison.Ordinal),
+        "Image Paint must treat the selected body as a UI preference and use the verified live mesh profile for Paint and Preview");
+}
+
+static void ImageUnpreviewOmitsPaintPlanDiagnostics()
+{
+    var root = FindRepositoryRoot();
+    var session = ReadRepositoryText(Path.Combine(root, "src", "csharp", "MecchaCamouflage.Controller", "HostSession.cs"));
+
+    Assert(session.Contains("kind == PaintKind.Image && !unpreviewOnly && selectedImage is not null", StringComparison.Ordinal) &&
+           session.Contains("kind == PaintKind.Image && !unpreviewOnly)\n                LogImagePaintNativeSummary(response);", StringComparison.Ordinal),
+        "Image UnPreview must restore its snapshot without reporting unrelated Image Paint planning diagnostics");
+}
+
 static void CustomFreecamSurfaceIsAbsent()
 {
     var root = FindRepositoryRoot();
@@ -1390,11 +1439,11 @@ static void WebUiKeepsThemeColorOnReadonlyControls()
 static void WebUiImagePaintEditorUsesSavedTransaction()
 {
     var repository = FindRepositoryRoot();
-    var index = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "index.html"));
-    var app = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "app.js"));
-    var styles = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "styles.css"));
-    var mainForm = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "MainForm.cs"));
-    var bridge = File.ReadAllText(Path.Combine(repository, "src", "native", "bridge", "bridge.cpp"));
+    var index = ReadRepositoryText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "index.html"));
+    var app = ReadRepositoryText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "app.js"));
+    var styles = ReadRepositoryText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "styles.css"));
+    var mainForm = ReadRepositoryText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "MainForm.cs"));
+    var bridge = ReadRepositoryText(Path.Combine(repository, "src", "native", "bridge", "bridge.cpp"));
 
     Assert(index.Contains("Paint settings", StringComparison.Ordinal) &&
            index.Contains("data-settings-tab=\"image\" data-i18n=\"settings.image\">Image settings</button>", StringComparison.Ordinal) &&
@@ -1584,8 +1633,8 @@ static void WebUiRebuildsImageGuidesWhenLanguageChanges()
 static void WebUiSeparatesSettingAndLogTabs()
 {
     var repository = FindRepositoryRoot();
-    var markup = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "index.html"));
-    var styles = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "styles.css"));
+    var markup = ReadRepositoryText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "index.html"));
+    var styles = ReadRepositoryText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "styles.css"));
 
     Assert(markup.Contains("<div class=\"group-title\" data-i18n=\"image.design\">Image Design</div>", StringComparison.Ordinal) &&
            !markup.Contains("<div class=\"group-title\">Images</div>", StringComparison.Ordinal),
@@ -1788,12 +1837,12 @@ static void EveryDeclaredWebLocalizationKeyResolvesInEveryLocale()
 static void WebUiUsesPackagedReferenceGuides()
 {
     var repository = FindRepositoryRoot();
-    var app = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "app.js"));
-    var mainForm = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "MainForm.cs"));
-    var bridge = File.ReadAllText(Path.Combine(repository, "src", "native", "bridge", "bridge.cpp"));
-    var contract = File.ReadAllText(Path.Combine(repository, "src", "native", "include", "runtime_contract.hpp"));
-    var refreshScript = File.ReadAllText(Path.Combine(repository, "scripts", "refresh-image-reference-profile.ps1"));
-    var migrationScript = File.ReadAllText(Path.Combine(repository, "scripts", "migrate-image-reference-profiles.ps1"));
+    var app = ReadRepositoryText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "app.js"));
+    var mainForm = ReadRepositoryText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "MainForm.cs"));
+    var bridge = ReadRepositoryText(Path.Combine(repository, "src", "native", "bridge", "bridge.cpp"));
+    var contract = ReadRepositoryText(Path.Combine(repository, "src", "native", "include", "runtime_contract.hpp"));
+    var refreshScript = ReadRepositoryText(Path.Combine(repository, "scripts", "refresh-image-reference-profile.ps1"));
+    var migrationScript = ReadRepositoryText(Path.Combine(repository, "scripts", "migrate-image-reference-profiles.ps1"));
     using var roundRawProfile = JsonDocument.Parse(File.ReadAllText(Path.Combine(
         repository, "resources", "mesh-profiles", "paintman.mesh-profile-v2.json")));
     using var roundImageProfile = JsonDocument.Parse(File.ReadAllText(Path.Combine(
@@ -3469,6 +3518,11 @@ static string FindRepositoryRoot()
             return directory.FullName;
     }
     throw new DirectoryNotFoundException("Repository root could not be found.");
+}
+
+static string ReadRepositoryText(string path)
+{
+    return File.ReadAllText(path).ReplaceLineEndings("\n");
 }
 
 static void ConfigureLiveProgressSession(HostSession session, string preferredProgressPath)

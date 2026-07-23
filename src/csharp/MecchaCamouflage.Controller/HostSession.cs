@@ -773,7 +773,7 @@ public sealed class HostSession
             var startedMessage = previewOnly ? "Preview: started." :
                 (unpreviewOnly ? "UnPreview: started." : (kind == PaintKind.Image ? "Image Paint: started." : "Paint: started."));
             Log.Info(startedMessage);
-            if (kind == PaintKind.Image && selectedImage is not null)
+            if (kind == PaintKind.Image && !unpreviewOnly && selectedImage is not null)
                 LogImageDesignRunSummary(selectedImage);
             var payload = BridgePayloadBuilder.BuildPaintPayload(
                 Settings,
@@ -792,7 +792,7 @@ public sealed class HostSession
                 return new HostCommandResult(false, canceledBeforeDispatch);
             }
             var response = await Runtime.SendPaintAsync(payload, cancellationToken);
-            if (kind == PaintKind.Image)
+            if (kind == PaintKind.Image && !unpreviewOnly)
                 LogImagePaintNativeSummary(response);
             if (diagnosticStrokeLimit > 0)
             {
@@ -1344,21 +1344,34 @@ public sealed class HostSession
             {
                 return;
             }
-            static string Field(JsonElement source, string name) =>
-                source.TryGetProperty(name, out var value) &&
-                value.ValueKind is JsonValueKind.String or JsonValueKind.Number
-                    ? value.ToString()
-                    : "?";
+            static string Field(JsonElement source, string name)
+            {
+                if (!source.TryGetProperty(name, out var value))
+                    return "?";
+                return value.ValueKind switch
+                {
+                    JsonValueKind.String or JsonValueKind.Number => value.ToString(),
+                    JsonValueKind.True or JsonValueKind.False => value.GetBoolean().ToString().ToLowerInvariant(),
+                    _ => "?"
+                };
+            }
             Log.Info(
                 "Image Paint native: " +
                 $"active_profile={Field(metadata, "profile_id")} | body_type={Field(metadata, "image_paint_body_type")} | " +
+                $"requested_body_type={Field(metadata, "image_paint_requested_body_type")} | body_source={Field(metadata, "image_paint_body_type_source")} | " +
+                $"body_auto_corrected={Field(metadata, "image_paint_body_type_auto_corrected")} | " +
                 $"assignments={Field(metadata, "image_paint_assignments")} | transparent_skips={Field(metadata, "image_paint_transparent_skips")} | " +
                 $"image_fill_regions={Field(metadata, "image_fill_region_count")} | normal_fill_regions={Field(metadata, "fill_region_count")} | " +
                 $"cube_edge_assignments={Field(metadata, "image_paint_cube_edge_assignments")} | " +
                 $"cube_side_assignments={Field(metadata, "image_paint_cube_side_assignments")} | revision={Field(metadata, "image_paint_revision")} | " +
                 $"metallic={Field(metadata, "image_paint_metallic")} | roughness={Field(metadata, "image_paint_roughness")} | emissive={Field(metadata, "image_paint_emissive")} | " +
                 $"fill_metallic={Field(metadata, "image_paint_fill_metallic")} | fill_roughness={Field(metadata, "image_paint_fill_roughness")} | " +
-                $"fill_emissive={Field(metadata, "image_paint_fill_emissive")}");
+                $"fill_emissive={Field(metadata, "image_paint_fill_emissive")} | " +
+                $"atlas_ms={Field(metadata, "image_paint_atlas_ms")} | atlas_cache_hit={Field(metadata, "image_paint_atlas_cache_hit")} | " +
+                $"mapping_ms={Field(metadata, "image_paint_mapping_ms")} | mapping_workers={Field(metadata, "image_paint_mapping_workers")} | " +
+                $"mapping_parallel={Field(metadata, "image_paint_mapping_parallel")} | candidate_ms={Field(metadata, "image_paint_candidate_ms")} | " +
+                $"adaptive_ms={Field(metadata, "adaptive_plan_ms")} | adaptive_workers={Field(metadata, "adaptive_plan_worker_count")} | " +
+                $"adaptive_avx2={Field(metadata, "adaptive_plan_avx2_used")}");
         }
         catch (JsonException)
         {

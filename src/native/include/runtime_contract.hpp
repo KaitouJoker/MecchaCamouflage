@@ -5,8 +5,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <cmath>
-#if defined(__AVX2__) || defined(_M_X64) || defined(_M_AMD64) || defined(__x86_64__)
+#if (defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))) || defined(__AVX2__)
 #include <immintrin.h>
+#define MECCHA_RUNTIME_CONTRACT_CAN_COMPILE_AVX2 1
+#endif
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+#include <intrin.h>
 #endif
 #if defined(_OPENMP)
 #include <omp.h>
@@ -619,7 +623,48 @@ namespace runtime_contract
         std::vector<AdaptiveReplayEntry> entries{};
         std::size_t compressed_paint_entries{0};
         std::size_t expanded_paint_entries{0};
+        int adaptive_plan_worker_count{0};
+        bool adaptive_plan_parallel{false};
+        bool adaptive_plan_avx2_available{false};
+        bool adaptive_plan_avx2_used{false};
     };
+
+    inline bool adaptive_plan_avx2_available()
+    {
+#if defined(MECCHA_RUNTIME_CONTRACT_CAN_COMPILE_AVX2)
+        static const bool available = []() {
+#if defined(_MSC_VER) && (defined(_M_X64) || defined(_M_IX86))
+            int registers[4]{};
+            __cpuid(registers, 0);
+            if (registers[0] < 7)
+            {
+                return false;
+            }
+            __cpuidex(registers, 1, 0);
+            constexpr int osxsave_bit = 1 << 27;
+            constexpr int avx_bit = 1 << 28;
+            if ((registers[2] & (osxsave_bit | avx_bit)) != (osxsave_bit | avx_bit))
+            {
+                return false;
+            }
+            if ((_xgetbv(0) & 0x6) != 0x6)
+            {
+                return false;
+            }
+            __cpuidex(registers, 7, 0);
+            constexpr int avx2_bit = 1 << 5;
+            return (registers[1] & avx2_bit) != 0;
+#elif defined(__GNUC__) || defined(__clang__)
+            return __builtin_cpu_supports("avx2");
+#else
+            return false;
+#endif
+        }();
+        return available;
+#else
+        return false;
+#endif
+    }
 
     inline AdaptivePaintPlan build_adaptive_paint_plan(
         const std::vector<ReplayEntry>& replay_entries,
@@ -630,6 +675,7 @@ namespace runtime_contract
     {
         AdaptivePaintPlan plan{};
         plan.entries.reserve(replay_entries.size());
+        plan.adaptive_plan_avx2_available = adaptive_plan_avx2_available();
         if (replay_entries.empty())
         {
             return plan;
@@ -674,24 +720,28 @@ namespace runtime_contract
                    center.region == other.region && center.uv_island == other.uv_island &&
                    center.material_key == other.material_key;
         };
-        const auto color_distance_squared = [](const AdaptivePaintSample& left,
-                                               const AdaptivePaintSample& right) {
-#if defined(__AVX2__) || defined(_M_X64) || defined(_M_AMD64) || defined(__x86_64__)
-            __m256d vleft = _mm256_setr_pd(left.r, left.g, left.b, 0.0);
-            __m256d vright = _mm256_setr_pd(right.r, right.g, right.b, 0.0);
-            __m256d vdiff = _mm256_sub_pd(vleft, vright);
-            __m256d vdiff2 = _mm256_mul_pd(vdiff, vdiff);
-            __m256d vweights = _mm256_setr_pd(0.299, 0.587, 0.114, 0.0);
-            __m256d vprod = _mm256_mul_pd(vdiff2, vweights);
-            alignas(32) double res[4];
-            _mm256_storeu_pd(res, vprod);
-            return res[0] + res[1] + res[2];
-#else
+        const bool use_avx2 = plan.adaptive_plan_avx2_available;
+        plan.adaptive_plan_avx2_used = use_avx2;
+        const auto color_distance_squared = [use_avx2](const AdaptivePaintSample& left,
+                                                       const AdaptivePaintSample& right) {
+#if defined(MECCHA_RUNTIME_CONTRACT_CAN_COMPILE_AVX2)
+            if (use_avx2)
+            {
+                const __m256d vleft = _mm256_setr_pd(left.r, left.g, left.b, 0.0);
+                const __m256d vright = _mm256_setr_pd(right.r, right.g, right.b, 0.0);
+                const __m256d vdiff = _mm256_sub_pd(vleft, vright);
+                const __m256d vdiff2 = _mm256_mul_pd(vdiff, vdiff);
+                const __m256d vweights = _mm256_setr_pd(0.299, 0.587, 0.114, 0.0);
+                const __m256d vprod = _mm256_mul_pd(vdiff2, vweights);
+                alignas(32) double result[4]{};
+                _mm256_storeu_pd(result, vprod);
+                return result[0] + result[1] + result[2];
+            }
+#endif
             const double dr = left.r - right.r;
             const double dg = left.g - right.g;
             const double db = left.b - right.b;
             return 0.299 * (dr * dr) + 0.587 * (dg * dg) + 0.114 * (db * db);
-#endif
         };
         const auto visit_nearby = [&](const AdaptivePaintSample& center,
                                       double radius_uv,
@@ -731,6 +781,8 @@ namespace runtime_contract
         if (num_replay_entries > 128 && hw_threads > 1)
         {
             const std::size_t num_threads = std::min<std::size_t>(hw_threads, 16);
+            plan.adaptive_plan_worker_count = static_cast<int>(num_threads);
+            plan.adaptive_plan_parallel = num_threads > 1;
             const std::size_t chunk_size = (num_replay_entries + num_threads - 1) / num_threads;
             std::vector<std::future<void>> futures;
             futures.reserve(num_threads);
@@ -788,6 +840,7 @@ namespace runtime_contract
         }
         else
         {
+            plan.adaptive_plan_worker_count = 1;
             for (std::size_t i = 0; i < num_replay_entries; ++i)
             {
                 const auto& entry = replay_entries[i];

@@ -26,7 +26,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
-#include <tuple>l
+#include <tuple>
 #include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
@@ -6540,6 +6540,109 @@ namespace
         return true;
     }
 
+    struct MeshFirstImageReferenceAtlasCache
+    {
+        std::mutex mutex{};
+        std::string cube_profile_id{};
+        std::size_t cube_vertex_count{0};
+        std::shared_ptr<const CubeCanonicalImageAtlas> cube{};
+        std::string round_profile_id{};
+        std::size_t round_vertex_count{0};
+        std::shared_ptr<const RoundCanonicalImageAtlas> round{};
+    };
+
+    MeshFirstImageReferenceAtlasCache g_mesh_first_image_reference_atlas_cache{};
+
+    auto mesh_first_cached_cube_canonical_image_atlas(
+        const MeshFirstProfile& profile,
+        std::shared_ptr<const CubeCanonicalImageAtlas>& out,
+        bool& cache_hit,
+        std::string& failure) -> bool
+    {
+        const auto vertex_count = profile.image_reference_vertices.size();
+        {
+            std::lock_guard<std::mutex> lock(g_mesh_first_image_reference_atlas_cache.mutex);
+            if (g_mesh_first_image_reference_atlas_cache.cube &&
+                g_mesh_first_image_reference_atlas_cache.cube_profile_id == profile.profile_id &&
+                g_mesh_first_image_reference_atlas_cache.cube_vertex_count == vertex_count)
+            {
+                out = g_mesh_first_image_reference_atlas_cache.cube;
+                cache_hit = true;
+                failure.clear();
+                return true;
+            }
+        }
+
+        auto built = std::make_shared<CubeCanonicalImageAtlas>();
+        if (!mesh_first_build_cube_canonical_image_atlas(profile, *built, failure))
+        {
+            return false;
+        }
+
+        std::lock_guard<std::mutex> lock(g_mesh_first_image_reference_atlas_cache.mutex);
+        if (g_mesh_first_image_reference_atlas_cache.cube &&
+            g_mesh_first_image_reference_atlas_cache.cube_profile_id == profile.profile_id &&
+            g_mesh_first_image_reference_atlas_cache.cube_vertex_count == vertex_count)
+        {
+            out = g_mesh_first_image_reference_atlas_cache.cube;
+            cache_hit = true;
+            failure.clear();
+            return true;
+        }
+        g_mesh_first_image_reference_atlas_cache.cube_profile_id = profile.profile_id;
+        g_mesh_first_image_reference_atlas_cache.cube_vertex_count = vertex_count;
+        g_mesh_first_image_reference_atlas_cache.cube = std::move(built);
+        out = g_mesh_first_image_reference_atlas_cache.cube;
+        cache_hit = false;
+        failure.clear();
+        return true;
+    }
+
+    auto mesh_first_cached_round_canonical_image_atlas(
+        const MeshFirstProfile& profile,
+        std::shared_ptr<const RoundCanonicalImageAtlas>& out,
+        bool& cache_hit,
+        std::string& failure) -> bool
+    {
+        const auto vertex_count = profile.image_reference_vertices.size();
+        {
+            std::lock_guard<std::mutex> lock(g_mesh_first_image_reference_atlas_cache.mutex);
+            if (g_mesh_first_image_reference_atlas_cache.round &&
+                g_mesh_first_image_reference_atlas_cache.round_profile_id == profile.profile_id &&
+                g_mesh_first_image_reference_atlas_cache.round_vertex_count == vertex_count)
+            {
+                out = g_mesh_first_image_reference_atlas_cache.round;
+                cache_hit = true;
+                failure.clear();
+                return true;
+            }
+        }
+
+        auto built = std::make_shared<RoundCanonicalImageAtlas>();
+        if (!mesh_first_build_round_canonical_image_atlas(profile, *built, failure))
+        {
+            return false;
+        }
+
+        std::lock_guard<std::mutex> lock(g_mesh_first_image_reference_atlas_cache.mutex);
+        if (g_mesh_first_image_reference_atlas_cache.round &&
+            g_mesh_first_image_reference_atlas_cache.round_profile_id == profile.profile_id &&
+            g_mesh_first_image_reference_atlas_cache.round_vertex_count == vertex_count)
+        {
+            out = g_mesh_first_image_reference_atlas_cache.round;
+            cache_hit = true;
+            failure.clear();
+            return true;
+        }
+        g_mesh_first_image_reference_atlas_cache.round_profile_id = profile.profile_id;
+        g_mesh_first_image_reference_atlas_cache.round_vertex_count = vertex_count;
+        g_mesh_first_image_reference_atlas_cache.round = std::move(built);
+        out = g_mesh_first_image_reference_atlas_cache.round;
+        cache_hit = false;
+        failure.clear();
+        return true;
+    }
+
     auto mesh_first_map_round_canonical_sample(const MeshFirstProfile& profile,
                                                const RoundCanonicalImageAtlas& atlas,
                                                int triangle_index,
@@ -11977,19 +12080,20 @@ namespace
         }
         if (image_paint_enabled)
         {
-            const bool profile_is_cube = profile.profile_id.rfind("paintman_cube:", 0) == 0;
+            const bool profile_is_cube = mesh_first_is_cube_profile(profile);
             const bool requested_cube = image_paint_body_type == "cube";
-            metadata += ",\"image_paint_body_type\":\"" + json_escape(image_paint_body_type) + "\"";
+            const std::string live_image_paint_body_type = profile_is_cube ? "cube" : "round";
+            const bool image_paint_body_type_auto_corrected = profile_is_cube != requested_cube;
+            // The body selector controls the editor guide, not which live mesh receives paint.
+            // A job must always use the verified live profile and its matching immutable
+            // reference profile.  Rejecting a stale selector merely made Paint/Preview fail
+            // after a player changed body type in-game.
+            metadata += ",\"image_paint_requested_body_type\":\"" + json_escape(image_paint_body_type) + "\"";
+            metadata += ",\"image_paint_body_type\":\"" + live_image_paint_body_type + "\"";
+            metadata += ",\"image_paint_body_type_source\":\"live_profile\"";
+            metadata += ",\"image_paint_body_type_auto_corrected\":" +
+                        std::string(json_bool(image_paint_body_type_auto_corrected));
             metadata += ",\"image_paint_profile_kind\":\"" + std::string(profile_is_cube ? "cube" : "round") + "\"";
-            if (profile_is_cube != requested_cube)
-            {
-                return response_json(false,
-                                     "image_paint_profile_mismatch",
-                                     0,
-                                     1,
-                                     "The selected image body does not match the live mesh profile",
-                                     metadata + ",\"replay_blocked\":true");
-            }
 
             const auto image_reference_catalog = load_mesh_first_image_reference_profile_catalog();
             metadata += ",\"image_paint_reference_profile_catalog_count\":" +
@@ -12515,15 +12619,18 @@ namespace
             int cube_canonical_mapping_failures = 0;
             int round_canonical_mapping_failures = 0;
             const bool image_paint_cube = mesh_first_is_cube_profile(image_reference_profile);
-            CubeCanonicalImageAtlas cube_canonical_atlas{};
-            RoundCanonicalImageAtlas round_canonical_atlas{};
+            std::shared_ptr<const CubeCanonicalImageAtlas> cube_canonical_atlas{};
+            std::shared_ptr<const RoundCanonicalImageAtlas> round_canonical_atlas{};
+            bool image_paint_atlas_cache_hit = false;
+            const auto image_atlas_started = std::chrono::high_resolution_clock::now();
             if (image_paint_cube)
             {
                 std::string cube_canonical_failure{};
                 if (!image_reference_profile_available ||
-                    !mesh_first_build_cube_canonical_image_atlas(image_reference_profile,
-                                                                  cube_canonical_atlas,
-                                                                  cube_canonical_failure))
+                    !mesh_first_cached_cube_canonical_image_atlas(image_reference_profile,
+                                                                   cube_canonical_atlas,
+                                                                   image_paint_atlas_cache_hit,
+                                                                   cube_canonical_failure))
                 {
                     return response_json(false,
                                          "image_paint_cube_reference_unavailable",
@@ -12534,15 +12641,16 @@ namespace
                                              json_escape(cube_canonical_failure.empty() ? "profile_not_cube" : cube_canonical_failure) + "\"");
                 }
                 metadata += ",\"image_paint_cube_atlas\":\"canonical_natural_stand_v1\"";
-                metadata += ",\"image_paint_cube_pixels_per_unit\":" + std::to_string(cube_canonical_atlas.pixels_per_unit);
+                metadata += ",\"image_paint_cube_pixels_per_unit\":" + std::to_string(cube_canonical_atlas->pixels_per_unit);
             }
             else
             {
                 std::string round_canonical_failure{};
                 if (!image_reference_profile_available ||
-                    !mesh_first_build_round_canonical_image_atlas(image_reference_profile,
-                                                                   round_canonical_atlas,
-                                                                   round_canonical_failure))
+                    !mesh_first_cached_round_canonical_image_atlas(image_reference_profile,
+                                                                    round_canonical_atlas,
+                                                                    image_paint_atlas_cache_hit,
+                                                                    round_canonical_failure))
                 {
                     return response_json(false,
                                          "image_paint_round_reference_unavailable",
@@ -12553,105 +12661,179 @@ namespace
                                              json_escape(round_canonical_failure.empty() ? "profile_not_round" : round_canonical_failure) + "\"");
                 }
                 metadata += ",\"image_paint_round_atlas\":\"canonical_natural_stand_v1\"";
-                metadata += ",\"image_paint_round_pixels_per_unit\":" + std::to_string(round_canonical_atlas.pixels_per_unit);
+                metadata += ",\"image_paint_round_pixels_per_unit\":" + std::to_string(round_canonical_atlas->pixels_per_unit);
             }
+            const double image_paint_atlas_ms = std::chrono::duration<double, std::milli>(
+                                                   std::chrono::high_resolution_clock::now() - image_atlas_started)
+                                                   .count();
             plan_stats.enabled_samples = 0;
             plan_stats.unsafe_candidates = 0;
             plan_stats.unsafe_enabled = 0;
-            for (auto& sample : plan_samples)
+            struct ImagePaintMappingChunkStats
             {
-                double image_u = 0.125;
-                double image_v = 0.5;
-                if (image_paint_cube)
+                int assigned{0};
+                int transparent_skipped{0};
+                int cube_side_assignments{0};
+                int cube_canonical_mapping_failures{0};
+                int round_canonical_mapping_failures{0};
+            };
+            const auto image_mapping_started = std::chrono::high_resolution_clock::now();
+            const unsigned image_mapping_hardware_workers = std::max(1U, std::thread::hardware_concurrency());
+            const std::size_t image_paint_mapping_workers =
+                plan_samples.size() > 256 && image_mapping_hardware_workers > 1
+                    ? std::min<std::size_t>(image_mapping_hardware_workers, 16)
+                    : 1;
+            std::vector<ImagePaintMappingChunkStats> image_mapping_stats(image_paint_mapping_workers);
+            const auto map_image_samples = [&](std::size_t worker_index,
+                                               std::size_t start_index,
+                                               std::size_t end_index) {
+                auto& chunk = image_mapping_stats[worker_index];
+                for (std::size_t sample_index = start_index; sample_index < end_index; ++sample_index)
                 {
-                    runtime_contract::CubeCanonicalImageProjectionResult image_coordinate{};
-                    if (!mesh_first_map_cube_canonical_sample(image_reference_profile,
-                                                              cube_canonical_atlas,
-                                                              sample.triangle_index,
-                                                              sample.barycentric_a,
-                                                              sample.barycentric_b,
-                                                              sample.barycentric_c,
-                                                              image_coordinate) ||
-                        image_coordinate.u < -0.000001 || image_coordinate.u > 1.000001 ||
-                        image_coordinate.v < -0.000001 || image_coordinate.v > 1.000001)
+                    auto& sample = plan_samples[sample_index];
+                    sample.unsafe = false;
+                    sample.image_transparent_skip = false;
+                    sample.image_face_tile = -1;
+                    double image_u = 0.125;
+                    double image_v = 0.5;
+                    if (image_paint_cube)
                     {
-                        sample.unsafe = true;
-                        ++cube_canonical_mapping_failures;
+                        runtime_contract::CubeCanonicalImageProjectionResult image_coordinate{};
+                        if (!mesh_first_map_cube_canonical_sample(image_reference_profile,
+                                                                  *cube_canonical_atlas,
+                                                                  sample.triangle_index,
+                                                                  sample.barycentric_a,
+                                                                  sample.barycentric_b,
+                                                                  sample.barycentric_c,
+                                                                  image_coordinate) ||
+                            image_coordinate.u < -0.000001 || image_coordinate.u > 1.000001 ||
+                            image_coordinate.v < -0.000001 || image_coordinate.v > 1.000001)
+                        {
+                            sample.unsafe = true;
+                            ++chunk.cube_canonical_mapping_failures;
+                            continue;
+                        }
+                        image_u = image_coordinate.u;
+                        image_v = image_coordinate.v;
+                        switch (image_coordinate.face)
+                        {
+                        case runtime_contract::CubeCanonicalImageFace::Front:
+                            sample.image_face_tile = 0;
+                            break;
+                        case runtime_contract::CubeCanonicalImageFace::Right:
+                            sample.image_face_tile = 1;
+                            break;
+                        case runtime_contract::CubeCanonicalImageFace::Back:
+                            sample.image_face_tile = 2;
+                            break;
+                        case runtime_contract::CubeCanonicalImageFace::Left:
+                            sample.image_face_tile = 3;
+                            break;
+                        }
+                        if (image_coordinate.face == runtime_contract::CubeCanonicalImageFace::Right ||
+                            image_coordinate.face == runtime_contract::CubeCanonicalImageFace::Left)
+                        {
+                            ++chunk.cube_side_assignments;
+                        }
+                    }
+                    else
+                    {
+                        runtime_contract::RoundCanonicalImageProjectionResult image_coordinate{};
+                        if (!mesh_first_map_round_canonical_sample(image_reference_profile,
+                                                                   *round_canonical_atlas,
+                                                                   sample.triangle_index,
+                                                                   sample.barycentric_a,
+                                                                   sample.barycentric_b,
+                                                                   sample.barycentric_c,
+                                                                   image_coordinate) ||
+                            image_coordinate.u < -0.000001 || image_coordinate.u > 1.000001 ||
+                            image_coordinate.v < -0.000001 || image_coordinate.v > 1.000001)
+                        {
+                            sample.unsafe = true;
+                            ++chunk.round_canonical_mapping_failures;
+                            continue;
+                        }
+                        image_u = image_coordinate.u;
+                        image_v = image_coordinate.v;
+                        sample.image_face_tile = image_coordinate.tile;
+                    }
+                    const int x = std::max(0, std::min(image_paint_width - 1,
+                        static_cast<int>(std::round(clamp01(image_u) * static_cast<double>(image_paint_width - 1)))));
+                    const int y = std::max(0, std::min(image_paint_height - 1,
+                        static_cast<int>(std::round((1.0 - clamp01(image_v)) * static_cast<double>(image_paint_height - 1)))));
+                    const auto pixel = (static_cast<std::size_t>(y) * static_cast<std::size_t>(image_paint_width) +
+                                        static_cast<std::size_t>(x)) * 4;
+                    const auto alpha = image_paint_rgba[pixel + 3];
+                    if ((image_paint_alpha_mode == "skip" && alpha < 128) ||
+                        (image_paint_alpha_mode == "background" && alpha == 254))
+                    {
+                        sample.image_transparent_skip = true;
+                        ++chunk.transparent_skipped;
                         continue;
                     }
-                    image_u = image_coordinate.u;
-                    image_v = image_coordinate.v;
-                    switch (image_coordinate.face)
-                    {
-                    case runtime_contract::CubeCanonicalImageFace::Front:
-                        sample.image_face_tile = 0;
-                        break;
-                    case runtime_contract::CubeCanonicalImageFace::Right:
-                        sample.image_face_tile = 1;
-                        break;
-                    case runtime_contract::CubeCanonicalImageFace::Back:
-                        sample.image_face_tile = 2;
-                        break;
-                    case runtime_contract::CubeCanonicalImageFace::Left:
-                        sample.image_face_tile = 3;
-                        break;
-                    }
-                    if (image_coordinate.face == runtime_contract::CubeCanonicalImageFace::Right ||
-                        image_coordinate.face == runtime_contract::CubeCanonicalImageFace::Left)
-                    {
-                        ++cube_side_assignments;
-                    }
+                    sample.r = static_cast<double>(image_paint_rgba[pixel + 0]) / 255.0;
+                    sample.g = static_cast<double>(image_paint_rgba[pixel + 1]) / 255.0;
+                    sample.b = static_cast<double>(image_paint_rgba[pixel + 2]) / 255.0;
+                    sample.roughness = image_paint_roughness;
+                    sample.metallic = image_paint_metallic;
+                    ++chunk.assigned;
                 }
-                else
+            };
+            if (image_paint_mapping_workers > 1)
+            {
+                const std::size_t chunk_size =
+                    (plan_samples.size() + image_paint_mapping_workers - 1) / image_paint_mapping_workers;
+                std::vector<std::future<void>> image_mapping_futures{};
+                image_mapping_futures.reserve(image_paint_mapping_workers);
+                for (std::size_t worker_index = 0; worker_index < image_paint_mapping_workers; ++worker_index)
                 {
-                    runtime_contract::RoundCanonicalImageProjectionResult image_coordinate{};
-                    if (!mesh_first_map_round_canonical_sample(image_reference_profile,
-                                                               round_canonical_atlas,
-                                                               sample.triangle_index,
-                                                               sample.barycentric_a,
-                                                               sample.barycentric_b,
-                                                               sample.barycentric_c,
-                                                               image_coordinate) ||
-                        image_coordinate.u < -0.000001 || image_coordinate.u > 1.000001 ||
-                        image_coordinate.v < -0.000001 || image_coordinate.v > 1.000001)
+                    const std::size_t start_index = worker_index * chunk_size;
+                    const std::size_t end_index = std::min(start_index + chunk_size, plan_samples.size());
+                    if (start_index >= end_index)
                     {
-                        sample.unsafe = true;
-                        ++round_canonical_mapping_failures;
                         continue;
                     }
-                    image_u = image_coordinate.u;
-                    image_v = image_coordinate.v;
-                    sample.image_face_tile = image_coordinate.tile;
+                    image_mapping_futures.push_back(std::async(std::launch::async,
+                                                               map_image_samples,
+                                                               worker_index,
+                                                               start_index,
+                                                               end_index));
                 }
-                const int x = std::max(0, std::min(image_paint_width - 1,
-                    static_cast<int>(std::round(clamp01(image_u) * static_cast<double>(image_paint_width - 1)))));
-                const int y = std::max(0, std::min(image_paint_height - 1,
-                    static_cast<int>(std::round((1.0 - clamp01(image_v)) * static_cast<double>(image_paint_height - 1)))));
-                const auto pixel = (static_cast<std::size_t>(y) * static_cast<std::size_t>(image_paint_width) + static_cast<std::size_t>(x)) * 4;
-                const auto alpha = image_paint_rgba[pixel + 3];
-                sample.unsafe = false;
-                if ((image_paint_alpha_mode == "skip" && alpha < 128) ||
-                    (image_paint_alpha_mode == "background" && alpha == 254))
+                for (auto& future : image_mapping_futures)
                 {
-                    sample.image_transparent_skip = true;
-                    ++transparent_skipped;
-                    continue;
+                    future.get();
                 }
-                sample.r = static_cast<double>(image_paint_rgba[pixel + 0]) / 255.0;
-                sample.g = static_cast<double>(image_paint_rgba[pixel + 1]) / 255.0;
-                sample.b = static_cast<double>(image_paint_rgba[pixel + 2]) / 255.0;
-                sample.roughness = image_paint_roughness;
-                sample.metallic = image_paint_metallic;
-                sample.unsafe = false;
-                ++assigned;
-                ++plan_stats.enabled_samples;
             }
+            else
+            {
+                map_image_samples(0, 0, plan_samples.size());
+            }
+            for (const auto& chunk : image_mapping_stats)
+            {
+                assigned += chunk.assigned;
+                transparent_skipped += chunk.transparent_skipped;
+                cube_side_assignments += chunk.cube_side_assignments;
+                cube_canonical_mapping_failures += chunk.cube_canonical_mapping_failures;
+                round_canonical_mapping_failures += chunk.round_canonical_mapping_failures;
+            }
+            plan_stats.enabled_samples = assigned;
+            const double image_paint_mapping_ms = std::chrono::duration<double, std::milli>(
+                                                       std::chrono::high_resolution_clock::now() - image_mapping_started)
+                                                       .count();
             metadata += ",\"image_paint_assignments\":" + std::to_string(assigned);
             metadata += ",\"image_paint_transparent_skips\":" + std::to_string(transparent_skipped);
             metadata += ",\"image_paint_cube_side_assignments\":" + std::to_string(cube_side_assignments);
             metadata += ",\"image_paint_cube_edge_assignments\":" + std::to_string(cube_edge_assignments);
             metadata += ",\"image_paint_cube_canonical_mapping_failures\":" + std::to_string(cube_canonical_mapping_failures);
             metadata += ",\"image_paint_round_canonical_mapping_failures\":" + std::to_string(round_canonical_mapping_failures);
+            metadata += ",\"image_paint_atlas_ms\":" + std::to_string(image_paint_atlas_ms);
+            metadata += ",\"image_paint_atlas_cache_hit\":" +
+                        std::string(json_bool(image_paint_atlas_cache_hit));
+            metadata += ",\"image_paint_mapping_ms\":" + std::to_string(image_paint_mapping_ms);
+            metadata += ",\"image_paint_mapping_workers\":" + std::to_string(image_paint_mapping_workers);
+            metadata += ",\"image_paint_mapping_parallel\":" +
+                        std::string(json_bool(image_paint_mapping_workers > 1));
+            metadata += ",\"image_paint_mapping_mode\":\"canonical_profile_parallel\"";
             metadata += ",\"image_paint_top_bottom_mode\":\"" + std::string(image_paint_cube ? "orthographic_side_projection" : "not_applicable") + "\"";
             metadata += ",\"image_paint_revision\":" + std::to_string(image_paint_revision);
             metadata += ",\"image_paint_brush_size_texels\":" + std::to_string(image_paint_brush_size_texels);
@@ -12879,6 +13061,7 @@ namespace
         double replay_current_view_vertical_min = 0.0;
         double replay_current_view_vertical_max = 0.0;
         bool replay_current_view_vertical_bounds_available = false;
+        const auto replay_candidate_started = std::chrono::high_resolution_clock::now();
         for (std::size_t sample_index = 0; sample_index < plan_samples.size(); ++sample_index)
         {
             const auto& sample = plan_samples[sample_index];
@@ -12959,6 +13142,19 @@ namespace
                         std::max(replay_current_view_vertical_max, current_view_vertical);
                 }
             }
+        }
+        const double image_paint_candidate_ms = image_paint_enabled
+                                                    ? std::chrono::duration<double, std::milli>(
+                                                          std::chrono::high_resolution_clock::now() - replay_candidate_started)
+                                                          .count()
+                                                    : 0.0;
+        if (image_paint_enabled)
+        {
+            // Candidate ordering intentionally stays on the game thread: it
+            // queries the current viewport to preserve the established
+            // scanline ordering and never calls UE reflection from workers.
+            metadata += ",\"image_paint_candidate_ms\":" + std::to_string(image_paint_candidate_ms);
+            metadata += ",\"image_paint_candidate_mode\":\"game_thread_current_view_projection\"";
         }
         const auto replay_spatial_sort_started = std::chrono::steady_clock::now();
         auto replay_plan = runtime_contract::build_single_brush_replay_plan(
@@ -13189,7 +13385,7 @@ namespace
                                         sample.g,
                                         sample.b,
                                         image_paint_enabled
-                                            ? mode == MeshFirstRegionMode::Fill && !sample.image_transparent_skip
+                                            ? !sample.image_transparent_skip
                                             : mode == MeshFirstRegionMode::Paint && !sample.image_transparent_skip,
                                         !sample.unsafe,
                                         1});
@@ -13217,6 +13413,14 @@ namespace
                     std::to_string(adaptive_replay_plan.expanded_paint_entries);
         metadata += ",\"color_compression_skipped_strokes\":" +
                     std::to_string(adaptive_replay_plan.compressed_paint_entries);
+        metadata += ",\"adaptive_plan_worker_count\":" +
+                    std::to_string(adaptive_replay_plan.adaptive_plan_worker_count);
+        metadata += ",\"adaptive_plan_parallel\":" +
+                    std::string(json_bool(adaptive_replay_plan.adaptive_plan_parallel));
+        metadata += ",\"adaptive_plan_avx2_available\":" +
+                    std::string(json_bool(adaptive_replay_plan.adaptive_plan_avx2_available));
+        metadata += ",\"adaptive_plan_avx2_used\":" +
+                    std::string(json_bool(adaptive_replay_plan.adaptive_plan_avx2_used));
         for (const auto& adaptive_entry : adaptive_replay_plan.entries)
         {
             const auto& entry = adaptive_entry.replay;
