@@ -47,7 +47,6 @@ const IMAGE_CANVAS_WIDTH = 1024;
 const IMAGE_CANVAS_HEIGHT = 512;
 const IMAGE_SOURCE_MAXIMUM_BYTES = 12 * 1024 * 1024;
 const IMAGE_TOTAL_SOURCE_MAXIMUM_BYTES = 64 * 1024 * 1024;
-const IMAGE_ALPHA_THRESHOLD = 128;
 const IMAGE_TRANSFER_CHUNK_CHARACTERS = 128 * 1024;
 const IMAGE_RESIZE_HANDLE_SIZE = 20;
 const IMAGE_GUIDE_PROFILE_FILES = Object.freeze({
@@ -1846,9 +1845,13 @@ function drawProfileGuide(context) {
   }
   context.save();
   context.strokeStyle = "rgba(255,255,255,0.36)";
+  context.fillStyle = "rgba(255,255,255,0.78)";
+  context.font = "700 24px D-DIN, sans-serif";
+  const labels = ["FRONT", "RIGHT", "BACK", "LEFT"];
   for (let face = 0; face < 4; ++face) {
     const x = face * IMAGE_CANVAS_WIDTH / 4;
     context.strokeRect(x + 1, 1, IMAGE_CANVAS_WIDTH / 4 - 2, IMAGE_CANVAS_HEIGHT - 2);
+    context.fillText(labels[face], x + 12, 31);
   }
   context.restore();
 }
@@ -1964,7 +1967,7 @@ function buildImageDesign() {
   drawImageComposition();
   const pixels = imageEditor.compositionContext.getImageData(0, 0, IMAGE_CANVAS_WIDTH, IMAGE_CANVAS_HEIGHT).data;
   for (let index = 0; index < pixels.length; index += 4) {
-    if (pixels[index + 3] < IMAGE_ALPHA_THRESHOLD) {
+    if (pixels[index + 3] !== 255) {
       pixels[index] = 0; pixels[index + 1] = 0; pixels[index + 2] = 0; pixels[index + 3] = 0;
     } else {
       pixels[index + 3] = 255;

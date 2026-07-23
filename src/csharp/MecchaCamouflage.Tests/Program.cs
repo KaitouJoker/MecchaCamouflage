@@ -15,6 +15,7 @@ var tests = new List<(string Name, Action Run)>
     ("app defaults use 99 percent opacity", AppDefaultsUse99PercentOpacity),
     ("payload sends a single brush and compression tolerance", PayloadSendsSingleBrushPipeline),
     ("image payload carries a full canonical canvas", ImagePayloadCarriesFullCanonicalCanvas),
+    ("image transparency skips fill and paint", ImageTransparencySkipsFillAndPaint),
     ("native warms an unavailable triangle cache before it blocks paint", NativeWarmsUnavailableTriangleCache),
     ("native accepts verified direct triangle order despite duplicate UV islands", NativeAcceptsVerifiedDirectTriangleOrder),
     ("native image paint resolves its derived reference profile from the raw profile", NativeImagePaintResolvesDerivedReferenceProfile),
@@ -69,6 +70,8 @@ var tests = new List<(string Name, Action Run)>
     ("web ui persists image designs through the tabbed editor", WebUiImagePaintEditorUsesSavedTransaction),
     ("web ui keeps a running paint editable as a next-run draft", WebUiKeepsRunningPaintEditableAsNextRunDraft),
     ("web ui preserves image actions during paint snapshots", WebUiPreservesImageActionsDuringPaintSnapshots),
+    ("web ui keeps mesh guides visible with imported images", WebUiKeepsMeshGuidesVisibleWithImportedImages),
+    ("web ui separates setting and log tabs", WebUiSeparatesSettingAndLogTabs),
     ("web ui uses packaged reference guides without a game connection", WebUiUsesPackagedReferenceGuides),
     ("web UI keeps theme color on readonly range and checkbox controls", WebUiKeepsThemeColorOnReadonlyControls),
     ("web ui renders pass progress and total eta", WebUiRendersPassProgressAndTotalEta),
@@ -665,6 +668,24 @@ static void ImagePayloadCarriesFullCanonicalCanvas()
            cacheDetail.Contains("runtime_triangle_cache_mode=profile_verified_failed", StringComparison.Ordinal) &&
            cacheDetail.Contains("runtime_triangle_cache_warmup_hit_test_uncached_called=true", StringComparison.Ordinal),
         "triangle-cache failures should log the warm-up boundary needed to diagnose a game-layout change");
+}
+
+static void ImageTransparencySkipsFillAndPaint()
+{
+    var repository = FindRepositoryRoot();
+    var bridge = File.ReadAllText(Path.Combine(
+        repository, "src", "native", "bridge", "bridge.cpp"));
+    var app = File.ReadAllText(Path.Combine(
+        repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "app.js"));
+
+    Assert(bridge.Contains("if (mode == MeshFirstRegionMode::Fill && !sample.image_transparent_skip)", StringComparison.Ordinal) &&
+           bridge.Contains("append_candidate(MeshFirstRegionMode::Fill);\n                    append_candidate(MeshFirstRegionMode::Paint);", StringComparison.Ordinal) &&
+           !bridge.Contains("append_candidate(MeshFirstRegionMode::Fill);\n                    if (!sample.image_transparent_skip)", StringComparison.Ordinal),
+        "Image alpha=0 must suppress both the Fill base and the imported-image Paint pass");
+    Assert(app.Contains("if (pixels[index + 3] !== 255)", StringComparison.Ordinal) &&
+           !app.Contains("IMAGE_ALPHA_THRESHOLD", StringComparison.Ordinal) &&
+           bridge.Contains("image_paint_alpha_mode == \"skip\" && alpha == 0", StringComparison.Ordinal),
+        "only fully opaque imported pixels may reach native Image Paint; every semi-transparent pixel must remain skipped");
 }
 
 static void NativeWarmsUnavailableTriangleCache()
@@ -1353,7 +1374,7 @@ static void WebUiImagePaintEditorUsesSavedTransaction()
            !index.Contains("id=\"image-preset-open\"", StringComparison.Ordinal) &&
            index.Contains("id=\"image-preset-load\"", StringComparison.Ordinal) &&
            index.Contains("id=\"image-preset-save\"", StringComparison.Ordinal) &&
-           index.Contains("<div class=\"group-title\">Images</div>", StringComparison.Ordinal) &&
+           index.Contains("<div class=\"group-title\">Image Design</div>", StringComparison.Ordinal) &&
            !index.Contains("<div class=\"group-title\">Presets</div>", StringComparison.Ordinal) &&
            !index.Contains("<div class=\"group-title\">Layers</div>", StringComparison.Ordinal) &&
            !index.Contains("image-design-list", StringComparison.Ordinal) &&
@@ -1394,7 +1415,7 @@ static void WebUiImagePaintEditorUsesSavedTransaction()
            index.Contains("image-fill-metallic", StringComparison.Ordinal) &&
            index.IndexOf("class=\"group image-design-actions\"", StringComparison.Ordinal) <
                index.IndexOf("id=\"image-paint-section\"", StringComparison.Ordinal),
-        "Image owns its Fill material without a background-material UI, and Images appears before Geometry");
+        "Image owns its Fill material without a background-material UI, and Image Design appears before Geometry");
     Assert(app.Contains("function defaultImageCropForLayer(layer)", StringComparison.Ordinal) &&
            app.Contains("const targetAspect = layer.width / layer.height;", StringComparison.Ordinal) &&
            app.Contains("const width = base.width / factor;", StringComparison.Ordinal) &&
@@ -1495,6 +1516,37 @@ static void WebUiPreservesImageActionsDuringPaintSnapshots()
            app.Contains("if (runtimeOnly) return;", StringComparison.Ordinal) &&
            app.Contains("list.replaceChildren();", StringComparison.Ordinal),
         "a running Paint snapshot must update progress without replacing Image action buttons between pointer-down and pointer-up");
+}
+
+static void WebUiKeepsMeshGuidesVisibleWithImportedImages()
+{
+    var app = File.ReadAllText(Path.Combine(
+        FindRepositoryRoot(), "src", "csharp", "MecchaCamouflage.WebHost", "web", "app.js"));
+
+    Assert(app.Contains("if (imageEditor.guideCanvas) {", StringComparison.Ordinal) &&
+           app.Contains("context.drawImage(imageEditor.guideCanvas, 0, 0);", StringComparison.Ordinal) &&
+           !app.Contains("const hasImageLayer = imageEditor.layers.some(layer => layer.image);", StringComparison.Ordinal),
+        "the fixed mesh-and-skeleton guide must remain visible while an image is being placed");
+}
+
+static void WebUiSeparatesSettingAndLogTabs()
+{
+    var repository = FindRepositoryRoot();
+    var markup = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "index.html"));
+    var styles = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "styles.css"));
+
+    Assert(markup.Contains("<div class=\"group-title\">Image Design</div>", StringComparison.Ordinal) &&
+           !markup.Contains("<div class=\"group-title\">Images</div>", StringComparison.Ordinal),
+        "the Upload, Load preset, and Save preset controls must use the Image Design group title");
+    Assert(styles.Contains(".settings-tab + .settings-tab", StringComparison.Ordinal) &&
+           styles.Contains(".tab + .tab", StringComparison.Ordinal) &&
+           styles.Contains("border-left: 1px solid var(--hairline);", StringComparison.Ordinal),
+        "settings tabs and log filters must have a visible divider between adjacent controls");
+    Assert(styles.Contains(".tabs {\n  display: grid;", StringComparison.Ordinal) &&
+           styles.Contains("grid-template-columns: repeat(4, minmax(0, 1fr));", StringComparison.Ordinal) &&
+           styles.Contains("border-right: 1px solid var(--hairline);", StringComparison.Ordinal) &&
+           styles.Contains(".tab {\n  width: 100%;", StringComparison.Ordinal),
+        "the four log filters must share the available width equally and the Error filter must have a right divider");
 }
 
 static void WebUiUsesPackagedReferenceGuides()

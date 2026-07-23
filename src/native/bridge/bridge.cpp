@@ -12613,7 +12613,7 @@ namespace
                 const auto pixel = (static_cast<std::size_t>(y) * static_cast<std::size_t>(image_paint_width) + static_cast<std::size_t>(x)) * 4;
                 const auto alpha = image_paint_rgba[pixel + 3];
                 sample.unsafe = false;
-                if ((image_paint_alpha_mode == "skip" && alpha < 128) ||
+                if ((image_paint_alpha_mode == "skip" && alpha == 0) ||
                     (image_paint_alpha_mode == "background" && alpha == 254))
                 {
                     sample.image_transparent_skip = true;
@@ -12908,16 +12908,13 @@ namespace
             };
             if (image_paint_enabled)
             {
-                // Image Paint is implicit on each enabled face. Fill establishes
-                // the shared Fill material underneath, then opaque atlas pixels
-                // paint over it; Skip dispatches neither pass for that face.
-                if (mode == MeshFirstRegionMode::Fill)
+                // An Image design never paints transparent texels. Fill supplies
+                // the material for opaque imported pixels only; both passes skip
+                // alpha=0 so a PNG's transparent background remains untouched.
+                if (mode == MeshFirstRegionMode::Fill && !sample.image_transparent_skip)
                 {
                     append_candidate(MeshFirstRegionMode::Fill);
-                    if (!sample.image_transparent_skip)
-                    {
-                        append_candidate(MeshFirstRegionMode::Paint);
-                    }
+                    append_candidate(MeshFirstRegionMode::Paint);
                 }
             }
             else

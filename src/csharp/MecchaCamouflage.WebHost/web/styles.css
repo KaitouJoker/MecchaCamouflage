@@ -219,6 +219,10 @@ a:hover {
   font: 700 11px/13px var(--font-mono);
 }
 
+.settings-tab + .settings-tab {
+  border-left: 1px solid var(--hairline);
+}
+
 .settings-tab.active {
   border-bottom-color: var(--primary);
   color: var(--primary);
@@ -705,17 +709,26 @@ body.editing .image-choice-list > strong {
 }
 
 .tabs {
-  display: flex;
+  display: grid;
+  flex: 1 1 0;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   min-width: 0;
+  border-right: 1px solid var(--hairline);
 }
 
 .tab {
+  width: 100%;
+  min-width: 0;
   height: 33px;
   border-width: 0 0 2px;
   border-color: transparent;
   background: transparent;
   color: var(--muted);
   font: 700 11px/13px var(--font-mono);
+}
+
+.tab + .tab {
+  border-left: 1px solid var(--hairline);
 }
 
 .tab.active {
