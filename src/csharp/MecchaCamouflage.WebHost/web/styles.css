@@ -397,12 +397,19 @@ body.editing .region-grid > strong {
   color: var(--text);
 }
 
-#fill-section.disabled {
+.region-choice[data-image-region] {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+#fill-section.disabled,
+#image-fill-section.disabled {
   opacity: 0.55;
 }
 
 body.editing #fill-section.disabled .group-title,
-body.editing #fill-section.disabled .field > span {
+body.editing #fill-section.disabled .field > span,
+body.editing #image-fill-section.disabled .group-title,
+body.editing #image-fill-section.disabled .field > span {
   color: var(--muted);
 }
 
@@ -413,25 +420,21 @@ body.editing #fill-section.disabled .field > span {
   padding: 12px;
 }
 
-.image-paint-group {
+.image-settings-stack {
   display: grid;
-  gap: 10px;
+  gap: 0;
 }
 
-.image-upload-actions,
-.image-options-grid {
-  display: grid;
-  gap: 8px;
-}
-
-.image-preset-actions {
+.image-design-action-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
 }
 
-.image-upload-actions {
-  grid-template-columns: minmax(0, 1fr);
+.image-design-action-grid button {
+  height: 26px;
+  padding: 0 8px;
+  font: 700 11px/13px var(--font-ui);
 }
 
 .image-layer-list {
@@ -448,7 +451,7 @@ body.editing #fill-section.disabled .field > span {
 }
 
 .image-layer-item {
-  min-height: 30px;
+  min-height: 32px;
   border: 1px solid var(--hairline);
   padding: 0 8px;
   background: var(--surface-mid);
@@ -472,8 +475,8 @@ body.editing #fill-section.disabled .field > span {
 }
 
 .image-layer-action {
-  min-height: 30px;
-  min-width: 30px;
+  min-height: 32px;
+  min-width: 32px;
   border: 1px solid var(--hairline);
   padding: 0 7px;
   background: var(--surface-mid);
@@ -496,13 +499,9 @@ body.editing #fill-section.disabled .field > span {
   color: var(--danger);
 }
 
-.image-material-section {
-  display: grid;
-}
-
 .image-choice-list {
   display: grid;
-  grid-template-columns: 88px minmax(0, 1fr);
+  grid-template-columns: 72px minmax(0, 1fr);
   align-items: center;
   gap: 6px 10px;
 }
@@ -518,6 +517,15 @@ body.editing .image-choice-list > strong {
 
 .image-choice {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.image-design-actions {
+  display: grid;
+  gap: 8px;
+}
+
+.image-design-actions > .group-title {
+  margin: 0;
 }
 
 .image-canvas-wrap {
@@ -549,36 +557,6 @@ body.editing .image-choice-list > strong {
   cursor: grabbing;
 }
 
-.image-options-grid {
-  grid-template-columns: 1fr;
-}
-
-.image-option-row {
-  display: grid;
-  grid-column: 1 / -1;
-  grid-template-columns: 130px minmax(0, 1fr);
-  align-items: center;
-  gap: 8px;
-  color: var(--muted);
-  font: 700 12px/14px var(--font-mono);
-}
-
-.image-background-section {
-  display: grid;
-  gap: 8px;
-}
-
-.image-background-toggle {
-  min-height: 26px;
-}
-
-.image-background-section.disabled {
-  opacity: 1;
-}
-
-.image-background-section.disabled .image-background-controls {
-  opacity: 0.55;
-}
 
 .crop-editor-dialog[hidden] {
   display: none;
@@ -658,11 +636,6 @@ body.editing .image-choice-list > strong {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-}
-
-body.editing .image-background-section.disabled .group-title,
-body.editing .image-background-section.disabled .field > span {
-  color: var(--muted);
 }
 
 .setting-grid > .app-wide {

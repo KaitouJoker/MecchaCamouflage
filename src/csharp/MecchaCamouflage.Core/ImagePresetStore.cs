@@ -43,7 +43,7 @@ public sealed class ImagePresetStore
         if (!TryNormalizePath(path, requirePresetExtension, out var target, out var pathMessage))
             return new ImagePresetResult(false, pathMessage);
         if (source is null)
-            return new ImagePresetResult(false, "Image preset data is missing.");
+            return new ImagePresetResult(false, "Preset data is missing.");
 
         var design = Clone(source);
         design.MigrateLegacyLayerTransforms();
@@ -70,7 +70,7 @@ public sealed class ImagePresetStore
             var manifest = new PresetManifest { SchemaVersion = ContainerVersion, Image = design };
             var manifestBytes = Encoding.UTF8.GetBytes(JsonSerializer.Serialize(manifest, JsonOptions));
             if (manifestBytes.Length is < 2 or > 1_048_576)
-                return new ImagePresetResult(false, "Image preset manifest is invalid.");
+                return new ImagePresetResult(false, "Preset manifest is invalid.");
 
             Directory.CreateDirectory(Path.GetDirectoryName(target)!);
             var temporary = target + ".tmp-" + Guid.NewGuid().ToString("N");
@@ -115,7 +115,7 @@ public sealed class ImagePresetStore
             return false;
         if (!File.Exists(target))
         {
-            message = "Image preset file does not exist.";
+            message = "Preset file does not exist.";
             return false;
         }
         try
@@ -124,26 +124,26 @@ public sealed class ImagePresetStore
             using var reader = new BinaryReader(stream, Encoding.UTF8, leaveOpen: false);
             if (!reader.ReadBytes(Magic.Length).SequenceEqual(Magic))
             {
-                message = "Image preset format is unsupported.";
+                message = "Preset format is unsupported.";
                 return false;
             }
             var containerVersion = reader.ReadInt32();
             if (containerVersion is < FirstSupportedContainerVersion or > ContainerVersion)
             {
-                message = "Image preset format is unsupported.";
+                message = "Preset format is unsupported.";
                 return false;
             }
             var manifestLength = reader.ReadInt32();
             var entryCount = reader.ReadInt32();
             if (manifestLength is < 2 or > 1_048_576 || entryCount is < 0 or > 1024)
             {
-                message = "Image preset header is invalid.";
+                message = "Preset header is invalid.";
                 return false;
             }
             var manifest = JsonSerializer.Deserialize<PresetManifest>(reader.ReadBytes(manifestLength), JsonOptions);
             if (manifest is null || manifest.SchemaVersion != containerVersion || manifest.Image is null)
             {
-                message = "Image preset manifest is invalid.";
+                message = "Preset manifest is invalid.";
                 return false;
             }
             var descriptors = new List<PresetEntryDescriptor>(entryCount);
@@ -155,13 +155,13 @@ public sealed class ImagePresetStore
                 var hash = reader.ReadBytes(32);
                 if (!IsEntryNameValid(name) || length is < 0 or > ImagePaintSettings.MaximumTotalSourceBytes || hash.Length != 32)
                 {
-                    message = "Image preset entry table is invalid.";
+                    message = "Preset entry table is invalid.";
                     return false;
                 }
                 totalBytes += length;
                 if (totalBytes > ImagePaintSettings.MaximumTotalSourceBytes + ImagePaintSettings.CanvasByteLength)
                 {
-                    message = "Image preset entries are too large.";
+                    message = "Preset entries are too large.";
                     return false;
                 }
                 descriptors.Add(new PresetEntryDescriptor(name, length, hash));
@@ -172,13 +172,13 @@ public sealed class ImagePresetStore
                 var bytes = reader.ReadBytes(checked((int)descriptor.Length));
                 if (bytes.LongLength != descriptor.Length || !SHA256.HashData(bytes).SequenceEqual(descriptor.Hash) || !data.TryAdd(descriptor.Name, bytes))
                 {
-                    message = "Image preset entry hash does not match.";
+                    message = "Preset entry hash does not match.";
                     return false;
                 }
             }
             if (stream.Position != stream.Length)
             {
-                message = "Image preset has trailing data.";
+                message = "Preset has trailing data.";
                 return false;
             }
 
@@ -195,7 +195,7 @@ public sealed class ImagePresetStore
             }
             if (!data.Remove("canvas.rgba", out var canvas) || canvas.Length != ImagePaintSettings.CanvasByteLength)
             {
-                message = "Image preset canvas is missing or invalid.";
+                message = "Preset canvas is missing or invalid.";
                 return false;
             }
             design.CanvasRgbaBase64 = Convert.ToBase64String(canvas);
@@ -205,7 +205,7 @@ public sealed class ImagePresetStore
                 var extension = layer.MimeType == "image/jpeg" ? "jpg" : "png";
                 if (!data.Remove($"layers/{index}.{extension}", out var source))
                 {
-                    message = "Image preset layer source is missing.";
+                    message = "Preset layer source is missing.";
                     return false;
                 }
                 layer.DataBase64 = Convert.ToBase64String(source);
@@ -213,7 +213,7 @@ public sealed class ImagePresetStore
             if (data.Count != 0 || !design.TryValidate(out message))
             {
                 if (data.Count != 0)
-                    message = "Image preset contains unexpected assets.";
+                    message = "Preset contains unexpected assets.";
                 return false;
             }
             return true;
@@ -234,18 +234,18 @@ public sealed class ImagePresetStore
         {
             if (string.IsNullOrWhiteSpace(path))
             {
-                message = "Image preset path is missing.";
+                message = "Preset path is missing.";
                 return false;
             }
             fullPath = Path.GetFullPath(path);
             if (requirePresetExtension && !string.Equals(Path.GetExtension(fullPath), PresetExtension, StringComparison.OrdinalIgnoreCase))
             {
-                message = "Image preset files must use the .mcpreset extension.";
+                message = "Preset files must use the .mcpreset extension.";
                 return false;
             }
             if (Path.GetDirectoryName(fullPath) is not { Length: > 0 })
             {
-                message = "Image preset directory is invalid.";
+                message = "Preset directory is invalid.";
                 return false;
             }
             return true;

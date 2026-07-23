@@ -13,7 +13,7 @@
       <section class="panel panel-fill corner-accent">
         <div class="settings-tabs" role="tablist" aria-label="Settings sections">
           <button class="settings-tab active" type="button" data-settings-tab="paint">Paint settings</button>
-          <button class="settings-tab" type="button" data-settings-tab="image">Image</button>
+          <button class="settings-tab" type="button" data-settings-tab="image">Image settings</button>
         </div>
 
         <div class="panel-scroll">
@@ -121,52 +121,61 @@
             </section>
 
             <section class="settings-tab-panel" data-settings-panel="image" hidden>
-              <div class="group image-paint-group" id="image-paint-section">
-                <input id="image-file-input" type="file" accept="image/png,image/jpeg" multiple hidden>
-                <div class="image-geometry-section">
+              <input id="image-file-input" type="file" accept="image/png,image/jpeg" multiple hidden>
+              <div class="image-settings-stack">
+                <div class="group" id="image-paint-section">
                   <div class="group-title">Geometry</div>
-                  <div class="setting-grid image-geometry-controls">
+                  <div class="setting-grid">
                     <label class="field app-wide"><span>Brush size</span><div class="range-row"><input id="image-brush-size" class="image-edit-control" type="range" min="1" max="10" step="0.5" value="5"><input id="image-brush-size-number" class="image-edit-control range-number" type="number" min="1" max="10" step="0.5" value="5"></div></label>
                     <label class="field app-wide"><span>Color compression tolerance</span><div class="range-row"><input id="image-color-compression-tolerance" class="image-edit-control" type="range" min="0" max="10" step="0.5" value="0"><input id="image-color-compression-tolerance-number" class="image-edit-control range-number" type="number" min="0" max="10" step="0.5" value="0"></div></label>
                   </div>
                 </div>
-                <div class="image-material-section">
+                <div class="group">
                   <div class="group-title">Material</div>
-                  <div class="setting-grid image-material-controls">
+                  <div class="setting-grid">
                     <label class="field"><span>Metallic</span><div class="range-row"><input id="image-metallic" class="image-edit-control" type="range" min="0" max="1" step="0.01" value="0"><input id="image-metallic-number" class="image-edit-control range-number" type="number" min="0" max="1" step="0.01" value="0"></div></label>
                     <label class="field"><span>Roughness</span><div class="range-row"><input id="image-roughness" class="image-edit-control" type="range" min="0" max="1" step="0.01" value="1"><input id="image-roughness-number" class="image-edit-control range-number" type="number" min="0" max="1" step="0.01" value="1"></div></label>
                     <label class="field"><span>Emissive</span><div class="range-row"><input id="image-emissive" class="image-edit-control" type="range" min="0" max="1" step="0.01" value="0"><input id="image-emissive-number" class="image-edit-control range-number" type="number" min="0" max="1" step="0.01" value="0"></div></label>
                   </div>
                 </div>
-                <div class="group-title">Image</div>
-                <div class="image-preset-actions">
-                  <button id="image-preset-open" type="button">Open</button>
-                  <button id="image-preset-load" class="image-edit-control" type="button">Load preset</button>
-                  <button id="image-preset-save" class="image-edit-control" type="button">Save preset</button>
-                </div>
-                <div class="image-upload-actions">
-                  <button id="image-upload" class="image-edit-control primary" type="button">Upload</button>
-                </div>
-                <div class="image-choice-list">
-                  <strong title="Changes the game surface mapping; it does not move the image in the atlas.">Body type</strong><div class="region-choice image-choice" role="group" aria-label="Body type">
-                    <button id="image-guide-round" class="image-edit-control active" type="button">Round</button>
-                    <button id="image-guide-cube" class="image-edit-control" type="button">Cube</button>
+                <div class="group">
+                  <div class="group-title" data-i18n="regions">Regions</div>
+                  <div class="region-grid">
+                    <strong data-i18n="region.front">Front</strong>
+                    <div class="region-choice" data-image-region="frontRegionMode"></div>
+                    <strong>Right</strong>
+                    <div class="region-choice" data-image-region="rightRegionMode"></div>
+                    <strong data-i18n="region.back">Back</strong>
+                    <div class="region-choice" data-image-region="backRegionMode"></div>
+                    <strong>Left</strong>
+                    <div class="region-choice" data-image-region="leftRegionMode"></div>
                   </div>
                 </div>
-                <div id="image-layer-list" class="image-layer-list" aria-live="polite"></div>
-                <div class="image-canvas-wrap" id="image-drop-zone">
-                  <canvas id="image-placement-canvas" width="1024" height="512" aria-label="Four-face image placement canvas"></canvas>
+                <div class="group" id="image-fill-section">
+                  <div class="group-title" data-i18n="mode.fill">Fill</div>
+                  <div class="setting-grid">
+                    <label class="field app-wide"><span data-i18n="fill.color">Color</span><div class="color-row"><input id="image-fill-color-picker" class="image-edit-control color-picker" type="color" value="#FFFFFF"><input id="image-fill-color" class="image-edit-control mono-input" type="text" spellcheck="false" placeholder="#FFFFFF"></div></label>
+                    <label class="field"><span data-i18n="metallic">Metallic</span><div class="range-row"><input id="image-fill-metallic" class="image-edit-control" type="range" min="0" max="1" step="0.01" value="0"><input id="image-fill-metallic-number" class="image-edit-control range-number" type="number" min="0" max="1" step="0.01" value="0"></div></label>
+                    <label class="field"><span data-i18n="roughness">Roughness</span><div class="range-row"><input id="image-fill-roughness" class="image-edit-control" type="range" min="0" max="1" step="0.01" value="1"><input id="image-fill-roughness-number" class="image-edit-control range-number" type="number" min="0" max="1" step="0.01" value="1"></div></label>
+                    <label class="field"><span data-i18n="emissive">Emissive</span><div class="range-row"><input id="image-fill-emissive" class="image-edit-control" type="range" min="0" max="1" step="0.01" value="0"><input id="image-fill-emissive-number" class="image-edit-control range-number" type="number" min="0" max="1" step="0.01" value="0"></div></label>
+                  </div>
                 </div>
-                <div class="image-options-grid">
-                  <div class="image-background-section" id="image-background-section">
-                    <div class="group-title">Background material</div>
-                    <label class="checkbox-row image-background-toggle"><input id="image-paint-background" class="image-edit-control" type="checkbox"><span>Paint background</span></label>
-                    <div class="setting-grid image-background-controls">
-                      <label class="field app-wide"><span>Color</span><input id="image-background" class="image-edit-control color-picker" type="color" value="#BCBCBC"></label>
-                      <label class="field"><span>Metallic</span><div class="range-row"><input id="image-background-metallic" class="image-edit-control" type="range" min="0" max="1" step="0.01" value="0"><input id="image-background-metallic-number" class="image-edit-control range-number" type="number" min="0" max="1" step="0.01" value="0"></div></label>
-                      <label class="field"><span>Roughness</span><div class="range-row"><input id="image-background-roughness" class="image-edit-control" type="range" min="0" max="1" step="0.01" value="1"><input id="image-background-roughness-number" class="image-edit-control range-number" type="number" min="0" max="1" step="0.01" value="1"></div></label>
-                      <label class="field"><span>Emissive</span><div class="range-row"><input id="image-background-emissive" class="image-edit-control" type="range" min="0" max="1" step="0.01" value="0"><input id="image-background-emissive-number" class="image-edit-control range-number" type="number" min="0" max="1" step="0.01" value="0"></div></label>
+                <div class="group image-design-actions">
+                  <div class="group-title">Images</div>
+                  <div class="image-design-action-grid">
+                    <button id="image-upload" class="image-edit-control" type="button">Upload</button>
+                    <button id="image-preset-load" class="image-edit-control" type="button">Load preset</button>
+                    <button id="image-preset-save" class="image-edit-control" type="button">Save preset</button>
+                  </div>
+                  <div class="image-choice-list">
+                    <strong title="Changes the game surface mapping; it does not move the image in the atlas.">Body type</strong><div class="region-choice image-choice" role="group" aria-label="Body type">
+                      <button id="image-guide-round" class="image-edit-control active" type="button">Round</button>
+                      <button id="image-guide-cube" class="image-edit-control" type="button">Cube</button>
                     </div>
+                  </div>
+                  <div id="image-layer-list" class="image-layer-list" aria-live="polite"></div>
+                  <div class="image-canvas-wrap" id="image-drop-zone">
+                    <canvas id="image-placement-canvas" width="1024" height="512" aria-label="Four-face image placement canvas"></canvas>
                   </div>
                 </div>
               </div>

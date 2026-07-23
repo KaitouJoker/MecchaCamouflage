@@ -149,6 +149,12 @@ public sealed class ImagePaintSettings
     public int CanvasEncodingVersion { get; set; }
     public string BodyType { get; set; } = "round";
     public string AlphaMode { get; set; } = "skip";
+    // Image Paint always draws the imported raster on enabled faces. These
+    // modes only choose the base beneath it: Fill first, or leave it skipped.
+    public string FrontRegionMode { get; set; } = "fill";
+    public string RightRegionMode { get; set; } = "fill";
+    public string BackRegionMode { get; set; } = "fill";
+    public string LeftRegionMode { get; set; } = "fill";
     public RgbColor BackgroundColor { get; set; } = new(188, 188, 188);
     public string Placement { get; set; } = "fit";
     // Read only during migration of v1 image states. New designs store these
@@ -189,6 +195,14 @@ public sealed class ImagePaintSettings
         if (AlphaMode is not ("skip" or "background"))
         {
             message = "Image transparency must be skip or background.";
+            return false;
+        }
+        if (FrontRegionMode is not ("fill" or "skip") ||
+            RightRegionMode is not ("fill" or "skip") ||
+            BackRegionMode is not ("fill" or "skip") ||
+            LeftRegionMode is not ("fill" or "skip"))
+        {
+            message = "Image region modes must be fill or skip.";
             return false;
         }
         if (Layers.Count < 1)
@@ -244,6 +258,10 @@ public sealed class ImagePaintSettings
             : 0;
         BodyType = BodyType is "cube" ? "cube" : "round";
         AlphaMode = AlphaMode is "background" ? "background" : "skip";
+        FrontRegionMode = FrontRegionMode is "skip" ? "skip" : "fill";
+        RightRegionMode = RightRegionMode is "skip" ? "skip" : "fill";
+        BackRegionMode = BackRegionMode is "skip" ? "skip" : "fill";
+        LeftRegionMode = LeftRegionMode is "skip" ? "skip" : "fill";
         BrushSizeTexels = Math.Clamp(BrushSizeTexels, 1.0, 10.0);
         ColorCompressionTolerance = Math.Clamp(ColorCompressionTolerance, 0.0, 10.0);
         Metallic = Math.Clamp(Metallic, 0.0, 1.0);

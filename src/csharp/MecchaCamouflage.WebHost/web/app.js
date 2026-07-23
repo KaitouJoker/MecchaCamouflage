@@ -313,13 +313,14 @@ function renderSettings(snapshot) {
   setNumberPair("metallic", "metallic-number", paint.metallic);
   setNumberPair("roughness", "roughness-number", paint.roughness);
   setNumberPair("emissive", "emissive-number", paint.emissive);
-  renderRegionButtons(document.querySelector('[data-region="paint.frontRegionMode"]'), "paint.frontRegionMode", paint.frontRegionMode);
-  renderRegionButtons(document.querySelector('[data-region="paint.sideRegionMode"]'), "paint.sideRegionMode", paint.sideRegionMode);
-  renderRegionButtons(document.querySelector('[data-region="paint.backRegionMode"]'), "paint.backRegionMode", paint.backRegionMode);
+  renderRegionButtons('[data-region="paint.frontRegionMode"]', "paint.frontRegionMode", paint.frontRegionMode);
+  renderRegionButtons('[data-region="paint.sideRegionMode"]', "paint.sideRegionMode", paint.sideRegionMode);
+  renderRegionButtons('[data-region="paint.backRegionMode"]', "paint.backRegionMode", paint.backRegionMode);
   setColor(paint.fillColor);
   setNumberPair("fill-metallic", "fill-metallic-number", paint.fillMetallic);
   setNumberPair("fill-roughness", "fill-roughness-number", paint.fillRoughness);
   setNumberPair("fill-emissive", "fill-emissive-number", paint.fillEmissive);
+  renderImageSharedFill(paint, editing);
 
   const app = snapshot.settings.app;
   applyThemeColor(app.themeColor);
@@ -379,6 +380,22 @@ function setColor(value) {
   setColorPair("fill-color-picker", "fill-color", value);
 }
 
+function renderImageSharedFill(paint, editable) {
+  if (!paint) return;
+  setColorPair("image-fill-color-picker", "image-fill-color", paint.fillColor);
+  setNumberPair("image-fill-metallic", "image-fill-metallic-number", paint.fillMetallic);
+  setNumberPair("image-fill-roughness", "image-fill-roughness-number", paint.fillRoughness);
+  setNumberPair("image-fill-emissive", "image-fill-emissive-number", paint.fillEmissive);
+  const fillEnabled = usesImageFill(imageEditor);
+  byId("image-fill-section").classList.toggle("disabled", !fillEnabled);
+  setDisabled([
+    "image-fill-color-picker", "image-fill-color",
+    "image-fill-metallic", "image-fill-metallic-number",
+    "image-fill-roughness", "image-fill-roughness-number",
+    "image-fill-emissive", "image-fill-emissive-number"
+  ], !editable || !fillEnabled);
+}
+
 function setColorPair(pickerId, inputId, value) {
   const color = normalizeColor(value) || "#FFFFFF";
   setValue(pickerId, color);
@@ -417,22 +434,44 @@ function setControlDisabled(control, disabled) {
   }
 }
 
-function renderRegionButtons(container, key, current) {
-  container.innerHTML = "";
-  for (const mode of ["paint", "fill", "skip"]) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.textContent = i18n(`mode.${mode}`);
-    button.className = mode === current ? "active" : "";
-    button.disabled = !editing;
-    button.addEventListener("click", () => {
-      if (!editing) {
-        return;
-      }
-      setDraftSetting(key, mode);
-      renderSettings(draftSnapshot);
-    });
-    container.append(button);
+function renderRegionButtons(selector, key, current) {
+  for (const container of document.querySelectorAll(selector)) {
+    container.innerHTML = "";
+    for (const mode of ["paint", "fill", "skip"]) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = i18n(`mode.${mode}`);
+      button.className = mode === current ? "active" : "";
+      button.disabled = !editing;
+      button.addEventListener("click", () => {
+        if (!editing) {
+          return;
+        }
+        setDraftSetting(key, mode);
+        renderSettings(draftSnapshot);
+      });
+      container.append(button);
+    }
+  }
+}
+
+function renderImageRegionButtons(editor, editable) {
+  for (const container of document.querySelectorAll("[data-image-region]")) {
+    const property = container.dataset.imageRegion;
+    container.replaceChildren();
+    for (const mode of ["fill", "skip"]) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = i18n(`mode.${mode}`);
+      button.className = `image-edit-control${editor[property] === mode ? " active" : ""}`;
+      button.disabled = !editable;
+      button.addEventListener("click", () => {
+        if (!canEditImage() || !editable) return;
+        editor[property] = mode;
+        markImageDraftDirty();
+      });
+      container.append(button);
+    }
   }
 }
 
@@ -447,6 +486,11 @@ function renderEditState() {
 
 function usesFill(paint) {
   return paint.frontRegionMode === "fill" || paint.sideRegionMode === "fill" || paint.backRegionMode === "fill";
+}
+
+function usesImageFill(editor) {
+  return Boolean(editor) && ["frontRegionMode", "rightRegionMode", "backRegionMode", "leftRegionMode"]
+    .some(property => editor[property] === "fill");
 }
 
 function beginEdit() {
@@ -859,17 +903,15 @@ function newImageEditor() {
     compositionContext: composition.getContext("2d", { willReadFrequently: true }),
     selected: -1,
     bodyType: "round",
-    alphaMode: "skip",
-    backgroundColor: "#BCBCBC",
+    frontRegionMode: "fill",
+    rightRegionMode: "fill",
+    backRegionMode: "fill",
+    leftRegionMode: "fill",
     brushSizeTexels: 5,
     colorCompressionTolerance: 0,
     metallic: 0,
     roughness: 1,
     emissive: 0,
-    backgroundMetallic: 0,
-    backgroundRoughness: 1,
-    backgroundEmissive: 0,
-    canvasEncodingVersion: 2,
     revision: 0,
     committedEnabled: false,
     dirty: false,
@@ -911,8 +953,6 @@ function initializeImageEditor() {
   byId("image-upload").addEventListener("click", () => {
     if (canEditImage()) input.click();
   });
-  byId("image-preset-open").addEventListener("click", () =>
-    send("openImagePresetsFolder").catch(error => showError(error.message || String(error))));
   byId("image-preset-load").addEventListener("click", () => loadImagePreset().catch(error => showError(error.message || String(error))));
   byId("image-preset-save").addEventListener("click", () => saveImagePreset().catch(error => showError(error.message || String(error))));
   input.addEventListener("change", event => {
@@ -920,24 +960,15 @@ function initializeImageEditor() {
     event.target.value = "";
     if (files.length > 0) loadImageLayers(files).catch(error => showError(error.message || String(error)));
   });
-  byId("image-paint-background").addEventListener("change", event => {
-    if (!canEditImage()) return;
-    imageEditor.alphaMode = event.target.checked ? "background" : "skip";
-    markImageDraftDirty();
-  });
-  byId("image-background").addEventListener("input", event => {
-    if (!canEditImage()) return;
-    imageEditor.backgroundColor = normalizeColor(event.target.value) || "#BCBCBC";
-    markImageDraftDirty();
-  });
   bindImageRangePair("image-brush-size", "image-brush-size-number", "brushSizeTexels");
   bindImageRangePair("image-color-compression-tolerance", "image-color-compression-tolerance-number", "colorCompressionTolerance");
   bindImageRangePair("image-metallic", "image-metallic-number", "metallic");
   bindImageRangePair("image-roughness", "image-roughness-number", "roughness");
   bindImageRangePair("image-emissive", "image-emissive-number", "emissive");
-  bindImageRangePair("image-background-metallic", "image-background-metallic-number", "backgroundMetallic");
-  bindImageRangePair("image-background-roughness", "image-background-roughness-number", "backgroundRoughness");
-  bindImageRangePair("image-background-emissive", "image-background-emissive-number", "backgroundEmissive");
+  bindColorPair("image-fill-color-picker", "image-fill-color", "paint.fillColor");
+  bindRangePair("image-fill-metallic", "image-fill-metallic-number", "paint.fillMetallic");
+  bindRangePair("image-fill-roughness", "image-fill-roughness-number", "paint.fillRoughness");
+  bindRangePair("image-fill-emissive", "image-fill-emissive-number", "paint.fillEmissive");
   for (const eventName of ["dragenter", "dragover"]) {
     byId("image-drop-zone").addEventListener(eventName, event => {
       if (!canEditImage()) return;
@@ -1204,16 +1235,6 @@ function drawImageInRectangle(context, image, rectangle, layer, flip = false) {
 function drawImageComposition() {
   const context = imageEditor.compositionContext;
   context.clearRect(0, 0, IMAGE_CANVAS_WIDTH, IMAGE_CANVAS_HEIGHT);
-  if (imageEditor.alphaMode === "background") {
-    // Alpha 254 is an intentional background marker. Opaque source image
-    // pixels compose to 255, so native can apply Background PBR only to
-    // pixels that were not supplied by either image layer.
-    context.save();
-    context.globalAlpha = 254 / 255;
-    context.fillStyle = imageEditor.backgroundColor;
-    context.fillRect(0, 0, IMAGE_CANVAS_WIDTH, IMAGE_CANVAS_HEIGHT);
-    context.restore();
-  }
   for (const layer of imageEditor.layers) {
     if (!layer.image) continue;
     const rectangles = [{ x: layer.x, y: layer.y, width: layer.width, height: layer.height, flip: false }];
@@ -1801,26 +1822,15 @@ function renderImageEditor() {
   for (const [id, active] of [["image-guide-round", imageEditor.bodyType === "round"], ["image-guide-cube", imageEditor.bodyType === "cube"]]) {
     byId(id).classList.toggle("active", active);
   }
-  byId("image-paint-background").checked = imageEditor.alphaMode === "background";
-  byId("image-background").value = imageEditor.backgroundColor;
   setNumberPair("image-brush-size", "image-brush-size-number", imageEditor.brushSizeTexels);
   setNumberPair("image-color-compression-tolerance", "image-color-compression-tolerance-number", imageEditor.colorCompressionTolerance);
   setNumberPair("image-metallic", "image-metallic-number", imageEditor.metallic);
   setNumberPair("image-roughness", "image-roughness-number", imageEditor.roughness);
   setNumberPair("image-emissive", "image-emissive-number", imageEditor.emissive);
-  setNumberPair("image-background-metallic", "image-background-metallic-number", imageEditor.backgroundMetallic);
-  setNumberPair("image-background-roughness", "image-background-roughness-number", imageEditor.backgroundRoughness);
-  setNumberPair("image-background-emissive", "image-background-emissive-number", imageEditor.backgroundEmissive);
   const editable = editing && !imageEditor.restoring;
   for (const control of document.querySelectorAll(".image-edit-control")) control.disabled = !editable;
-  byId("image-preset-open").disabled = false;
-  const backgroundEditable = editable && imageEditor.alphaMode === "background";
-  setDisabled([
-    "image-background", "image-background-metallic", "image-background-metallic-number",
-    "image-background-roughness", "image-background-roughness-number",
-    "image-background-emissive", "image-background-emissive-number"
-  ], !backgroundEditable);
-  byId("image-background-section").classList.toggle("disabled", !backgroundEditable);
+  renderImageRegionButtons(imageEditor, editable);
+  renderImageSharedFill(currentSnapshot()?.settings?.paint, editable);
   byId("image-drop-zone").classList.toggle("readonly", !editable);
   renderImageLayerList();
 }
@@ -1888,28 +1898,13 @@ function bytesToBase64(bytes) {
   return btoa(binary);
 }
 
-function imageColorObject(value) {
-  const color = normalizeColor(value) || "#BCBCBC";
-  return {
-    r: Number.parseInt(color.slice(1, 3), 16),
-    g: Number.parseInt(color.slice(3, 5), 16),
-    b: Number.parseInt(color.slice(5, 7), 16)
-  };
-}
-
-function imageColorText(value) {
-  if (typeof value === "string") return normalizeColor(value);
-  if (!value || !Number.isFinite(value.r) || !Number.isFinite(value.g) || !Number.isFinite(value.b)) return null;
-  return "#" + [value.r, value.g, value.b].map(channel => clamp(Math.round(channel), 0, 255).toString(16).padStart(2, "0")).join("").toUpperCase();
-}
-
 function buildImageDesign() {
   drawImageComposition();
   const pixels = imageEditor.compositionContext.getImageData(0, 0, IMAGE_CANVAS_WIDTH, IMAGE_CANVAS_HEIGHT).data;
   for (let index = 0; index < pixels.length; index += 4) {
     if (pixels[index + 3] < IMAGE_ALPHA_THRESHOLD) {
       pixels[index] = 0; pixels[index + 1] = 0; pixels[index + 2] = 0; pixels[index + 3] = 0;
-    } else if (pixels[index + 3] !== 254) {
+    } else {
       pixels[index + 3] = 255;
     }
   }
@@ -1929,19 +1924,19 @@ function buildImageDesign() {
   return {
     enabled: layers.length > 0,
     revision: imageEditor.revision,
-    canvasEncodingVersion: 2,
+    canvasEncodingVersion: 0,
     bodyType: imageEditor.bodyType,
-    alphaMode: imageEditor.alphaMode,
-    backgroundColor: imageColorObject(imageEditor.backgroundColor),
+    alphaMode: "skip",
+    frontRegionMode: imageEditor.frontRegionMode,
+    rightRegionMode: imageEditor.rightRegionMode,
+    backRegionMode: imageEditor.backRegionMode,
+    leftRegionMode: imageEditor.leftRegionMode,
     placement: "fit",
     brushSizeTexels: imageEditor.brushSizeTexels,
     colorCompressionTolerance: imageEditor.colorCompressionTolerance,
     metallic: imageEditor.metallic,
     roughness: imageEditor.roughness,
     emissive: imageEditor.emissive,
-    backgroundMetallic: imageEditor.backgroundMetallic,
-    backgroundRoughness: imageEditor.backgroundRoughness,
-    backgroundEmissive: imageEditor.backgroundEmissive,
     canvasRgbaBase64: layers.length > 0 ? bytesToBase64(pixels) : "",
     layers
   };
@@ -1966,8 +1961,8 @@ async function saveImagePreset() {
   if (!canEditImage()) return;
   const staged = await stageImageDesign(buildImageDesign());
   const result = await send("saveImagePreset", staged);
-  if (!result?.success) throw new Error(result?.message || "The Image preset could not be saved.");
-  if (!result.cancelled) toast("Image preset saved.");
+  if (!result?.success) throw new Error(result?.message || "The preset could not be saved.");
+  if (!result.cancelled) toast("Preset saved.");
 }
 
 async function stageImageDesignAsset(transferId, asset, data) {
@@ -2014,16 +2009,19 @@ async function loadCommittedImageDesign() {
 async function loadImagePreset() {
   if (!canEditImage()) return;
   const response = await send("loadImagePreset");
-  if (!response?.success) throw new Error(response?.message || "The Image preset could not be loaded.");
+  if (!response?.success) throw new Error(response?.message || "The preset could not be loaded.");
   if (response.cancelled) return;
   await hydrateImageEditor(response.design, response.transferId, true);
+  toast("Preset loaded.");
 }
 
 async function hydrateImageEditor(design, transferId, draft) {
   const next = newImageEditor();
   next.bodyType = design?.bodyType === "cube" ? "cube" : "round";
-  next.alphaMode = design?.alphaMode === "background" ? "background" : "skip";
-  next.backgroundColor = imageColorText(design?.backgroundColor) || "#BCBCBC";
+  next.frontRegionMode = design?.frontRegionMode === "skip" ? "skip" : "fill";
+  next.rightRegionMode = design?.rightRegionMode === "skip" ? "skip" : "fill";
+  next.backRegionMode = design?.backRegionMode === "skip" ? "skip" : "fill";
+  next.leftRegionMode = design?.leftRegionMode === "skip" ? "skip" : "fill";
   const legacyWrapAtlasSeam = Boolean(design?.wrapFaces);
   const legacyMirrorFrontBack = Boolean(design?.mirrorFrontBack);
   next.brushSizeTexels = clamp(Number(design?.brushSizeTexels ?? 5), 1, 10);
@@ -2031,10 +2029,6 @@ async function hydrateImageEditor(design, transferId, draft) {
   next.metallic = clamp(Number(design?.metallic ?? 0), 0, 1);
   next.roughness = clamp(Number(design?.roughness ?? 1), 0, 1);
   next.emissive = clamp(Number(design?.emissive ?? 0), 0, 1);
-  next.backgroundMetallic = clamp(Number(design?.backgroundMetallic ?? 0), 0, 1);
-  next.backgroundRoughness = clamp(Number(design?.backgroundRoughness ?? 1), 0, 1);
-  next.backgroundEmissive = clamp(Number(design?.backgroundEmissive ?? 0), 0, 1);
-  next.canvasEncodingVersion = Number(design?.canvasEncodingVersion || 2);
   next.revision = Number(design?.revision || 0);
   next.committedEnabled = Boolean(design?.enabled);
   for (const [index, saved] of (design?.layers || []).entries()) {

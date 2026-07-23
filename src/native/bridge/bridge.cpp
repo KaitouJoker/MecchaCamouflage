@@ -7707,6 +7707,35 @@ namespace
         return MeshFirstRegionMode::Paint;
     }
 
+    auto mesh_first_parse_image_region_mode(const std::string& request,
+                                            const char* mode_key) -> MeshFirstRegionMode
+    {
+        return lower_copy(json_string_field(request, mode_key, "fill")) == "skip"
+                   ? MeshFirstRegionMode::Skip
+                   : MeshFirstRegionMode::Fill;
+    }
+
+    auto mesh_first_image_region_mode_for_tile(int tile,
+                                                MeshFirstRegionMode front,
+                                                MeshFirstRegionMode right,
+                                                MeshFirstRegionMode back,
+                                                MeshFirstRegionMode left) -> MeshFirstRegionMode
+    {
+        switch (tile)
+        {
+        case 0:
+            return front;
+        case 1:
+            return right;
+        case 2:
+            return back;
+        case 3:
+            return left;
+        default:
+            return MeshFirstRegionMode::Skip;
+        }
+    }
+
     auto mesh_first_region_mode_for_sample(MeshFirstRegion region,
                                            MeshFirstRegionMode front,
                                            MeshFirstRegionMode side,
@@ -7786,7 +7815,7 @@ namespace
         bool source_candidate{false};
         bool unsafe{false};
         bool image_transparent_skip{false};
-        bool image_background{false};
+        int image_face_tile{-1};
     };
 
     struct MeshFirstRuntimeTriangle
@@ -11180,19 +11209,33 @@ namespace
         auto side_region_mode = mesh_first_parse_region_mode(request, "side_region_mode");
         auto back_region_mode = mesh_first_parse_region_mode(request, "back_region_mode");
         const bool image_paint_enabled = json_bool_field(request, "image_paint_enabled", false);
-        if (image_paint_enabled)
-        {
-            front_region_mode = MeshFirstRegionMode::Paint;
-            side_region_mode = MeshFirstRegionMode::Paint;
-            back_region_mode = MeshFirstRegionMode::Paint;
-        }
+        const auto image_front_region_mode =
+            mesh_first_parse_image_region_mode(request, "image_paint_front_region_mode");
+        const auto image_right_region_mode =
+            mesh_first_parse_image_region_mode(request, "image_paint_right_region_mode");
+        const auto image_back_region_mode =
+            mesh_first_parse_image_region_mode(request, "image_paint_back_region_mode");
+        const auto image_left_region_mode =
+            mesh_first_parse_image_region_mode(request, "image_paint_left_region_mode");
         const bool enable_front = front_region_mode == MeshFirstRegionMode::Paint;
         const bool enable_side = side_region_mode == MeshFirstRegionMode::Paint;
         const bool enable_back = back_region_mode == MeshFirstRegionMode::Paint;
-        const bool replay_front_enabled = front_region_mode != MeshFirstRegionMode::Skip;
-        const bool replay_side_enabled = side_region_mode != MeshFirstRegionMode::Skip;
-        const bool replay_back_enabled = back_region_mode != MeshFirstRegionMode::Skip;
+        const bool image_front_enabled = image_front_region_mode != MeshFirstRegionMode::Skip;
+        const bool image_right_enabled = image_right_region_mode != MeshFirstRegionMode::Skip;
+        const bool image_back_enabled = image_back_region_mode != MeshFirstRegionMode::Skip;
+        const bool image_left_enabled = image_left_region_mode != MeshFirstRegionMode::Skip;
+        const bool replay_front_enabled = image_paint_enabled
+                                              ? image_front_enabled
+                                              : front_region_mode != MeshFirstRegionMode::Skip;
+        const bool replay_side_enabled = image_paint_enabled
+                                             ? image_right_enabled || image_left_enabled
+                                             : side_region_mode != MeshFirstRegionMode::Skip;
+        const bool replay_back_enabled = image_paint_enabled
+                                             ? image_back_enabled
+                                             : back_region_mode != MeshFirstRegionMode::Skip;
         const bool any_paint_region = enable_front || enable_side || enable_back;
+        const bool any_image_fill_region = image_front_enabled || image_right_enabled ||
+                                           image_back_enabled || image_left_enabled;
         const bool preview_only = json_bool_field(request, "preview_only", false);
         const bool unpreview_only = json_bool_field(request, "unpreview_only", false);
         const bool research_artifacts = json_bool_field(request, "research_artifacts", false);
@@ -11248,16 +11291,7 @@ namespace
         const double image_paint_metallic = clamp_range(json_number_field(request, "image_paint_metallic", 0.0), 0.0, 1.0);
         const double image_paint_roughness = clamp_range(json_number_field(request, "image_paint_roughness", 1.0), 0.0, 1.0);
         const double image_paint_emissive = clamp_range(json_number_field(request, "image_paint_emissive", 0.0), 0.0, 1.0);
-        const double image_paint_background_metallic =
-            clamp_range(json_number_field(request, "image_paint_background_metallic", 0.0), 0.0, 1.0);
-        const double image_paint_background_roughness =
-            clamp_range(json_number_field(request, "image_paint_background_roughness", 1.0), 0.0, 1.0);
-        const double image_paint_background_emissive =
-            clamp_range(json_number_field(request, "image_paint_background_emissive", 0.0), 0.0, 1.0);
         const int image_paint_revision = json_int_field(request, "image_paint_revision", 0, 0, 1000000000);
-        const double image_paint_background_r = clamp_range(json_number_field(request, "image_paint_background_r", 1.0), 0.0, 1.0);
-        const double image_paint_background_g = clamp_range(json_number_field(request, "image_paint_background_g", 1.0), 0.0, 1.0);
-        const double image_paint_background_b = clamp_range(json_number_field(request, "image_paint_background_b", 1.0), 0.0, 1.0);
         const std::string image_paint_rgba_base64 =
             json_string_field(request, "image_paint_rgba_base64", "");
         std::vector<std::uint8_t> image_paint_rgba{};
@@ -11338,6 +11372,10 @@ namespace
         metadata += ",\"front_region_mode\":\"" + std::string(mesh_first_region_mode_name(front_region_mode)) + "\"";
         metadata += ",\"side_region_mode\":\"" + std::string(mesh_first_region_mode_name(side_region_mode)) + "\"";
         metadata += ",\"back_region_mode\":\"" + std::string(mesh_first_region_mode_name(back_region_mode)) + "\"";
+        metadata += ",\"image_front_region_mode\":\"" + std::string(mesh_first_region_mode_name(image_front_region_mode)) + "\"";
+        metadata += ",\"image_right_region_mode\":\"" + std::string(mesh_first_region_mode_name(image_right_region_mode)) + "\"";
+        metadata += ",\"image_back_region_mode\":\"" + std::string(mesh_first_region_mode_name(image_back_region_mode)) + "\"";
+        metadata += ",\"image_left_region_mode\":\"" + std::string(mesh_first_region_mode_name(image_left_region_mode)) + "\"";
         metadata += ",\"front_region_active\":" + std::string(json_bool(replay_front_enabled));
         metadata += ",\"side_region_active\":" + std::string(json_bool(replay_side_enabled));
         metadata += ",\"back_region_active\":" + std::string(json_bool(replay_back_enabled));
@@ -11348,6 +11386,10 @@ namespace
         metadata += ",\"skip_region_count\":" + std::to_string((front_region_mode == MeshFirstRegionMode::Skip ? 1 : 0) +
                                                                (side_region_mode == MeshFirstRegionMode::Skip ? 1 : 0) +
                                                                (back_region_mode == MeshFirstRegionMode::Skip ? 1 : 0));
+        metadata += ",\"image_fill_region_count\":" + std::to_string((image_front_enabled ? 1 : 0) +
+                                                                      (image_right_enabled ? 1 : 0) +
+                                                                      (image_back_enabled ? 1 : 0) +
+                                                                      (image_left_enabled ? 1 : 0));
         metadata += ",\"brush_pipeline\":\"fill_single_brush\"";
         metadata += ",\"brush_size_texels\":" + std::to_string(tuning_brush_size_texels);
         metadata += ",\"coverage_step_texels\":" + std::to_string(tuning_brush_size_texels);
@@ -11766,19 +11808,22 @@ namespace
         const auto runtime_coordinate_pre_warm = runtime_coordinate_probe(runtime_triangle_cache);
         MeshFirstRuntimePaintWarmup runtime_cache_warmup{};
         MeshFirstRuntimeTriangleCoordinateSelection runtime_coordinate_post_warm{};
+        const bool runtime_cache_missing_before_warmup = !runtime_triangle_cache.ok;
         const bool runtime_cache_unstable_before_warmup =
             runtime_triangle_cache.ok &&
             (runtime_coordinate_pre_warm.samples <= 0 ||
              !std::isfinite(runtime_coordinate_pre_warm.selected_avg_error) ||
              runtime_coordinate_pre_warm.selected_avg_error > MeshFirstRuntimeCoordinateMaxAvgErrorCm);
-        if (runtime_cache_unstable_before_warmup)
+        if (runtime_cache_missing_before_warmup || runtime_cache_unstable_before_warmup)
         {
             const auto warmup_viewport = sdk_get_viewport_info(ref, ctx);
             runtime_cache_warmup = mesh_first_warm_runtime_paint_cache(ref,
                                                                        ctx,
                                                                        selected_mesh.mesh,
                                                                        warmup_viewport,
-                                                                       "runtime_triangle_coordinate_cache_unstable");
+                                                                       runtime_cache_missing_before_warmup
+                                                                           ? "runtime_triangle_cache_unavailable"
+                                                                           : "runtime_triangle_coordinate_cache_unstable");
             auto resolved = resolve_runtime_triangle_cache_once();
             runtime_triangle_cache = std::move(std::get<0>(resolved));
             runtime_triangle_cache_mode = std::move(std::get<1>(resolved));
@@ -12087,7 +12132,7 @@ namespace
         int research_constant_paint_color_assignments = 0;
         const bool mesh_capture_required = any_paint_region && !research_force_paint_color && !image_paint_enabled;
         metadata += ",\"mesh_capture_required\":" + std::string(json_bool(mesh_capture_required));
-        if (image_paint_enabled && any_paint_region)
+        if (image_paint_enabled && any_image_fill_region)
         {
             capture.failure = "skipped_imported_image";
             metadata += ",\"mesh_capture_skipped\":true";
@@ -12097,7 +12142,6 @@ namespace
             metadata += ",\"image_paint_height\":" + std::to_string(image_paint_height);
             int assigned = 0;
             int transparent_skipped = 0;
-            int background_assignments = 0;
             int cube_side_assignments = 0;
             int cube_edge_assignments = 0;
             int cube_canonical_mapping_failures = 0;
@@ -12165,6 +12209,21 @@ namespace
                     }
                     image_u = image_coordinate.u;
                     image_v = image_coordinate.v;
+                    switch (image_coordinate.face)
+                    {
+                    case runtime_contract::CubeCanonicalImageFace::Front:
+                        sample.image_face_tile = 0;
+                        break;
+                    case runtime_contract::CubeCanonicalImageFace::Right:
+                        sample.image_face_tile = 1;
+                        break;
+                    case runtime_contract::CubeCanonicalImageFace::Back:
+                        sample.image_face_tile = 2;
+                        break;
+                    case runtime_contract::CubeCanonicalImageFace::Left:
+                        sample.image_face_tile = 3;
+                        break;
+                    }
                     if (image_coordinate.face == runtime_contract::CubeCanonicalImageFace::Right ||
                         image_coordinate.face == runtime_contract::CubeCanonicalImageFace::Left)
                     {
@@ -12190,6 +12249,7 @@ namespace
                     }
                     image_u = image_coordinate.u;
                     image_v = image_coordinate.v;
+                    sample.image_face_tile = image_coordinate.tile;
                 }
                 const int x = std::max(0, std::min(image_paint_width - 1,
                     static_cast<int>(std::round(clamp01(image_u) * static_cast<double>(image_paint_width - 1)))));
@@ -12197,15 +12257,14 @@ namespace
                     static_cast<int>(std::round((1.0 - clamp01(image_v)) * static_cast<double>(image_paint_height - 1)))));
                 const auto pixel = (static_cast<std::size_t>(y) * static_cast<std::size_t>(image_paint_width) + static_cast<std::size_t>(x)) * 4;
                 const auto alpha = image_paint_rgba[pixel + 3];
-                if (image_paint_alpha_mode == "skip" && alpha < 128)
+                sample.unsafe = false;
+                if ((image_paint_alpha_mode == "skip" && alpha < 128) ||
+                    (image_paint_alpha_mode == "background" && alpha == 254))
                 {
                     sample.image_transparent_skip = true;
                     ++transparent_skipped;
                     continue;
                 }
-                sample.image_background = image_paint_alpha_mode == "background" && alpha == 254;
-                if (sample.image_background)
-                    ++background_assignments;
                 sample.r = static_cast<double>(image_paint_rgba[pixel + 0]) / 255.0;
                 sample.g = static_cast<double>(image_paint_rgba[pixel + 1]) / 255.0;
                 sample.b = static_cast<double>(image_paint_rgba[pixel + 2]) / 255.0;
@@ -12217,7 +12276,6 @@ namespace
             }
             metadata += ",\"image_paint_assignments\":" + std::to_string(assigned);
             metadata += ",\"image_paint_transparent_skips\":" + std::to_string(transparent_skipped);
-            metadata += ",\"image_paint_background_assignments\":" + std::to_string(background_assignments);
             metadata += ",\"image_paint_cube_side_assignments\":" + std::to_string(cube_side_assignments);
             metadata += ",\"image_paint_cube_edge_assignments\":" + std::to_string(cube_edge_assignments);
             metadata += ",\"image_paint_cube_canonical_mapping_failures\":" + std::to_string(cube_canonical_mapping_failures);
@@ -12230,14 +12288,8 @@ namespace
             metadata += ",\"image_paint_metallic\":" + std::to_string(image_paint_metallic);
             metadata += ",\"image_paint_roughness\":" + std::to_string(image_paint_roughness);
             metadata += ",\"image_paint_emissive\":" + std::to_string(image_paint_emissive);
-            metadata += ",\"image_paint_background_metallic\":" +
-                        std::to_string(image_paint_background_metallic);
-            metadata += ",\"image_paint_background_roughness\":" +
-                        std::to_string(image_paint_background_roughness);
-            metadata += ",\"image_paint_background_emissive\":" +
-                        std::to_string(image_paint_background_emissive);
         }
-        else if (research_force_paint_color && any_paint_region)
+        else if (!image_paint_enabled && research_force_paint_color && any_paint_region)
         {
             capture.failure = "skipped_research_constant_paint_color";
             metadata += ",\"mesh_capture_skipped\":true";
@@ -12284,7 +12336,7 @@ namespace
                 ++research_constant_paint_color_assignments;
             }
         }
-        else if (any_paint_region)
+        else if (!image_paint_enabled && any_paint_region)
         {
             write_bridge_progress("mesh_basecolor_capture",
                                   "Capturing mesh-first source BaseColor",
@@ -12397,9 +12449,11 @@ namespace
         paint_brush.Radius = static_cast<float>(brush_radius_uv);
         metadata += ",\"brush_radius_texels\":" + std::to_string(tuning_brush_size_texels);
         metadata += ",\"brush_radius_uv\":" + std::to_string(brush_radius_uv);
-        const bool any_fill_region = front_region_mode == MeshFirstRegionMode::Fill ||
-                                     side_region_mode == MeshFirstRegionMode::Fill ||
-                                     back_region_mode == MeshFirstRegionMode::Fill;
+        const bool any_fill_region = image_paint_enabled
+                                         ? any_image_fill_region
+                                         : front_region_mode == MeshFirstRegionMode::Fill ||
+                                               side_region_mode == MeshFirstRegionMode::Fill ||
+                                               back_region_mode == MeshFirstRegionMode::Fill;
         metadata += ",\"fill_all_regions\":" + std::string(json_bool(any_fill_region));
         metadata += ",\"fill_scope\":\"all_mesh_regions_when_any_fill\"";
         const double fill_stroke_radius_texels = 100.0;
@@ -12449,10 +12503,16 @@ namespace
         for (std::size_t sample_index = 0; sample_index < plan_samples.size(); ++sample_index)
         {
             const auto& sample = plan_samples[sample_index];
-            const auto mode = mesh_first_region_mode_for_sample(sample.region,
-                                                                 front_region_mode,
-                                                                 side_region_mode,
-                                                                 back_region_mode);
+            const auto mode = image_paint_enabled
+                                  ? mesh_first_image_region_mode_for_tile(sample.image_face_tile,
+                                                                           image_front_region_mode,
+                                                                           image_right_region_mode,
+                                                                           image_back_region_mode,
+                                                                           image_left_region_mode)
+                                  : mesh_first_region_mode_for_sample(sample.region,
+                                                                       front_region_mode,
+                                                                       side_region_mode,
+                                                                       back_region_mode);
             const auto camera_relative = sdk_vec_sub(sample.world_position, center_ray.location);
             const double fallback_view_vertical = scanline_camera_up_available
                                                       ? sdk_vec_dot(camera_relative, scanline_camera_up)
@@ -12487,12 +12547,16 @@ namespace
             };
             if (image_paint_enabled)
             {
-                // Imported designs are a single direct-paint pass. Do not emit
-                // a clearing Fill pass first: that is visually delayed by the
-                // game and made transparent pixels overwrite prior paint.
-                if (!sample.image_transparent_skip)
+                // Image Paint is implicit on each enabled face. Fill establishes
+                // the shared Fill material underneath, then opaque atlas pixels
+                // paint over it; Skip dispatches neither pass for that face.
+                if (mode == MeshFirstRegionMode::Fill)
                 {
-                    append_candidate(MeshFirstRegionMode::Paint);
+                    append_candidate(MeshFirstRegionMode::Fill);
+                    if (!sample.image_transparent_skip)
+                    {
+                        append_candidate(MeshFirstRegionMode::Paint);
+                    }
                 }
             }
             else
@@ -12723,10 +12787,16 @@ namespace
         adaptive_samples.reserve(plan_samples.size());
         for (const auto& sample : plan_samples)
         {
-            const auto mode = mesh_first_region_mode_for_sample(sample.region,
-                                                                 front_region_mode,
-                                                                 side_region_mode,
-                                                                 back_region_mode);
+            const auto mode = image_paint_enabled
+                                  ? mesh_first_image_region_mode_for_tile(sample.image_face_tile,
+                                                                           image_front_region_mode,
+                                                                           image_right_region_mode,
+                                                                           image_back_region_mode,
+                                                                           image_left_region_mode)
+                                  : mesh_first_region_mode_for_sample(sample.region,
+                                                                       front_region_mode,
+                                                                       side_region_mode,
+                                                                       back_region_mode);
             adaptive_samples.push_back({sample.u,
                                         sample.v,
                                         sample.region == MeshFirstRegion::Side
@@ -12738,7 +12808,9 @@ namespace
                                         sample.r,
                                         sample.g,
                                         sample.b,
-                                        mode == MeshFirstRegionMode::Paint && !sample.image_transparent_skip,
+                                        image_paint_enabled
+                                            ? mode == MeshFirstRegionMode::Fill && !sample.image_transparent_skip
+                                            : mode == MeshFirstRegionMode::Paint && !sample.image_transparent_skip,
                                         !sample.unsafe,
                                         1});
         }
@@ -12773,24 +12845,12 @@ namespace
             sdk::FPaintChannelData channel{};
             if (fill_mode)
             {
-                const double reset_r = image_paint_enabled && image_paint_alpha_mode == "background"
-                                           ? image_paint_background_r
-                                           : (image_paint_enabled ? 0.73535698 : fill_color_r);
-                const double reset_g = image_paint_enabled && image_paint_alpha_mode == "background"
-                                           ? image_paint_background_g
-                                           : (image_paint_enabled ? 0.73535698 : fill_color_g);
-                const double reset_b = image_paint_enabled && image_paint_alpha_mode == "background"
-                                           ? image_paint_background_b
-                                           : (image_paint_enabled ? 0.73535698 : fill_color_b);
-                const double stroke_metallic = image_paint_enabled
-                                                   ? (sample.image_background ? image_paint_background_metallic : image_paint_metallic)
-                                                   : fill_metallic;
-                const double stroke_roughness = image_paint_enabled
-                                                    ? (sample.image_background ? image_paint_background_roughness : image_paint_roughness)
-                                                    : fill_roughness;
-                const double stroke_emissive = image_paint_enabled
-                                                   ? (sample.image_background ? image_paint_background_emissive : image_paint_emissive)
-                                                   : fill_emissive;
+                const double reset_r = fill_color_r;
+                const double reset_g = fill_color_g;
+                const double reset_b = fill_color_b;
+                const double stroke_metallic = fill_metallic;
+                const double stroke_roughness = fill_roughness;
+                const double stroke_emissive = fill_emissive;
                 ++material_properties_fill_manual_samples;
                 const auto apply_mode = research_apply_mode >= 0
                                             ? static_cast<sdk::EPaintChannelApplyMode>(research_apply_mode)
@@ -12806,13 +12866,13 @@ namespace
             else
             {
                 double stroke_metallic = image_paint_enabled
-                                             ? (sample.image_background ? image_paint_background_metallic : image_paint_metallic)
+                                             ? image_paint_metallic
                                              : tuning_metallic;
                 double stroke_roughness = image_paint_enabled
-                                              ? (sample.image_background ? image_paint_background_roughness : image_paint_roughness)
+                                              ? image_paint_roughness
                                               : tuning_roughness;
                 double stroke_emissive = image_paint_enabled
-                                             ? (sample.image_background ? image_paint_background_emissive : image_paint_emissive)
+                                             ? image_paint_emissive
                                              : tuning_emissive;
                 if (tuning_auto_material && !image_paint_enabled)
                 {

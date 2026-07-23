@@ -1116,16 +1116,29 @@ public sealed class HostSession
                 "image_width",
                 "image_height",
                 "image_alpha_mode",
-                "image_body_type"
+                "image_body_type",
+                "runtime_triangle_cache_mode",
+                "runtime_triangle_cache_failure",
+                "runtime_triangle_profile_cache_failure",
+                "runtime_triangle_cache_warmup_reason",
+                "runtime_triangle_cache_warmup_failure",
+                "runtime_triangle_cache_warmup_is_initialized_before",
+                "runtime_triangle_cache_warmup_is_initialized_after",
+                "runtime_triangle_cache_warmup_hit_test_uncached_called",
+                "runtime_triangle_cache_warmup_hit_test_uncached_ok",
+                "runtime_triangle_cache_warmup_hit_test_cached_called",
+                "runtime_triangle_cache_warmup_hit_test_cached_ok"
             ];
             var parts = new List<string>();
             foreach (var field in fields)
             {
                 if (!metadata.TryGetProperty(field, out var value) ||
-                    value.ValueKind is not (JsonValueKind.String or JsonValueKind.Number))
+                    value.ValueKind is not (JsonValueKind.String or JsonValueKind.Number or JsonValueKind.True or JsonValueKind.False))
                     continue;
                 var text = value.ValueKind == JsonValueKind.String
                     ? value.GetString()
+                    : value.ValueKind is JsonValueKind.True or JsonValueKind.False
+                        ? value.GetBoolean().ToString().ToLowerInvariant()
                     : value.ToString();
                 if (string.IsNullOrWhiteSpace(text))
                     continue;
@@ -1189,12 +1202,6 @@ public sealed class HostSession
         Process.Start(new ProcessStartInfo(Paths.VersionRoot) { UseShellExecute = true });
     }
 
-    public void OpenImagePresetsFolder()
-    {
-        Directory.CreateDirectory(Paths.ImagePresetsDirectory);
-        Process.Start(new ProcessStartInfo(Paths.ImagePresetsDirectory) { UseShellExecute = true });
-    }
-
     public string ClipboardLogText()
     {
         if (!currentProgressIsServerPaint)
@@ -1247,6 +1254,10 @@ public sealed class HostSession
             image.BackgroundColor,
             image.Placement,
             image.BodyType,
+            image.FrontRegionMode,
+            image.RightRegionMode,
+            image.BackRegionMode,
+            image.LeftRegionMode,
             image.BrushSizeTexels,
             image.ColorCompressionTolerance,
             image.Metallic,

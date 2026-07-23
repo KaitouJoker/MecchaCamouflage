@@ -15,6 +15,7 @@ var tests = new List<(string Name, Action Run)>
     ("app defaults use 99 percent opacity", AppDefaultsUse99PercentOpacity),
     ("payload sends a single brush and compression tolerance", PayloadSendsSingleBrushPipeline),
     ("image payload carries a full canonical canvas", ImagePayloadCarriesFullCanonicalCanvas),
+    ("native warms an unavailable triangle cache before it blocks paint", NativeWarmsUnavailableTriangleCache),
     ("custom freecam surface is absent", CustomFreecamSurfaceIsAbsent),
     ("spectator paint resolution requires local controller identity", SpectatorPaintResolutionRequiresLocalControllerIdentity),
     ("diagnostic stroke limit requires explicit option", DiagnosticStrokeLimitRequiresExplicitOption),
@@ -155,8 +156,12 @@ static void ImageDesignDefaultsAreSafeAndPersist()
     Assert(Math.Abs(settings.Image.ColorCompressionTolerance) < 0.000001 &&
            Math.Abs(settings.Image.BackgroundMetallic) < 0.000001 &&
            Math.Abs(settings.Image.BackgroundRoughness - 1.0) < 0.000001 &&
-           settings.Image.CanvasEncodingVersion == 0,
-        "image paint should preserve full source detail by default and give Background its own safe PBR defaults");
+           settings.Image.CanvasEncodingVersion == 0 &&
+           settings.Image.FrontRegionMode == "fill" &&
+           settings.Image.RightRegionMode == "fill" &&
+           settings.Image.BackRegionMode == "fill" &&
+           settings.Image.LeftRegionMode == "fill",
+        "image paint should preserve full source detail, use safe Fill PBR defaults, and Fill all four atlas faces by default");
 
     settings.ActiveImageDesignId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     new SettingsStore(paths).Save(settings);
@@ -537,6 +542,10 @@ static void ImagePayloadCarriesFullCanonicalCanvas()
         new RgbColor(12, 34, 56),
         "fit",
         "round",
+        "fill",
+        "fill",
+        "fill",
+        "fill",
         5.0,
         0.0,
         0.0,
@@ -555,6 +564,10 @@ static void ImagePayloadCarriesFullCanonicalCanvas()
     Assert(root.GetProperty("image_paint_enabled").GetBoolean() &&
            root.GetProperty("image_paint_width").GetInt32() == ImagePaintSettings.CanvasWidth &&
            root.GetProperty("image_paint_height").GetInt32() == ImagePaintSettings.CanvasHeight &&
+           root.GetProperty("image_paint_front_region_mode").GetString() == "fill" &&
+           root.GetProperty("image_paint_right_region_mode").GetString() == "fill" &&
+           root.GetProperty("image_paint_back_region_mode").GetString() == "fill" &&
+           root.GetProperty("image_paint_left_region_mode").GetString() == "fill" &&
            encoded is not null &&
            Convert.FromBase64String(encoded).AsSpan().SequenceEqual(rgba) &&
            !root.TryGetProperty("image_paint_wrap_faces", out _) &&
@@ -573,6 +586,29 @@ static void ImagePayloadCarriesFullCanonicalCanvas()
     Assert(detail is not null && detail.Contains("image_decode_failure=base64_invalid_length", StringComparison.Ordinal) &&
            detail.Contains("image_base64_characters=17", StringComparison.Ordinal),
         "image payload rejections should report the native decode boundary in the runtime log");
+
+    var cacheReply = new BridgeReply(
+        true,
+        false,
+        "runtime_triangle_cache_unavailable",
+        "RuntimePaintable cached current triangles are unavailable; mesh-first paint cannot plan safely",
+        "{\"success\":false,\"metadata\":{\"runtime_triangle_cache_mode\":\"profile_verified_failed\",\"runtime_triangle_cache_failure\":\"runtime_triangle_cache_unavailable\",\"runtime_triangle_cache_warmup_reason\":\"runtime_triangle_cache_unavailable\",\"runtime_triangle_cache_warmup_hit_test_uncached_called\":true}}");
+    var cacheDetail = HostSession.PaintFailureDetail(cacheReply);
+    Assert(cacheDetail is not null &&
+           cacheDetail.Contains("runtime_triangle_cache_mode=profile_verified_failed", StringComparison.Ordinal) &&
+           cacheDetail.Contains("runtime_triangle_cache_warmup_hit_test_uncached_called=true", StringComparison.Ordinal),
+        "triangle-cache failures should log the warm-up boundary needed to diagnose a game-layout change");
+}
+
+static void NativeWarmsUnavailableTriangleCache()
+{
+    var bridge = File.ReadAllText(Path.Combine(
+        FindRepositoryRoot(), "src", "native", "bridge", "bridge.cpp"));
+
+    Assert(bridge.Contains("const bool runtime_cache_missing_before_warmup = !runtime_triangle_cache.ok;", StringComparison.Ordinal) &&
+           bridge.Contains("if (runtime_cache_missing_before_warmup || runtime_cache_unstable_before_warmup)", StringComparison.Ordinal) &&
+           bridge.Contains("\"runtime_triangle_cache_unavailable\"", StringComparison.Ordinal),
+        "a missing RuntimePaintable triangle cache must take the existing non-destructive warm-up path before the planner rejects it");
 }
 
 static void CustomFreecamSurfaceIsAbsent()
@@ -777,11 +813,11 @@ static void NativeAutoMaterialDetectsEmissiveAndReportsLocalPacing()
            bridge.Contains("first_stroke_emissive", StringComparison.Ordinal),
         "Auto Detect must cover Paint, preserve an explicit Fill material, use the UE5.6 Emissive-aware pattern layout, and expose numeric candidates for runtime verification");
     Assert(bridge.Contains("tuning_auto_material && any_paint_region", StringComparison.Ordinal) &&
-           bridge.Contains("image_paint_background_metallic", StringComparison.Ordinal) &&
-           bridge.Contains("image_paint_background_roughness", StringComparison.Ordinal) &&
-           bridge.Contains("image_paint_background_emissive", StringComparison.Ordinal) &&
-           bridge.Contains("sample.image_background", StringComparison.Ordinal),
-        "normal Fill must retain manual PBR values while image paint distinguishes its committed layer and Background PBR values");
+           bridge.Contains("const double reset_r = fill_color_r", StringComparison.Ordinal) &&
+           bridge.Contains("const double stroke_metallic = fill_metallic", StringComparison.Ordinal) &&
+           !bridge.Contains("image_paint_background_metallic", StringComparison.Ordinal) &&
+           !bridge.Contains("sample.image_background", StringComparison.Ordinal),
+        "normal and Image Fill must share the same manual Fill PBR values rather than retaining a separate image background material");
     Assert(bridge.Contains("image_paint_brush_size_texels", StringComparison.Ordinal) &&
            bridge.Contains("tuning_brush_size_texels = image_paint_brush_size_texels", StringComparison.Ordinal) &&
            bridge.Contains("image_paint_color_compression_tolerance", StringComparison.Ordinal) &&
@@ -1200,10 +1236,14 @@ static void WebUiImagePaintEditorUsesSavedTransaction()
     var bridge = File.ReadAllText(Path.Combine(repository, "src", "native", "bridge", "bridge.cpp"));
 
     Assert(index.Contains("Paint settings", StringComparison.Ordinal) &&
-           index.Contains("data-settings-tab=\"image\">Image</button>", StringComparison.Ordinal) &&
-           index.Contains("id=\"image-preset-open\"", StringComparison.Ordinal) &&
+           index.Contains("data-settings-tab=\"image\">Image settings</button>", StringComparison.Ordinal) &&
+           index.Contains("class=\"image-design-action-grid\"", StringComparison.Ordinal) &&
+           !index.Contains("id=\"image-preset-open\"", StringComparison.Ordinal) &&
            index.Contains("id=\"image-preset-load\"", StringComparison.Ordinal) &&
            index.Contains("id=\"image-preset-save\"", StringComparison.Ordinal) &&
+           index.Contains("<div class=\"group-title\">Images</div>", StringComparison.Ordinal) &&
+           !index.Contains("<div class=\"group-title\">Presets</div>", StringComparison.Ordinal) &&
+           !index.Contains("<div class=\"group-title\">Layers</div>", StringComparison.Ordinal) &&
            !index.Contains("image-design-list", StringComparison.Ordinal) &&
            !index.Contains("image-design-name", StringComparison.Ordinal),
         "Image uses the Paint/Image tabs and file presets without a named design library");
@@ -1213,20 +1253,34 @@ static void WebUiImagePaintEditorUsesSavedTransaction()
            index.Contains("id=\"image-layer-list\"", StringComparison.Ordinal) &&
            index.Contains("id=\"crop-editor-dialog\"", StringComparison.Ordinal) &&
            index.Contains("Body type", StringComparison.Ordinal) &&
-           index.Contains("id=\"image-paint-background\"", StringComparison.Ordinal) &&
+           index.Contains("id=\"image-fill-section\"", StringComparison.Ordinal) &&
+           index.Contains("id=\"image-fill-color-picker\"", StringComparison.Ordinal) &&
+           index.Contains("data-image-region=\"frontRegionMode\"", StringComparison.Ordinal) &&
+           index.Contains("data-image-region=\"rightRegionMode\"", StringComparison.Ordinal) &&
+           index.Contains("data-image-region=\"backRegionMode\"", StringComparison.Ordinal) &&
+           index.Contains("data-image-region=\"leftRegionMode\"", StringComparison.Ordinal) &&
+           index.IndexOf("data-image-region=\"frontRegionMode\"", StringComparison.Ordinal) <
+               index.IndexOf("data-image-region=\"rightRegionMode\"", StringComparison.Ordinal) &&
+           index.IndexOf("data-image-region=\"rightRegionMode\"", StringComparison.Ordinal) <
+               index.IndexOf("data-image-region=\"backRegionMode\"", StringComparison.Ordinal) &&
+           index.IndexOf("data-image-region=\"backRegionMode\"", StringComparison.Ordinal) <
+               index.IndexOf("data-image-region=\"leftRegionMode\"", StringComparison.Ordinal) &&
+           !index.Contains("image-paint-background", StringComparison.Ordinal) &&
+           !index.Contains("image-background-section", StringComparison.Ordinal) &&
            !index.Contains("image-fit-canvas", StringComparison.Ordinal) &&
            !index.Contains("image-crop-layer", StringComparison.Ordinal) &&
            !index.Contains("image-wrap", StringComparison.Ordinal) &&
            !index.Contains("image-mirror", StringComparison.Ordinal) &&
            !index.Contains("image-status", StringComparison.Ordinal),
-        "Image keeps Upload global while per-layer controls own Wrap, Mirror, Fit, Crop, and Delete");
-    Assert(index.IndexOf("Paint background", StringComparison.Ordinal) > index.IndexOf("Background material", StringComparison.Ordinal) &&
+        "Image keeps Upload global while per-layer controls own Wrap, Mirror, Fit, Crop, and Delete, and owns four Fill/Skip faces while reusing Fill material");
+    Assert(!index.Contains("Paint background", StringComparison.Ordinal) &&
+           !index.Contains("Background material", StringComparison.Ordinal) &&
            !index.Contains("Transparent pixels", StringComparison.Ordinal) &&
            index.Contains("image-brush-size", StringComparison.Ordinal) &&
            index.Contains("image-color-compression-tolerance", StringComparison.Ordinal) &&
            index.Contains("image-metallic", StringComparison.Ordinal) &&
-           index.Contains("image-background-metallic", StringComparison.Ordinal),
-        "Background uses an explicit Paint background checkbox while its material controls remain independent");
+           index.Contains("image-fill-metallic", StringComparison.Ordinal),
+        "Image uses the shared Fill material controls rather than a second background material");
     Assert(app.Contains("function defaultImageCropForLayer(layer)", StringComparison.Ordinal) &&
            app.Contains("const targetAspect = layer.width / layer.height;", StringComparison.Ordinal) &&
            app.Contains("const width = base.width / factor;", StringComparison.Ordinal) &&
@@ -1236,7 +1290,10 @@ static void WebUiImagePaintEditorUsesSavedTransaction()
            app.Contains("send(\"commitSettingsWithImage\"", StringComparison.Ordinal) &&
            app.Contains("send(\"saveImagePreset\"", StringComparison.Ordinal) &&
            app.Contains("send(\"loadImagePreset\"", StringComparison.Ordinal) &&
-           app.Contains("send(\"openImagePresetsFolder\"", StringComparison.Ordinal) &&
+           !app.Contains("openImagePresetsFolder", StringComparison.Ordinal) &&
+           app.Contains("toast(\"Preset saved.\")", StringComparison.Ordinal) &&
+           app.Contains("toast(\"Preset loaded.\")", StringComparison.Ordinal) &&
+           !app.Contains("image-paint-background", StringComparison.Ordinal) &&
            app.Contains("getLoadedImagePresetChunk", StringComparison.Ordinal) &&
            app.Contains("getImageAssetChunk", StringComparison.Ordinal) &&
            !app.Contains("commitImageDesign", StringComparison.Ordinal) &&
@@ -1250,19 +1307,31 @@ static void WebUiImagePaintEditorUsesSavedTransaction()
            !app.Contains("Unsaved Image Paint changes", StringComparison.Ordinal) &&
            !app.Contains("Guide unavailable", StringComparison.Ordinal),
         "GUI Save is the only active-state transaction; layer transforms, crop, and corner resizing stay draft-only without checkerboard serialization");
+    Assert(app.Contains("function renderImageRegionButtons", StringComparison.Ordinal) &&
+           app.Contains("for (const mode of [\"fill\", \"skip\"])", StringComparison.Ordinal) &&
+           bridge.Contains("mesh_first_parse_image_region_mode", StringComparison.Ordinal) &&
+           bridge.Contains("mesh_first_image_region_mode_for_tile", StringComparison.Ordinal) &&
+           bridge.Contains("sample.image_face_tile", StringComparison.Ordinal) &&
+           bridge.Contains("append_candidate(MeshFirstRegionMode::Fill);", StringComparison.Ordinal) &&
+           bridge.Contains("append_candidate(MeshFirstRegionMode::Paint);", StringComparison.Ordinal),
+        "Image must choose Fill or Skip per canonical face and overlay opaque image pixels on the shared Fill pass");
     Assert(mainForm.Contains("case \"commitSettingsWithImage\"", StringComparison.Ordinal) &&
            mainForm.Contains("case \"loadImagePreset\"", StringComparison.Ordinal) &&
            mainForm.Contains("case \"saveImagePreset\"", StringComparison.Ordinal) &&
+           !mainForm.Contains("case \"openImagePresetsFolder\"", StringComparison.Ordinal) &&
            mainForm.Contains("OpenFileDialog", StringComparison.Ordinal) &&
            mainForm.Contains("SaveFileDialog", StringComparison.Ordinal) &&
            !mainForm.Contains("case \"commitImageDesign\"", StringComparison.Ordinal) &&
            !mainForm.Contains("case \"listImageDesigns\"", StringComparison.Ordinal),
         "native file dialogs own preset paths and the old library commands are absent");
-    Assert(styles.Contains(".image-preset-actions", StringComparison.Ordinal) &&
+    Assert(styles.Contains(".image-design-action-grid", StringComparison.Ordinal) &&
+           styles.Contains(".image-design-action-grid button", StringComparison.Ordinal) &&
+           styles.Contains(".region-choice[data-image-region]", StringComparison.Ordinal) &&
+           styles.Contains(".image-settings-stack {\n  display: grid;\n  gap: 0;", StringComparison.Ordinal) &&
            styles.Contains(".image-layer-row", StringComparison.Ordinal) &&
            styles.Contains(".image-layer-tools", StringComparison.Ordinal) &&
            styles.Contains(".image-layer-action", StringComparison.Ordinal) &&
-           styles.Contains(".image-background-section.disabled", StringComparison.Ordinal) &&
+           styles.Contains("#image-fill-section.disabled", StringComparison.Ordinal) &&
            styles.Contains("touch-action: none", StringComparison.Ordinal) &&
            bridge.Contains("guide_atlas_triangles", StringComparison.Ordinal) &&
            bridge.Contains("guide_runtime_triangles", StringComparison.Ordinal) &&

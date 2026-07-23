@@ -859,9 +859,6 @@ public sealed class MainForm : Form
                 return HandleLoadImagePreset();
             case "saveImagePreset":
                 return HandleSaveImagePreset(command.Payload);
-            case "openImagePresetsFolder":
-                session.OpenImagePresetsFolder();
-                return new { success = true };
             case "paint":
                 return ApplyResult(await RunPaintCommandAsync(previewOnly: false, unpreviewOnly: false));
             case "preview":
@@ -915,14 +912,14 @@ public sealed class MainForm : Form
     private object HandleLoadImagePreset()
     {
         if (!settingsEditing)
-            return new { success = false, message = "Open Edit before loading an Image preset." };
+            return new { success = false, message = "Open Edit before loading a preset." };
 
         Directory.CreateDirectory(session.Paths.ImagePresetsDirectory);
         using var dialog = new OpenFileDialog
         {
-            Title = "Load MecchaCamouflage Image Preset",
+            Title = "Load MecchaCamouflage Preset",
             InitialDirectory = session.Paths.ImagePresetsDirectory,
-            Filter = "MecchaCamouflage Image Preset (*.mcpreset)|*.mcpreset",
+            Filter = "MecchaCamouflage Preset (*.mcpreset)|*.mcpreset",
             DefaultExt = ImagePresetStore.PresetExtension.TrimStart('.'),
             Multiselect = false,
             CheckFileExists = true,
@@ -942,16 +939,16 @@ public sealed class MainForm : Form
     private object HandleSaveImagePreset(JsonElement payload)
     {
         if (!settingsEditing)
-            return new { success = false, message = "Open Edit before saving an Image preset." };
+            return new { success = false, message = "Open Edit before saving a preset." };
         if (!TryReadImageDesign(payload, out var design, out var message))
             return new { success = false, message };
 
         Directory.CreateDirectory(session.Paths.ImagePresetsDirectory);
         using var dialog = new SaveFileDialog
         {
-            Title = "Save MecchaCamouflage Image Preset",
+            Title = "Save MecchaCamouflage Preset",
             InitialDirectory = session.Paths.ImagePresetsDirectory,
-            Filter = "MecchaCamouflage Image Preset (*.mcpreset)|*.mcpreset",
+            Filter = "MecchaCamouflage Preset (*.mcpreset)|*.mcpreset",
             DefaultExt = ImagePresetStore.PresetExtension.TrimStart('.'),
             AddExtension = true,
             OverwritePrompt = true,
@@ -1002,13 +999,13 @@ public sealed class MainForm : Form
         if (!TryReadImageAssetRequest(payload, out var asset, out var index, out var message) ||
             !TryReadTransferId(payload, out var transferId, out message))
         {
-            return new { success = false, message = message ?? "The Image preset asset request is invalid." };
+            return new { success = false, message = message ?? "The preset asset request is invalid." };
         }
         PruneExpiredImageTransfers();
         if (!loadedImagePresets.TryGetValue(transferId, out var transfer) ||
             !TryGetImageAssetBase64(transfer.Design, asset, out var data))
         {
-            return new { success = false, message = "The loaded Image preset is no longer available." };
+            return new { success = false, message = "The loaded preset is no longer available." };
         }
         transfer.LastUpdated = DateTimeOffset.UtcNow;
         return ImageAssetChunk(data, index);
