@@ -1311,6 +1311,11 @@ static void WebUiUsesPackagedReferenceGuides()
            refreshScript.Contains("ImageReferencePose", StringComparison.Ordinal) &&
            refreshScript.Contains("Restored the previous profile", StringComparison.Ordinal),
         "the update workflow must safely restore a profile on failure while baking one explicitly confirmed neutral-pose capture");
+    Assert(refreshScript.Contains("$meshArguments = @{", StringComparison.Ordinal) &&
+           !refreshScript.Contains("$meshArguments = @(\n", StringComparison.Ordinal) &&
+           refreshScript.Contains("[System.IO.File]::ReadAllBytes($profilePath)", StringComparison.Ordinal) &&
+           refreshScript.Contains("[System.IO.File]::WriteAllBytes($profilePath, $previousProfile)", StringComparison.Ordinal),
+        "the profile refresh must pass mesh options by name and restore the exact previous bytes when a refresh fails");
 }
 
 static void WebUiRendersPassProgressAndTotalEta()

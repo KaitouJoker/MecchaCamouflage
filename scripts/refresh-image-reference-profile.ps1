@@ -68,7 +68,7 @@ $configuration = if ($BodyType -eq "cube") {
 }
 $profilePath = Join-Path $repoRoot (Join-Path "resources\mesh-profiles" $configuration.ProfileFile)
 $previousProfile = if (Test-Path -LiteralPath $profilePath) {
-    [System.IO.File]::ReadAllText($profilePath)
+    [System.IO.File]::ReadAllBytes($profilePath)
 } else {
     $null
 }
@@ -76,20 +76,20 @@ $previousProfile = if (Test-Path -LiteralPath $profilePath) {
 try {
     if (-not $SkipMeshDump) {
         Invoke-Step -Name "regenerate $BodyType mesh profile" -ScriptBlock {
-            $meshArguments = @(
-                "-PaksPath", $PaksPath,
-                "-MappingsPath", $MappingsPath,
-                "-Cue4ParsePath", $Cue4ParsePath,
-                "-OodlePath", $OodlePath,
-                "-ZlibPath", $ZlibPath,
-                "-GameVersion", $GameVersion,
-                "-OutputPath", $profilePath,
-                "-AssetPath", $configuration.AssetPath,
-                "-ExportName", $configuration.ExportName,
-                "-ExpectedVertices", $configuration.ExpectedVertices,
-                "-ExpectedIndices", $configuration.ExpectedIndices,
-                "-ExpectedBones", $configuration.ExpectedBones
-            )
+            $meshArguments = @{
+                GameVersion = $GameVersion
+                OutputPath = $profilePath
+                AssetPath = $configuration.AssetPath
+                ExportName = $configuration.ExportName
+                ExpectedVertices = $configuration.ExpectedVertices
+                ExpectedIndices = $configuration.ExpectedIndices
+                ExpectedBones = $configuration.ExpectedBones
+            }
+            if (-not [string]::IsNullOrWhiteSpace($PaksPath)) { $meshArguments.PaksPath = $PaksPath }
+            if (-not [string]::IsNullOrWhiteSpace($MappingsPath)) { $meshArguments.MappingsPath = $MappingsPath }
+            if (-not [string]::IsNullOrWhiteSpace($Cue4ParsePath)) { $meshArguments.Cue4ParsePath = $Cue4ParsePath }
+            if (-not [string]::IsNullOrWhiteSpace($OodlePath)) { $meshArguments.OodlePath = $OodlePath }
+            if (-not [string]::IsNullOrWhiteSpace($ZlibPath)) { $meshArguments.ZlibPath = $ZlibPath }
             & (Join-Path $repoRoot "scripts\mesh.ps1") @meshArguments
         }
     }
@@ -142,11 +142,7 @@ try {
 }
 catch {
     if ($null -ne $previousProfile) {
-        [System.IO.File]::WriteAllText(
-            $profilePath,
-            $previousProfile,
-            (New-Object System.Text.UTF8Encoding($false))
-        )
+        [System.IO.File]::WriteAllBytes($profilePath, $previousProfile)
         Write-Warning "Restored the previous profile because refresh did not complete."
     }
     throw
