@@ -1,4 +1,5 @@
 using MecchaCamouflage.Controller;
+using MecchaCamouflage.Core;
 using System.Text.Json;
 
 namespace MecchaCamouflage.WebHost;
@@ -9,6 +10,8 @@ internal static class Program
     private static void Main(string[] args)
     {
         var paths = new MecchaCamouflage.Core.AppPaths(VersionInfo.Current);
+        var startupCatalog = LocalizationCatalog.Load();
+        var startupLocale = LocalizationCatalog.DetectSystemLanguage();
         DiagnosticsState.Initialize(paths, VersionInfo.Current);
         var captureBodyType = CaptureReferenceBodyType(args);
         if (captureBodyType is not null)
@@ -50,10 +53,10 @@ internal static class Program
         {
             DiagnosticsState.RecordException("application_run_failed", exception);
             MessageBox.Show(
-                "Meccha Camouflage failed to start. Diagnostic logs were written to:" +
+                startupCatalog.Text(startupLocale, "dialog.startup.failed") +
                 Environment.NewLine + paths.DiagnosticsDirectory +
                 Environment.NewLine + Environment.NewLine + exception.Message,
-                "Meccha Camouflage",
+                startupCatalog.Text(startupLocale, "app.title"),
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
         }

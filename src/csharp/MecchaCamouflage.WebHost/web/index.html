@@ -11,10 +11,10 @@
   <main class="workspace">
     <section class="column">
       <section class="panel panel-fill corner-accent">
-        <div class="settings-tabs" role="tablist" aria-label="Settings sections">
-          <button class="settings-tab active" type="button" data-settings-tab="paint">Paint settings</button>
-          <button class="settings-tab" type="button" data-settings-tab="image">Image settings</button>
-          <button class="settings-tab" type="button" data-settings-tab="application">Application Settings</button>
+        <div class="settings-tabs" role="tablist" aria-label="Settings sections" data-i18n-aria-label="aria.settings.sections">
+          <button class="settings-tab active" type="button" data-settings-tab="paint" data-i18n="settings.paint">Paint settings</button>
+          <button class="settings-tab" type="button" data-settings-tab="image" data-i18n="settings.image">Image settings</button>
+          <button class="settings-tab" type="button" data-settings-tab="application" data-i18n="settings.app">Application Settings</button>
         </div>
 
         <div class="panel-scroll">
@@ -125,36 +125,36 @@
               <input id="image-file-input" type="file" accept="image/png,image/jpeg" multiple hidden>
               <div class="image-settings-stack">
                 <div class="group image-design-actions">
-                  <div class="group-title">Image Design</div>
+                  <div class="group-title" data-i18n="image.design">Image Design</div>
                   <div class="image-design-action-grid">
-                    <button id="image-upload" class="image-edit-control" type="button">Upload</button>
-                    <button id="image-preset-load" class="image-edit-control" type="button">Load preset</button>
-                    <button id="image-preset-save" class="image-edit-control" type="button">Save preset</button>
+                    <button id="image-upload" class="image-edit-control" type="button" data-i18n="button.upload">Upload</button>
+                    <button id="image-preset-load" class="image-edit-control" type="button" data-i18n="button.load.preset">Load preset</button>
+                    <button id="image-preset-save" class="image-edit-control" type="button" data-i18n="button.save.preset">Save preset</button>
                   </div>
                   <div class="image-choice-list">
-                    <strong title="Changes the game surface mapping; it does not move the image in the atlas.">Body type</strong><div class="region-choice image-choice" role="group" aria-label="Body type">
-                      <button id="image-guide-round" class="image-edit-control active" type="button">Round</button>
-                      <button id="image-guide-cube" class="image-edit-control" type="button">Cube</button>
+                    <strong title="Changes the game surface mapping; it does not move the image in the atlas." data-i18n="image.body.type" data-i18n-title="aria.image.body.type">Body type</strong><div class="region-choice image-choice" role="group" aria-label="Body type" data-i18n-aria-label="aria.image.body.type">
+                      <button id="image-guide-round" class="image-edit-control active" type="button" data-i18n="body.round">Round</button>
+                      <button id="image-guide-cube" class="image-edit-control" type="button" data-i18n="body.cube">Cube</button>
                     </div>
                   </div>
                   <div id="image-layer-list" class="image-layer-list" aria-live="polite"></div>
                   <div class="image-canvas-wrap" id="image-drop-zone">
-                    <canvas id="image-placement-canvas" width="1024" height="512" aria-label="Four-face image placement canvas"></canvas>
+                    <canvas id="image-placement-canvas" width="1024" height="512" aria-label="Four-face image placement canvas" data-i18n-aria-label="aria.image.canvas"></canvas>
                   </div>
                 </div>
                 <div class="group" id="image-paint-section">
-                  <div class="group-title">Geometry</div>
+                  <div class="group-title" data-i18n="group.geometry">Geometry</div>
                   <div class="setting-grid">
-                    <label class="field app-wide"><span>Brush size</span><div class="range-row"><input id="image-brush-size" class="image-edit-control" type="range" min="1" max="10" step="0.5" value="5"><input id="image-brush-size-number" class="image-edit-control range-number" type="number" min="1" max="10" step="0.5" value="5"></div></label>
-                    <label class="field app-wide"><span>Color compression tolerance</span><div class="range-row"><input id="image-color-compression-tolerance" class="image-edit-control" type="range" min="0" max="10" step="0.5" value="0"><input id="image-color-compression-tolerance-number" class="image-edit-control range-number" type="number" min="0" max="10" step="0.5" value="0"></div></label>
+                    <label class="field app-wide"><span data-i18n="brush.size">Brush size</span><div class="range-row"><input id="image-brush-size" class="image-edit-control" type="range" min="1" max="10" step="0.5" value="5"><input id="image-brush-size-number" class="image-edit-control range-number" type="number" min="1" max="10" step="0.5" value="5"></div></label>
+                    <label class="field app-wide"><span data-i18n="color.compression.tolerance">Color compression tolerance</span><div class="range-row"><input id="image-color-compression-tolerance" class="image-edit-control" type="range" min="0" max="10" step="0.5" value="0"><input id="image-color-compression-tolerance-number" class="image-edit-control range-number" type="number" min="0" max="10" step="0.5" value="0"></div></label>
                   </div>
                 </div>
                 <div class="group">
-                  <div class="group-title">Material</div>
+                  <div class="group-title" data-i18n="group.material">Material</div>
                   <div class="setting-grid">
-                    <label class="field"><span>Metallic</span><div class="range-row"><input id="image-metallic" class="image-edit-control" type="range" min="0" max="1" step="0.01" value="0"><input id="image-metallic-number" class="image-edit-control range-number" type="number" min="0" max="1" step="0.01" value="0"></div></label>
-                    <label class="field"><span>Roughness</span><div class="range-row"><input id="image-roughness" class="image-edit-control" type="range" min="0" max="1" step="0.01" value="1"><input id="image-roughness-number" class="image-edit-control range-number" type="number" min="0" max="1" step="0.01" value="1"></div></label>
-                    <label class="field"><span>Emissive</span><div class="range-row"><input id="image-emissive" class="image-edit-control" type="range" min="0" max="1" step="0.01" value="0"><input id="image-emissive-number" class="image-edit-control range-number" type="number" min="0" max="1" step="0.01" value="0"></div></label>
+                    <label class="field"><span data-i18n="metallic">Metallic</span><div class="range-row"><input id="image-metallic" class="image-edit-control" type="range" min="0" max="1" step="0.01" value="0"><input id="image-metallic-number" class="image-edit-control range-number" type="number" min="0" max="1" step="0.01" value="0"></div></label>
+                    <label class="field"><span data-i18n="roughness">Roughness</span><div class="range-row"><input id="image-roughness" class="image-edit-control" type="range" min="0" max="1" step="0.01" value="1"><input id="image-roughness-number" class="image-edit-control range-number" type="number" min="0" max="1" step="0.01" value="1"></div></label>
+                    <label class="field"><span data-i18n="emissive">Emissive</span><div class="range-row"><input id="image-emissive" class="image-edit-control" type="range" min="0" max="1" step="0.01" value="0"><input id="image-emissive-number" class="image-edit-control range-number" type="number" min="0" max="1" step="0.01" value="0"></div></label>
                   </div>
                 </div>
                 <div class="group">
@@ -162,11 +162,11 @@
                   <div class="region-grid">
                     <strong data-i18n="region.front">Front</strong>
                     <div class="region-choice" data-image-region="frontRegionMode"></div>
-                    <strong>Right</strong>
+                    <strong data-i18n="region.right">Right</strong>
                     <div class="region-choice" data-image-region="rightRegionMode"></div>
                     <strong data-i18n="region.back">Back</strong>
                     <div class="region-choice" data-image-region="backRegionMode"></div>
-                    <strong>Left</strong>
+                    <strong data-i18n="region.left">Left</strong>
                     <div class="region-choice" data-image-region="leftRegionMode"></div>
                   </div>
                 </div>
@@ -184,7 +184,7 @@
 
             <section class="settings-tab-panel" data-settings-panel="application" hidden>
               <div class="group">
-                <div class="group-title">Application</div>
+                <div class="group-title" data-i18n="settings.app">Application</div>
                 <div class="setting-grid app-grid">
               <label class="field app-wide">
                 <span data-i18n="language">Language</span>
@@ -215,7 +215,7 @@
                 </div>
               </div>
               <div class="group">
-                <div class="group-title">Hotkeys</div>
+                <div class="group-title" data-i18n="group.hotkeys">Hotkeys</div>
                 <div class="hotkey-list">
                 <div class="hotkey-row">
                   <span data-i18n="start.hotkey">Start hotkey</span>
@@ -238,22 +238,22 @@
                   <button class="record-hotkey" type="button" disabled data-hotkey-key="app.stopHotkey" data-hotkey-input="stop-hotkey" data-i18n="button.record">Record</button>
                 </div>
                 <div class="hotkey-row">
-                  <span>Image paint hotkey</span>
+                  <span data-i18n="hotkey.image.paint">Image paint hotkey</span>
                   <input id="image-start-hotkey" class="setting-control mono-input" disabled type="text" readonly>
                   <button class="record-hotkey" type="button" disabled data-hotkey-key="app.imageStartHotkey" data-hotkey-input="image-start-hotkey" data-i18n="button.record">Record</button>
                 </div>
                 <div class="hotkey-row">
-                  <span>Image preview hotkey</span>
+                  <span data-i18n="hotkey.image.preview">Image preview hotkey</span>
                   <input id="image-preview-hotkey" class="setting-control mono-input" disabled type="text" readonly>
                   <button class="record-hotkey" type="button" disabled data-hotkey-key="app.imagePreviewHotkey" data-hotkey-input="image-preview-hotkey" data-i18n="button.record">Record</button>
                 </div>
                 <div class="hotkey-row">
-                  <span>Image unpreview hotkey</span>
+                  <span data-i18n="hotkey.image.unpreview">Image unpreview hotkey</span>
                   <input id="image-unpreview-hotkey" class="setting-control mono-input" disabled type="text" readonly>
                   <button class="record-hotkey" type="button" disabled data-hotkey-key="app.imageUnpreviewHotkey" data-hotkey-input="image-unpreview-hotkey" data-i18n="button.record">Record</button>
                 </div>
                 <div class="hotkey-row">
-                  <span>Image stop hotkey</span>
+                  <span data-i18n="hotkey.image.stop">Image stop hotkey</span>
                   <input id="image-stop-hotkey" class="setting-control mono-input" disabled type="text" readonly>
                   <button class="record-hotkey" type="button" disabled data-hotkey-key="app.imageStopHotkey" data-hotkey-input="image-stop-hotkey" data-i18n="button.record">Record</button>
                 </div>
@@ -317,11 +317,11 @@
 
   <div id="crop-editor-dialog" class="crop-editor-dialog" hidden>
     <div class="crop-editor-card" role="dialog" aria-modal="true" aria-labelledby="crop-editor-title">
-      <strong id="crop-editor-title">Crop selected image</strong>
-      <span class="crop-editor-help">Zoom in to shrink the selection, drag it into place, then choose Apply crop.</span>
-      <div class="crop-editor-stage-wrap"><div id="crop-editor-stage" class="crop-editor-stage"><img id="crop-editor-image" alt="Image being cropped"><div id="crop-editor-selection" class="crop-editor-selection"></div></div></div>
-      <label class="crop-editor-zoom"><span>Zoom</span><input id="crop-editor-zoom" type="range" min="100" max="400" step="1" value="100"></label>
-      <div class="crop-editor-actions"><button id="crop-editor-reset" type="button">Reset crop</button><button id="crop-editor-cancel" type="button">Cancel</button><button id="crop-editor-apply" class="primary" type="button">Apply crop</button></div>
+      <strong id="crop-editor-title" data-i18n="dialog.crop.title">Crop selected image</strong>
+      <span class="crop-editor-help" data-i18n="dialog.crop.help">Zoom in to shrink the selection, drag it into place, then choose Apply crop.</span>
+      <div class="crop-editor-stage-wrap"><div id="crop-editor-stage" class="crop-editor-stage"><img id="crop-editor-image" alt="Image being cropped" data-i18n-alt="dialog.crop.image.alt"><div id="crop-editor-selection" class="crop-editor-selection"></div></div></div>
+      <label class="crop-editor-zoom"><span data-i18n="dialog.crop.zoom">Zoom</span><input id="crop-editor-zoom" type="range" min="100" max="400" step="1" value="100"></label>
+      <div class="crop-editor-actions"><button id="crop-editor-reset" type="button" data-i18n="dialog.crop.reset">Reset crop</button><button id="crop-editor-cancel" type="button" data-i18n="button.cancel">Cancel</button><button id="crop-editor-apply" class="primary" type="button" data-i18n="dialog.crop.apply">Apply crop</button></div>
     </div>
   </div>
 

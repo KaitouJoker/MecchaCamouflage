@@ -159,11 +159,18 @@ function i18n(key, ...args) {
 }
 
 function applyI18n() {
+  document.documentElement.lang = activeLocale();
   for (const element of document.querySelectorAll("[data-i18n]")) {
     element.textContent = i18n(element.dataset.i18n);
   }
   for (const element of document.querySelectorAll("[data-i18n-aria-label]")) {
     element.setAttribute("aria-label", i18n(element.dataset.i18nAriaLabel));
+  }
+  for (const element of document.querySelectorAll("[data-i18n-title]")) {
+    element.setAttribute("title", i18n(element.dataset.i18nTitle));
+  }
+  for (const element of document.querySelectorAll("[data-i18n-alt]")) {
+    element.setAttribute("alt", i18n(element.dataset.i18nAlt));
   }
   document.title = i18n("app.title");
 }
@@ -906,7 +913,7 @@ function setHotkeyDialogMessage(message, error) {
 
 function showError(message) {
   console.error(message);
-  toast(message, "error");
+  toast(i18n("error.operation.failed"), "error");
 }
 
 function toast(message, level = "success") {
@@ -1808,7 +1815,7 @@ function buildReferenceImageGuideCanvasFromTriangles(triangles, options = {}) {
   silhouette.width = IMAGE_CANVAS_WIDTH;
   silhouette.height = IMAGE_CANVAS_HEIGHT;
   const silhouetteContext = silhouette.getContext("2d");
-  const labels = ["FRONT", "RIGHT", "BACK", "LEFT"];
+  const labels = [i18n("region.front"), i18n("region.right"), i18n("region.back"), i18n("region.left")];
   // Rasterise every triangle into an opaque mask first, then display that
   // mask once. Stacking translucent triangles made a checker/grid pattern
   // which looked like image pixels even though it was only a guide overlay.
@@ -1856,7 +1863,7 @@ function drawProfileGuide(context) {
   context.strokeStyle = "rgba(255,255,255,0.36)";
   context.fillStyle = "rgba(255,255,255,0.78)";
   context.font = "700 24px D-DIN, sans-serif";
-  const labels = ["FRONT", "RIGHT", "BACK", "LEFT"];
+  const labels = [i18n("region.front"), i18n("region.right"), i18n("region.back"), i18n("region.left")];
   for (let face = 0; face < 4; ++face) {
     const x = face * IMAGE_CANVAS_WIDTH / 4;
     context.strokeRect(x + 1, 1, IMAGE_CANVAS_WIDTH / 4 - 2, IMAGE_CANVAS_HEIGHT - 2);
@@ -1919,8 +1926,8 @@ function renderImageLayerList() {
     name.type = "button";
     name.disabled = !canStartLiveDraftEdit() || imageEditor.restoring;
     name.className = `image-layer-item${index === imageEditor.selected ? " active" : ""}`;
-    name.textContent = layer.fileName || `Image ${index + 1}`;
-    name.title = layer.fileName || `Image ${index + 1}`;
+    name.textContent = layer.fileName || i18n("image.layer.default", index + 1);
+    name.title = layer.fileName || i18n("image.layer.default", index + 1);
     name.addEventListener("click", () => {
       if (!canEditImage()) return;
       imageEditor.selected = index;
@@ -1943,19 +1950,19 @@ function renderImageLayerList() {
       });
       tools.append(button);
     };
-    action("Wrap", "Continue this image across the left and right atlas seam.", () => {
+    action(i18n("image.action.wrap"), i18n("image.action.wrap.title"), () => {
       layer.wrapAtlasSeam = !layer.wrapAtlasSeam;
       imageEditor.selected = index;
       markImageDraftDirty();
     }, layer.wrapAtlasSeam);
-    action("Mirror", "Mirror this image onto the opposite front/back atlas face.", () => {
+    action(i18n("image.action.mirror"), i18n("image.action.mirror.title"), () => {
       layer.mirrorFrontBack = !layer.mirrorFrontBack;
       imageEditor.selected = index;
       markImageDraftDirty();
     }, layer.mirrorFrontBack);
-    action("Fit", "Fit this image inside the atlas while preserving its aspect ratio.", () => fitImageLayer(index));
-    action("Crop", "Crop this source image.", () => openImageCropEditor(index));
-    action("×", `Remove ${layer.fileName || `image ${index + 1}`}`, () => {
+    action(i18n("image.action.fit"), i18n("image.action.fit.title"), () => fitImageLayer(index));
+    action(i18n("image.action.crop"), i18n("image.action.crop.title"), () => openImageCropEditor(index));
+    action("×", i18n("image.action.remove", layer.fileName || i18n("image.layer.default", index + 1)), () => {
       imageEditor.layers.splice(index, 1);
       imageEditor.selected = imageEditor.layers.length === 0 ? -1 : Math.min(index, imageEditor.layers.length - 1);
       markImageDraftDirty();
@@ -2040,7 +2047,7 @@ async function saveImagePreset() {
   const staged = await stageImageDesign(buildImageDesign());
   const result = await send("saveImagePreset", staged);
   if (!result?.success) throw new Error(result?.message || "The preset could not be saved.");
-  if (!result.cancelled) toast("Preset saved.");
+  if (!result.cancelled) toast(i18n("toast.image.preset.saved"));
 }
 
 async function stageImageDesignAsset(transferId, asset, data) {
@@ -2090,7 +2097,7 @@ async function loadImagePreset() {
   if (!response?.success) throw new Error(response?.message || "The preset could not be loaded.");
   if (response.cancelled) return;
   await hydrateImageEditor(response.design, response.transferId, true);
-  toast("Preset loaded.");
+  toast(i18n("toast.image.preset.loaded"));
 }
 
 async function hydrateImageEditor(design, transferId, draft) {

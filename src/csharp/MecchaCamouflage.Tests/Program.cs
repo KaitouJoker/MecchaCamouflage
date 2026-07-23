@@ -73,6 +73,12 @@ var tests = new List<(string Name, Action Run)>
     ("web ui keeps mesh guides visible with imported images", WebUiKeepsMeshGuidesVisibleWithImportedImages),
     ("web ui separates setting and log tabs", WebUiSeparatesSettingAndLogTabs),
     ("web ui reports the WebView zoom factor in the footer", WebUiReportsWebViewZoomFactorInFooter),
+    ("web ui localizes every settings tab", WebUiLocalizesEverySettingsTab),
+    ("web ui localizes image editor controls and crop dialog", WebUiLocalizesImageEditorControlsAndCropDialog),
+    ("web ui localizes operation errors", WebUiLocalizesOperationErrors),
+    ("native startup and WebView recovery dialogs are localized", NativeStartupAndWebViewRecoveryDialogsAreLocalized),
+    ("native preset file dialogs are localized", NativePresetFileDialogsAreLocalized),
+    ("every declared web localization key resolves in every locale", EveryDeclaredWebLocalizationKeyResolvesInEveryLocale),
     ("web ui uses packaged reference guides without a game connection", WebUiUsesPackagedReferenceGuides),
     ("web UI keeps theme color on readonly range and checkbox controls", WebUiKeepsThemeColorOnReadonlyControls),
     ("web ui renders pass progress and total eta", WebUiRendersPassProgressAndTotalEta),
@@ -1370,14 +1376,14 @@ static void WebUiImagePaintEditorUsesSavedTransaction()
     var bridge = File.ReadAllText(Path.Combine(repository, "src", "native", "bridge", "bridge.cpp"));
 
     Assert(index.Contains("Paint settings", StringComparison.Ordinal) &&
-           index.Contains("data-settings-tab=\"image\">Image settings</button>", StringComparison.Ordinal) &&
-           index.Contains("data-settings-tab=\"application\">Application Settings</button>", StringComparison.Ordinal) &&
+           index.Contains("data-settings-tab=\"image\" data-i18n=\"settings.image\">Image settings</button>", StringComparison.Ordinal) &&
+           index.Contains("data-settings-tab=\"application\" data-i18n=\"settings.app\">Application Settings</button>", StringComparison.Ordinal) &&
            index.Contains("data-settings-panel=\"application\" hidden", StringComparison.Ordinal) &&
            index.Contains("class=\"image-design-action-grid\"", StringComparison.Ordinal) &&
            !index.Contains("id=\"image-preset-open\"", StringComparison.Ordinal) &&
            index.Contains("id=\"image-preset-load\"", StringComparison.Ordinal) &&
            index.Contains("id=\"image-preset-save\"", StringComparison.Ordinal) &&
-           index.Contains("<div class=\"group-title\">Image Design</div>", StringComparison.Ordinal) &&
+           index.Contains("<div class=\"group-title\" data-i18n=\"image.design\">Image Design</div>", StringComparison.Ordinal) &&
            !index.Contains("<div class=\"group-title\">Presets</div>", StringComparison.Ordinal) &&
            !index.Contains("<div class=\"group-title\">Layers</div>", StringComparison.Ordinal) &&
            !index.Contains("image-design-list", StringComparison.Ordinal) &&
@@ -1440,8 +1446,8 @@ static void WebUiImagePaintEditorUsesSavedTransaction()
            app.Contains("send(\"saveImagePreset\"", StringComparison.Ordinal) &&
            app.Contains("send(\"loadImagePreset\"", StringComparison.Ordinal) &&
            !app.Contains("openImagePresetsFolder", StringComparison.Ordinal) &&
-           app.Contains("toast(\"Preset saved.\")", StringComparison.Ordinal) &&
-           app.Contains("toast(\"Preset loaded.\")", StringComparison.Ordinal) &&
+           app.Contains("toast(i18n(\"toast.image.preset.saved\"));", StringComparison.Ordinal) &&
+           app.Contains("toast(i18n(\"toast.image.preset.loaded\"));", StringComparison.Ordinal) &&
            !app.Contains("image-paint-background", StringComparison.Ordinal) &&
            app.Contains("getLoadedImagePresetChunk", StringComparison.Ordinal) &&
            app.Contains("getImageAssetChunk", StringComparison.Ordinal) &&
@@ -1549,7 +1555,7 @@ static void WebUiSeparatesSettingAndLogTabs()
     var markup = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "index.html"));
     var styles = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "styles.css"));
 
-    Assert(markup.Contains("<div class=\"group-title\">Image Design</div>", StringComparison.Ordinal) &&
+    Assert(markup.Contains("<div class=\"group-title\" data-i18n=\"image.design\">Image Design</div>", StringComparison.Ordinal) &&
            !markup.Contains("<div class=\"group-title\">Images</div>", StringComparison.Ordinal),
         "the Upload, Load preset, and Save preset controls must use the Image Design group title");
     Assert(styles.Contains(".settings-tab + .settings-tab", StringComparison.Ordinal) &&
@@ -1586,6 +1592,165 @@ static void WebUiReportsWebViewZoomFactorInFooter()
     Assert(mainForm.Contains("ZoomFactorChanged +=", StringComparison.Ordinal) &&
            mainForm.Contains("PostEvent(\"zoomChanged\", new { percent", StringComparison.Ordinal),
         "the host must send its actual WebView2 ZoomFactor to the footer");
+}
+
+static void WebUiLocalizesEverySettingsTab()
+{
+    var repository = FindRepositoryRoot();
+    var markup = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "index.html"));
+    var app = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "app.js"));
+    var catalog = LocalizationCatalog.Load();
+
+    Assert(markup.Contains("data-i18n=\"settings.paint\"", StringComparison.Ordinal) &&
+           markup.Contains("data-i18n=\"settings.image\"", StringComparison.Ordinal) &&
+           markup.Contains("data-i18n=\"settings.app\"", StringComparison.Ordinal) &&
+           app.Contains("document.documentElement.lang = activeLocale();", StringComparison.Ordinal),
+        "the Paint, Image, and Application tabs must update with the selected UI language");
+    foreach (var locale in LocalizationCatalog.SupportedLocales)
+    {
+        foreach (var key in new[] { "settings.paint", "settings.image", "settings.app" })
+        {
+            Assert(!string.Equals(catalog.Text(locale.Code, key), key, StringComparison.Ordinal),
+                $"{locale.Code} must translate {key}");
+        }
+    }
+}
+
+static void WebUiLocalizesImageEditorControlsAndCropDialog()
+{
+    var repository = FindRepositoryRoot();
+    var markup = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "index.html"));
+    var app = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "app.js"));
+    var catalog = LocalizationCatalog.Load();
+    var keys = new[]
+    {
+        "image.design", "button.upload", "button.load.preset", "button.save.preset",
+        "image.body.type", "body.round", "body.cube", "region.right", "region.left",
+        "group.hotkeys", "hotkey.image.paint", "hotkey.image.preview", "hotkey.image.unpreview", "hotkey.image.stop",
+        "image.action.wrap", "image.action.mirror", "image.action.fit", "image.action.crop", "image.action.remove",
+        "image.action.wrap.title", "image.action.mirror.title", "image.action.fit.title", "image.action.crop.title",
+        "image.layer.default", "toast.image.preset.saved", "toast.image.preset.loaded",
+        "dialog.crop.title", "dialog.crop.help", "dialog.crop.zoom", "dialog.crop.reset", "dialog.crop.apply",
+        "dialog.crop.image.alt", "aria.settings.sections", "aria.image.body.type", "aria.image.canvas"
+    };
+
+    Assert(markup.Contains("data-i18n=\"image.design\"", StringComparison.Ordinal) &&
+           markup.Contains("data-i18n=\"button.upload\"", StringComparison.Ordinal) &&
+           markup.Contains("data-i18n=\"group.hotkeys\"", StringComparison.Ordinal) &&
+           markup.Contains("data-i18n=\"dialog.crop.title\"", StringComparison.Ordinal) &&
+           markup.Contains("data-i18n-title=\"aria.image.body.type\"", StringComparison.Ordinal) &&
+           markup.Contains("data-i18n-alt=\"dialog.crop.image.alt\"", StringComparison.Ordinal) &&
+           app.Contains("action(i18n(\"image.action.wrap\"), i18n(\"image.action.wrap.title\")", StringComparison.Ordinal) &&
+           app.Contains("toast(i18n(\"toast.image.preset.saved\"));", StringComparison.Ordinal) &&
+           app.Contains("toast(i18n(\"toast.image.preset.loaded\"));", StringComparison.Ordinal),
+        "all image editor controls, crop dialog text, and dynamic layer actions must use localization keys");
+    foreach (var locale in LocalizationCatalog.SupportedLocales)
+    {
+        foreach (var key in keys)
+        {
+            Assert(!string.Equals(catalog.Text(locale.Code, key), key, StringComparison.Ordinal),
+                $"{locale.Code} must translate {key}");
+        }
+    }
+}
+
+static void WebUiLocalizesOperationErrors()
+{
+    var repository = FindRepositoryRoot();
+    var app = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "app.js"));
+    var catalog = LocalizationCatalog.Load();
+
+    Assert(app.Contains("toast(i18n(\"error.operation.failed\"), \"error\");", StringComparison.Ordinal),
+        "operation failures must show a localized user-facing message instead of a raw native error");
+    foreach (var locale in LocalizationCatalog.SupportedLocales)
+    {
+        Assert(!string.Equals(catalog.Text(locale.Code, "error.operation.failed"), "error.operation.failed", StringComparison.Ordinal),
+            $"{locale.Code} must translate the generic operation failure message");
+    }
+}
+
+static void NativeStartupAndWebViewRecoveryDialogsAreLocalized()
+{
+    var repository = FindRepositoryRoot();
+    var program = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "Program.cs"));
+    var mainForm = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "MainForm.cs"));
+    var dialog = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "WebViewFailureDialog.cs"));
+    var catalog = LocalizationCatalog.Load();
+    var keys = new[]
+    {
+        "dialog.startup.failed", "dialog.webview.runtime.required", "dialog.webview.failed.navigation",
+        "dialog.webview.failed.initialize", "dialog.webview.failed.ready.timeout", "dialog.webview.failed.retry",
+        "dialog.webview.failed.browser.process", "dialog.webview.failed.starting", "dialog.webview.details",
+        "dialog.webview.download", "button.close", "button.retry.once"
+    };
+
+    Assert(program.Contains("startupCatalog.Text(startupLocale, \"dialog.startup.failed\")", StringComparison.Ordinal) &&
+           mainForm.Contains("UiText(\"dialog.webview.runtime.required\")", StringComparison.Ordinal) &&
+           mainForm.Contains("\"dialog.webview.failed.navigation\"", StringComparison.Ordinal) &&
+           dialog.Contains("LocalizationCatalog localization", StringComparison.Ordinal) &&
+           dialog.Contains("localization.Text(locale, \"dialog.webview.details\")", StringComparison.Ordinal) &&
+           dialog.Contains("localization.Text(locale, \"button.retry.once\")", StringComparison.Ordinal),
+        "startup, WebView runtime, and recovery dialogs must resolve their visible text from the selected localization catalog");
+    foreach (var locale in LocalizationCatalog.SupportedLocales)
+    {
+        foreach (var key in keys)
+        {
+            Assert(!string.Equals(catalog.Text(locale.Code, key), key, StringComparison.Ordinal),
+                $"{locale.Code} must translate {key}");
+        }
+    }
+}
+
+static void NativePresetFileDialogsAreLocalized()
+{
+    var repository = FindRepositoryRoot();
+    var mainForm = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "MainForm.cs"));
+    var catalog = LocalizationCatalog.Load();
+    var keys = new[] { "dialog.preset.load.title", "dialog.preset.save.title", "dialog.preset.filter" };
+
+    Assert(mainForm.Contains("Title = UiText(\"dialog.preset.load.title\")", StringComparison.Ordinal) &&
+           mainForm.Contains("Title = UiText(\"dialog.preset.save.title\")", StringComparison.Ordinal) &&
+           mainForm.Contains("Filter = UiText(\"dialog.preset.filter\")", StringComparison.Ordinal),
+        "native preset dialogs must obtain titles and filters from the selected localization catalog");
+    foreach (var locale in LocalizationCatalog.SupportedLocales)
+    {
+        foreach (var key in keys)
+        {
+            Assert(!string.Equals(catalog.Text(locale.Code, key), key, StringComparison.Ordinal),
+                $"{locale.Code} must translate {key}");
+        }
+    }
+}
+
+static void EveryDeclaredWebLocalizationKeyResolvesInEveryLocale()
+{
+    var repository = FindRepositoryRoot();
+    var markup = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "index.html"));
+    var app = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "app.js"));
+    var catalog = LocalizationCatalog.Load();
+    var keys = new HashSet<string>(StringComparer.Ordinal);
+
+    foreach (System.Text.RegularExpressions.Match match in System.Text.RegularExpressions.Regex.Matches(
+                 markup, "data-i18n(?:-[^=]+)?=\\\"(?<key>[^\\\"]+)\\\""))
+    {
+        keys.Add(match.Groups["key"].Value);
+    }
+    foreach (System.Text.RegularExpressions.Match match in System.Text.RegularExpressions.Regex.Matches(
+                 app, "i18n\\(\\\"(?<key>[^\\\"]+)\\\""))
+    {
+        keys.Add(match.Groups["key"].Value);
+    }
+    keys.UnionWith(["mode.paint", "mode.fill", "mode.skip", "state.attached", "state.waiting", "state.connected", "state.ready", "state.running", "state.stopped", "state.failed"]);
+
+    Assert(keys.Count > 0, "the Web UI must declare localization keys");
+    foreach (var locale in LocalizationCatalog.SupportedLocales)
+    {
+        foreach (var key in keys)
+        {
+            Assert(!string.Equals(catalog.Text(locale.Code, key), key, StringComparison.Ordinal),
+                $"{locale.Code} must resolve web localization key {key}");
+        }
+    }
 }
 
 static void WebUiUsesPackagedReferenceGuides()

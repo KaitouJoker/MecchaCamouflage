@@ -69,6 +69,8 @@ public sealed class MainForm : Form
     // loading never changes the active game state.
     private readonly Dictionary<string, LoadedImagePresetTransfer> loadedImagePresets = new(StringComparer.Ordinal);
 
+    private string UiText(string key) => session.Localization.Text(session.Settings.Language, key);
+
     private sealed class StagedImageDesignTransfer
     {
         public DateTimeOffset LastUpdated { get; set; } = DateTimeOffset.UtcNow;
@@ -90,7 +92,7 @@ public sealed class MainForm : Form
     public MainForm(HostSession session)
     {
         this.session = session;
-        Text = "Meccha Camouflage";
+        Text = UiText("app.title");
         Icon = LoadWindowIcon();
         MinimumSize = new Size(960, 640);
         Width = (int)Math.Round(session.Settings.PanelWidth);
@@ -282,7 +284,7 @@ public sealed class MainForm : Form
             if (!args.IsSuccess)
             {
                 await RecoverWebViewAsync(
-                    "The Meccha Camouflage interface could not load.",
+                    "dialog.webview.failed.navigation",
                     new InvalidOperationException($"MC-WV-203 WebView2 navigation failed: {args.WebErrorStatus}"));
                 return;
             }
@@ -332,9 +334,8 @@ public sealed class MainForm : Form
             DiagnosticsState.SetLastCode("MC-WV-101", "Evergreen WebView2 Runtime is not installed");
             var install = MessageBox.Show(
                 this,
-                "Microsoft Edge WebView2 Runtime is required to start Meccha Camouflage.\n\n" +
-                "Install it now? This small Microsoft bootstrapper needs an internet connection.",
-                "Meccha Camouflage",
+                UiText("dialog.webview.runtime.required"),
+                UiText("app.title"),
                 MessageBoxButtons.YesNo,
                 MessageBoxIcon.Information);
             if (install != DialogResult.Yes)
@@ -493,7 +494,7 @@ public sealed class MainForm : Form
                 return;
             uiReadyTimeoutCancellation = null;
             await RecoverWebViewAsync(
-                "The Meccha Camouflage interface did not finish initializing.",
+                "dialog.webview.failed.ready.timeout",
                 new TimeoutException("MC-WV-204 Timed out waiting for the web interface uiReady signal."));
         }
         catch (OperationCanceledException)
@@ -552,10 +553,10 @@ public sealed class MainForm : Form
 
     private async Task HandleWebViewInitializationFailureAsync(Exception exception)
     {
-        await RecoverWebViewAsync("Meccha Camouflage could not start its WebView2 interface.", exception);
+        await RecoverWebViewAsync("dialog.webview.failed.initialize", exception);
     }
 
-    private async Task RecoverWebViewAsync(string userMessage, Exception exception)
+    private async Task RecoverWebViewAsync(string userMessageKey, Exception exception)
     {
         if (webViewRecoveryInProgress || IsDisposed || Disposing)
             return;
@@ -571,7 +572,9 @@ public sealed class MainForm : Form
             var retryAvailable = !webViewRetryUsed;
             var action = WebViewFailureDialog.Show(
                 this,
-                userMessage,
+                session.Localization,
+                session.Settings.Language,
+                UiText(userMessageKey),
                 DiagnosticsState.Summary(session.Paths),
                 ManualWebView2RuntimeUrl,
                 retryAvailable);
@@ -592,7 +595,9 @@ public sealed class MainForm : Form
                 session.Log.Error("WebView2 retry: " + retryException.Message);
                 WebViewFailureDialog.Show(
                     this,
-                    "The WebView2 retry did not succeed.",
+                    session.Localization,
+                    session.Settings.Language,
+                    UiText("dialog.webview.failed.retry"),
                     DiagnosticsState.Summary(session.Paths),
                     ManualWebView2RuntimeUrl,
                     retryAvailable: false);
@@ -665,7 +670,7 @@ public sealed class MainForm : Form
             return;
         }
         _ = RecoverWebViewAsync(
-            "The WebView2 browser process stopped unexpectedly.",
+            "dialog.webview.failed.browser.process",
             new InvalidOperationException("MC-WV-301 " + detail));
     }
 
@@ -805,7 +810,7 @@ public sealed class MainForm : Form
         if (webReady)
             return;
         await RecoverWebViewAsync(
-            "The Meccha Camouflage interface failed while starting.",
+            "dialog.webview.failed.starting",
             new InvalidOperationException("MC-WV-205 " + detail));
     }
 
@@ -930,9 +935,9 @@ public sealed class MainForm : Form
         Directory.CreateDirectory(session.Paths.ImagePresetsDirectory);
         using var dialog = new OpenFileDialog
         {
-            Title = "Load MecchaCamouflage Preset",
+            Title = UiText("dialog.preset.load.title"),
             InitialDirectory = session.Paths.ImagePresetsDirectory,
-            Filter = "MecchaCamouflage Preset (*.mcpreset)|*.mcpreset",
+            Filter = UiText("dialog.preset.filter"),
             DefaultExt = ImagePresetStore.PresetExtension.TrimStart('.'),
             Multiselect = false,
             CheckFileExists = true,
@@ -959,9 +964,9 @@ public sealed class MainForm : Form
         Directory.CreateDirectory(session.Paths.ImagePresetsDirectory);
         using var dialog = new SaveFileDialog
         {
-            Title = "Save MecchaCamouflage Preset",
+            Title = UiText("dialog.preset.save.title"),
             InitialDirectory = session.Paths.ImagePresetsDirectory,
-            Filter = "MecchaCamouflage Preset (*.mcpreset)|*.mcpreset",
+            Filter = UiText("dialog.preset.filter"),
             DefaultExt = ImagePresetStore.PresetExtension.TrimStart('.'),
             AddExtension = true,
             OverwritePrompt = true,
