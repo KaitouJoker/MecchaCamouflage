@@ -5,7 +5,15 @@
 #include <cstddef>
 #include <cstdint>
 #include <cmath>
+#if defined(__AVX2__) || defined(_M_X64) || defined(_M_AMD64) || defined(__x86_64__)
+#include <immintrin.h>
+#endif
+#if defined(_OPENMP)
+#include <omp.h>
+#endif
+#include <future>
 #include <set>
+#include <thread>
 #include <tuple>
 #include <vector>
 
@@ -440,7 +448,7 @@ namespace runtime_contract
                 .push_back(index);
         }
 
-        const double threshold = std::clamp(tolerance_percent, 0.0, 10.0) / 100.0 * std::sqrt(3.0);
+        const double threshold = std::clamp(tolerance_percent, 0.0, 10.0) / 100.0;
         const double threshold_squared = threshold * threshold;
         const auto same_payload = [](const AdaptivePaintSample& center,
                                      const AdaptivePaintSample& other) {
@@ -450,10 +458,22 @@ namespace runtime_contract
         };
         const auto color_distance_squared = [](const AdaptivePaintSample& left,
                                                const AdaptivePaintSample& right) {
+#if defined(__AVX2__) || defined(_M_X64) || defined(_M_AMD64) || defined(__x86_64__)
+            __m256d vleft = _mm256_setr_pd(left.r, left.g, left.b, 0.0);
+            __m256d vright = _mm256_setr_pd(right.r, right.g, right.b, 0.0);
+            __m256d vdiff = _mm256_sub_pd(vleft, vright);
+            __m256d vdiff2 = _mm256_mul_pd(vdiff, vdiff);
+            __m256d vweights = _mm256_setr_pd(0.299, 0.587, 0.114, 0.0);
+            __m256d vprod = _mm256_mul_pd(vdiff2, vweights);
+            alignas(32) double res[4];
+            _mm256_storeu_pd(res, vprod);
+            return res[0] + res[1] + res[2];
+#else
             const double dr = left.r - right.r;
             const double dg = left.g - right.g;
             const double db = left.b - right.b;
-            return dr * dr + dg * dg + db * db;
+            return 0.299 * (dr * dr) + 0.587 * (dg * dg) + 0.114 * (db * db);
+#endif
         };
         const auto visit_nearby = [&](const AdaptivePaintSample& center,
                                       double radius_uv,
@@ -485,9 +505,113 @@ namespace runtime_contract
         std::vector<bool> covered(samples.size(), false);
         std::vector<AdaptiveReplayEntry> paint_entries{};
         paint_entries.reserve(replay_entries.size());
-        constexpr std::array<double, 4> multipliers{4.0, 3.0, 2.0, 1.5};
-        for (const auto& entry : replay_entries)
+        constexpr std::array<double, 6> multipliers{8.0, 6.0, 4.0, 3.0, 2.0, 1.5};
+        const std::size_t num_replay_entries = replay_entries.size();
+        std::vector<double> candidate_multipliers(num_replay_entries, 1.0);
+
+        const unsigned int hw_threads = std::max(1u, std::thread::hardware_concurrency());
+        if (num_replay_entries > 128 && hw_threads > 1)
         {
+            const std::size_t num_threads = std::min<std::size_t>(hw_threads, 16);
+            const std::size_t chunk_size = (num_replay_entries + num_threads - 1) / num_threads;
+            std::vector<std::future<void>> futures;
+            futures.reserve(num_threads);
+
+            for (std::size_t thread_idx = 0; thread_idx < num_threads; ++thread_idx)
+            {
+                const std::size_t start_idx = thread_idx * chunk_size;
+                const std::size_t end_idx = std::min(start_idx + chunk_size, num_replay_entries);
+                if (start_idx >= end_idx) continue;
+
+                futures.push_back(std::async(std::launch::async, [&, start_idx, end_idx]() {
+                    for (std::size_t i = start_idx; i < end_idx; ++i)
+                    {
+                        const auto& entry = replay_entries[i];
+                        if (entry.pass != ReplayPass::Paint || entry.sample_index >= samples.size())
+                        {
+                            continue;
+                        }
+
+                        const auto& center = samples[entry.sample_index];
+                        const double center_luma = 0.299 * center.r + 0.587 * center.g + 0.114 * center.b;
+                        const double effective_threshold_squared = (center_luma < 0.20)
+                            ? threshold_squared * 2.25
+                            : threshold_squared;
+                        double multiplier = 1.0;
+                        if (center.paint_eligible && center.safe)
+                        {
+                            for (const auto candidate_multiplier : multipliers)
+                            {
+                                const double check_radius = std::max(
+                                    0.0, candidate_multiplier * base_radius_uv - std::max(0.0, edge_margin_uv));
+                                bool valid = true;
+                                visit_nearby(center, check_radius, [&](std::size_t, const AdaptivePaintSample& other) {
+                                    if (!same_payload(center, other) ||
+                                        color_distance_squared(center, other) > effective_threshold_squared)
+                                    {
+                                        valid = false;
+                                    }
+                                });
+                                if (valid)
+                                {
+                                    multiplier = candidate_multiplier;
+                                    break;
+                                }
+                            }
+                        }
+                        candidate_multipliers[i] = multiplier;
+                    }
+                }));
+            }
+            for (auto& f : futures)
+            {
+                f.get();
+            }
+        }
+        else
+        {
+            for (std::size_t i = 0; i < num_replay_entries; ++i)
+            {
+                const auto& entry = replay_entries[i];
+                if (entry.pass != ReplayPass::Paint || entry.sample_index >= samples.size())
+                {
+                    continue;
+                }
+
+                const auto& center = samples[entry.sample_index];
+                const double center_luma = 0.299 * center.r + 0.587 * center.g + 0.114 * center.b;
+                const double effective_threshold_squared = (center_luma < 0.20)
+                    ? threshold_squared * 2.25
+                    : threshold_squared;
+                double multiplier = 1.0;
+                if (center.paint_eligible && center.safe)
+                {
+                    for (const auto candidate_multiplier : multipliers)
+                    {
+                        const double check_radius = std::max(
+                            0.0, candidate_multiplier * base_radius_uv - std::max(0.0, edge_margin_uv));
+                        bool valid = true;
+                        visit_nearby(center, check_radius, [&](std::size_t, const AdaptivePaintSample& other) {
+                            if (!same_payload(center, other) ||
+                                color_distance_squared(center, other) > effective_threshold_squared)
+                            {
+                                valid = false;
+                            }
+                        });
+                        if (valid)
+                        {
+                            multiplier = candidate_multiplier;
+                            break;
+                        }
+                    }
+                }
+                candidate_multipliers[i] = multiplier;
+            }
+        }
+
+        for (std::size_t i = 0; i < num_replay_entries; ++i)
+        {
+            const auto& entry = replay_entries[i];
             if (entry.pass != ReplayPass::Paint || entry.sample_index >= samples.size())
             {
                 plan.entries.push_back({entry, 1.0});
@@ -499,29 +623,12 @@ namespace runtime_contract
                 continue;
             }
 
+            const double multiplier = candidate_multipliers[i];
             const auto& center = samples[entry.sample_index];
-            double multiplier = 1.0;
-            if (center.paint_eligible && center.safe)
-            {
-                for (const auto candidate_multiplier : multipliers)
-                {
-                    const double check_radius = std::max(
-                        0.0, candidate_multiplier * base_radius_uv - std::max(0.0, edge_margin_uv));
-                    bool valid = true;
-                    visit_nearby(center, check_radius, [&](std::size_t, const AdaptivePaintSample& other) {
-                        if (!same_payload(center, other) ||
-                            color_distance_squared(center, other) > threshold_squared)
-                        {
-                            valid = false;
-                        }
-                    });
-                    if (valid)
-                    {
-                        multiplier = candidate_multiplier;
-                        break;
-                    }
-                }
-            }
+            const double center_luma = 0.299 * center.r + 0.587 * center.g + 0.114 * center.b;
+            const double effective_threshold_squared = (center_luma < 0.20)
+                ? threshold_squared * 2.25
+                : threshold_squared;
 
             paint_entries.push_back({entry, multiplier});
             if (multiplier > 1.0)
@@ -534,7 +641,7 @@ namespace runtime_contract
             visit_nearby(center, coverage_radius, [&](std::size_t other_index,
                                                        const AdaptivePaintSample& other) {
                 if (same_payload(center, other) &&
-                    color_distance_squared(center, other) <= threshold_squared)
+                    color_distance_squared(center, other) <= effective_threshold_squared)
                 {
                     covered[other_index] = true;
                 }

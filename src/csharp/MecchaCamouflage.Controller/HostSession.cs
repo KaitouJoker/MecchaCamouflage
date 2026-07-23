@@ -1195,7 +1195,10 @@ public sealed class HostSession
             : Math.Clamp(progress.Progress * 100.0, 0.0, 100.0);
         var rounded = (int)Math.Round(percent);
         var pass = FormatReplayPass(progress);
-        return $"Paint: overall {rounded}% {ProgressBar(rounded)} | pass {pass} | pass ETA {FormatDuration(progress.ReplayCurrentPassEtaMs)} | total ETA {FormatEta(progress)} | elapsed {FormatDuration(progress.PaintElapsedMs)}";
+        var prep = progress.PreprocessingMs > 0.0
+            ? $"preprocess {progress.PreprocessingMs:F1}ms (pose {progress.PoseMs:F1}ms, capture {progress.CaptureMs:F1}ms, sample {progress.SampleMs:F1}ms, plan {progress.AdaptivePlanMs:F1}ms) | "
+            : "";
+        return $"Paint: {prep}overall {rounded}% {ProgressBar(rounded)} | pass {pass} | pass ETA {FormatDuration(progress.ReplayCurrentPassEtaMs)} | total ETA {FormatEta(progress)} | elapsed {FormatDuration(progress.PaintElapsedMs)}";
     }
 
     private static string FormatReplayPass(ProgressSnapshot progress)
@@ -1281,7 +1284,12 @@ public sealed class HostSession
                 Text(root, "replay_progress_source", ""),
                 Int(root, "replay_current_pass_completed", -1),
                 Int(root, "replay_current_pass_total", -1),
-                Number(root, "replay_current_pass_eta_ms", -1.0));
+                Number(root, "replay_current_pass_eta_ms", -1.0),
+                Number(root, "preprocessing_ms", 0.0),
+                Number(root, "pose_ms", 0.0),
+                Number(root, "capture_ms", 0.0),
+                Number(root, "sample_ms", 0.0),
+                Number(root, "adaptive_plan_ms", 0.0));
         }
         catch
         {
