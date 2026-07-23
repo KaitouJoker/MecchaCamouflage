@@ -943,10 +943,10 @@ static void NativeProductionLocalSyncUsesPerStrokePaint()
     var contract = File.ReadAllText(Path.Combine(
         FindRepositoryRoot(),
         "src", "native", "include", "runtime_contract.hpp"));
-    Assert(contract.Contains("constexpr int NativeRecordedPaintMaxCallsPerTick = 6;", StringComparison.Ordinal) &&
-           contract.Contains("constexpr int NativeRecordedPaintQueueTargetStrokes = 4;", StringComparison.Ordinal) &&
+    Assert(contract.Contains("constexpr int NativeRecordedPaintMaxCallsPerTick = 4;", StringComparison.Ordinal) &&
+           contract.Contains("constexpr int NativeRecordedPaintQueueTargetStrokes = 2;", StringComparison.Ordinal) &&
            contract.Contains("constexpr int FastLocalCadenceMs = 1;", StringComparison.Ordinal),
-        "native paint must retain bounded direct dispatch and a small game-owned queue window");
+        "native paint must retain a conservative bounded dispatch and game-owned queue window");
     Assert(bridge.Contains("direct_paint_capture_queue_snapshot", StringComparison.Ordinal) &&
            bridge.Contains("GetQueuedStrokeCountForComponent", StringComparison.Ordinal) &&
            bridge.Contains("native_queue_backpressure", StringComparison.Ordinal) &&
