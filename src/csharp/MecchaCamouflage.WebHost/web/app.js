@@ -1419,10 +1419,10 @@ function referenceGuideComponentTransforms(profile) {
   return { bones, parents, transforms };
 }
 
-function cubeReferenceComponentTransforms(profile, boneCount) {
+function referencePoseComponentTransforms(profile, boneCount, bodyName) {
   const source = profile?.ImageReferencePose?.ComponentTransforms;
   if (!Array.isArray(source) || source.length !== boneCount) {
-    throw new Error("Cube reference mesh profile has no fixed ImageReferencePose.");
+    throw new Error(bodyName + " reference mesh profile has no fixed ImageReferencePose.");
   }
   const transforms = Array(boneCount);
   for (const sourceTransform of source) {
@@ -1433,7 +1433,7 @@ function cubeReferenceComponentTransforms(profile, boneCount) {
       sourceTransform?.ScaleX, sourceTransform?.ScaleY, sourceTransform?.ScaleZ
     ].map(finiteGuideNumber);
     if (!Number.isInteger(index) || index < 0 || index >= boneCount || values.some(value => value === null) || transforms[index]) {
-      throw new Error("Cube reference mesh profile has malformed ImageReferencePose data.");
+      throw new Error(bodyName + " reference mesh profile has malformed ImageReferencePose data.");
     }
     transforms[index] = {
       rotation: referenceGuideQuaternionNormalize({ x: values[3], y: values[4], z: values[5], w: values[6] }),
@@ -1441,26 +1441,42 @@ function cubeReferenceComponentTransforms(profile, boneCount) {
       scale: { x: values[7], y: values[8], z: values[9] }
     };
   }
-  if (transforms.some(transform => !transform)) throw new Error("Cube reference mesh profile has an incomplete ImageReferencePose.");
+  if (transforms.some(transform => !transform)) throw new Error(bodyName + " reference mesh profile has an incomplete ImageReferencePose.");
   return transforms;
 }
 
-function cubeReferenceVertices(profile, vertexCount) {
+function cubeReferenceComponentTransforms(profile, boneCount) {
+  return referencePoseComponentTransforms(profile, boneCount, "Cube");
+}
+
+function roundReferenceComponentTransforms(profile, boneCount) {
+  return referencePoseComponentTransforms(profile, boneCount, "Round");
+}
+
+function referencePoseVertices(profile, vertexCount, bodyName) {
   const source = profile?.ImageReferencePose?.Vertices;
   if (!Array.isArray(source) || source.length !== vertexCount) {
-    throw new Error("Cube reference mesh profile has no fixed reference vertices.");
+    throw new Error(bodyName + " reference mesh profile has no fixed reference vertices.");
   }
   const vertices = Array(vertexCount);
   for (const sourceVertex of source) {
     const index = Number(sourceVertex?.Index);
     const values = [sourceVertex?.X, sourceVertex?.Y, sourceVertex?.Z].map(finiteGuideNumber);
     if (!Number.isInteger(index) || index < 0 || index >= vertexCount || values.some(value => value === null) || vertices[index]) {
-      throw new Error("Cube reference mesh profile has malformed fixed reference vertices.");
+      throw new Error(bodyName + " reference mesh profile has malformed fixed reference vertices.");
     }
     vertices[index] = { x: values[0], y: values[1], z: values[2] };
   }
-  if (vertices.some(vertex => !vertex)) throw new Error("Cube reference mesh profile has incomplete fixed reference vertices.");
+  if (vertices.some(vertex => !vertex)) throw new Error(bodyName + " reference mesh profile has incomplete fixed reference vertices.");
   return vertices;
+}
+
+function cubeReferenceVertices(profile, vertexCount) {
+  return referencePoseVertices(profile, vertexCount, "Cube");
+}
+
+function roundReferenceVertices(profile, vertexCount) {
+  return referencePoseVertices(profile, vertexCount, "Round");
 }
 
 function cubeCanonicalNaturalStandPositions(profile) {
@@ -1492,6 +1508,20 @@ function cubeCanonicalNaturalStandPositions(profile) {
   };
 }
 
+function roundCanonicalNaturalStandPositions(profile) {
+  const lod = profile?.Lod0;
+  if (!Array.isArray(lod?.Vertices) || lod.Vertices.length === 0) throw new Error("Round reference mesh profile has no LOD0 vertices.");
+  const bones = profile?.Bones;
+  if (!Array.isArray(bones) || bones.length === 0) throw new Error("Round reference mesh profile has no skeleton.");
+  // This is the exact development capture baked into the round profile.
+  // The editor never substitutes bind-pose vertices or a live game pose.
+  const naturalTransforms = roundReferenceComponentTransforms(profile, bones.length);
+  const positions = roundReferenceVertices(profile, lod.Vertices.length);
+  const bounds = referenceGuideBounds(positions);
+  const depthIsY = bounds.maxY - bounds.minY > 0.001 && bounds.maxY - bounds.minY < bounds.maxX - bounds.minX;
+  return { positions, bounds, depthIsY, skeleton: { bones, transforms: naturalTransforms } };
+}
+
 function cubeCanonicalFace(normal) {
   return Math.abs(normal.x) >= Math.abs(normal.y)
     ? (normal.x >= 0 ? "right" : "left")
@@ -1510,7 +1540,7 @@ function cubeCanonicalImageCoordinate(position, face, projection) {
   };
 }
 
-function drawCubeCanonicalSkeleton(context, skeleton, projection) {
+function drawReferenceCanonicalSkeleton(context, skeleton, coordinate) {
   if (!skeleton || !Array.isArray(skeleton.bones) || !Array.isArray(skeleton.transforms)) return;
   const transformAt = index => Number.isInteger(index) ? skeleton.transforms[index] : null;
   const faces = ["front", "right", "back", "left"];
@@ -1525,8 +1555,8 @@ function drawCubeCanonicalSkeleton(context, skeleton, projection) {
       const current = transformAt(index)?.translation;
       const parentPosition = transformAt(parent)?.translation;
       if (!current || !parentPosition) continue;
-      const start = cubeCanonicalImageCoordinate(parentPosition, face, projection);
-      const end = cubeCanonicalImageCoordinate(current, face, projection);
+      const start = coordinate(parentPosition, face);
+      const end = coordinate(current, face);
       context.beginPath();
       context.moveTo(start.u * IMAGE_CANVAS_WIDTH, (1 - start.v) * IMAGE_CANVAS_HEIGHT);
       context.lineTo(end.u * IMAGE_CANVAS_WIDTH, (1 - end.v) * IMAGE_CANVAS_HEIGHT);
@@ -1535,13 +1565,35 @@ function drawCubeCanonicalSkeleton(context, skeleton, projection) {
     for (const bone of skeleton.bones) {
       const position = transformAt(Number(bone?.Index))?.translation;
       if (!position) continue;
-      const point = cubeCanonicalImageCoordinate(position, face, projection);
+      const point = coordinate(position, face);
       context.beginPath();
       context.arc(point.u * IMAGE_CANVAS_WIDTH, (1 - point.v) * IMAGE_CANVAS_HEIGHT, 2.5, 0, Math.PI * 2);
       context.fill();
     }
   }
   context.restore();
+}
+
+function drawCubeCanonicalSkeleton(context, skeleton, projection) {
+  drawReferenceCanonicalSkeleton(context, skeleton, (position, face) => cubeCanonicalImageCoordinate(position, face, projection));
+}
+
+function roundCanonicalImageCoordinate(position, face, bounds, depthIsY) {
+  const horizontal = depthIsY
+    ? referenceGuideNormalize(position.x, bounds.minX, bounds.maxX)
+    : referenceGuideNormalize(position.y, bounds.minY, bounds.maxY);
+  const depth = depthIsY
+    ? referenceGuideNormalize(position.y, bounds.minY, bounds.maxY)
+    : referenceGuideNormalize(position.x, bounds.minX, bounds.maxX);
+  const u = face === "front" ? horizontal * 0.25
+    : face === "right" ? 0.25 + depth * 0.25
+      : face === "back" ? 0.5 + (1 - horizontal) * 0.25
+        : 0.75 + (1 - depth) * 0.25;
+  return { u, v: referenceGuideNormalize(position.z, bounds.minZ, bounds.maxZ) };
+}
+
+function drawRoundCanonicalSkeleton(context, skeleton, bounds, depthIsY) {
+  drawReferenceCanonicalSkeleton(context, skeleton, (position, face) => roundCanonicalImageCoordinate(position, face, bounds, depthIsY));
 }
 
 function buildCubeCanonicalImageGuideCanvas(profile) {
@@ -1714,25 +1766,20 @@ function appendReferenceCubeEdgeBands(output, points, normal) {
 function buildReferenceImageGuideCanvas(profile, bodyType) {
   if (normalizeImageGuideBodyType(bodyType) === "cube") return buildCubeCanonicalImageGuideCanvas(profile);
   const lod = profile?.Lod0;
-  const rawVertices = lod?.Vertices;
   const indices = lod?.Indices;
-  if (!Array.isArray(rawVertices) || !Array.isArray(indices) || indices.length < 3 || indices.length % 3 !== 0) {
+  if (!Array.isArray(lod?.Vertices) || !Array.isArray(indices) || indices.length < 3 || indices.length % 3 !== 0) {
     throw new Error("Reference mesh profile has no valid LOD0 geometry.");
   }
-  const positions = rawVertices.map(referenceGuidePosition);
-  if (positions.some(position => position === null)) throw new Error("Reference mesh profile has invalid LOD0 vertices.");
-  const bounds = referenceGuideBounds(positions);
-  const depthIsY = bounds.maxY - bounds.minY > 0.001 && bounds.maxY - bounds.minY < bounds.maxX - bounds.minX;
+  const { positions, bounds, depthIsY, skeleton } = roundCanonicalNaturalStandPositions(profile);
   const sideSeam = depthIsY ? (bounds.minX + bounds.maxX) / 2 : (bounds.minY + bounds.maxY) / 2;
   const cube = false;
   const guideTriangles = [];
-  const metadata = Array.isArray(profile?.Triangles) ? profile.Triangles : [];
   for (let index = 0; index < indices.length; index += 3) {
     const first = positions[Number(indices[index])];
     const second = positions[Number(indices[index + 1])];
     const third = positions[Number(indices[index + 2])];
     if (!first || !second || !third) continue;
-    const normal = referenceGuideNormal(metadata[index / 3], first, second, third);
+    const normal = referenceGuideNormal(null, first, second, third);
     if (!normal) continue;
     const region = referenceGuideRegion(normal, depthIsY);
     const polygons = region === "side"
@@ -1751,7 +1798,7 @@ function buildReferenceImageGuideCanvas(profile, bodyType) {
     }
   }
   if (guideTriangles.length === 0) throw new Error("Reference mesh profile produced no atlas guide.");
-  return buildReferenceImageGuideCanvasFromTriangles(guideTriangles);
+  return buildReferenceImageGuideCanvasFromTriangles(guideTriangles, { roundSkeleton: skeleton, roundBounds: bounds, roundDepthIsY: depthIsY });
 }
 
 function buildReferenceImageGuideCanvasFromTriangles(triangles, options = {}) {
@@ -1792,7 +1839,8 @@ function buildReferenceImageGuideCanvasFromTriangles(triangles, options = {}) {
       context.restore();
     }
   }
-  drawCubeCanonicalSkeleton(context, options.cubeSkeleton, options.projection);
+  if (options.cubeSkeleton) drawCubeCanonicalSkeleton(context, options.cubeSkeleton, options.projection);
+  if (options.roundSkeleton) drawRoundCanonicalSkeleton(context, options.roundSkeleton, options.roundBounds, options.roundDepthIsY);
   for (let face = 0; face < 4; ++face) {
     const xOffset = face * IMAGE_CANVAS_WIDTH / 4;
     context.strokeStyle = "rgba(255,255,255,0.36)";

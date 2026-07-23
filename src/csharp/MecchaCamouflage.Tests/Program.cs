@@ -1255,6 +1255,9 @@ static void WebUiUsesPackagedReferenceGuides()
     var mainForm = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "MainForm.cs"));
     var bridge = File.ReadAllText(Path.Combine(repository, "src", "native", "bridge", "bridge.cpp"));
     var contract = File.ReadAllText(Path.Combine(repository, "src", "native", "include", "runtime_contract.hpp"));
+    var refreshScript = File.ReadAllText(Path.Combine(repository, "scripts", "refresh-image-reference-profile.ps1"));
+    using var roundProfile = JsonDocument.Parse(File.ReadAllText(Path.Combine(
+        repository, "resources", "mesh-profiles", "paintman.mesh-profile-v2.json")));
 
     Assert(app.Contains("const IMAGE_GUIDE_PROFILE_FILES", StringComparison.Ordinal) &&
            app.Contains("fetch(profilePath", StringComparison.Ordinal) &&
@@ -1263,25 +1266,47 @@ static void WebUiUsesPackagedReferenceGuides()
            app.Contains("buildCubeCanonicalImageGuideCanvas", StringComparison.Ordinal) &&
            app.Contains("cubeCanonicalNaturalStandPositions", StringComparison.Ordinal) &&
            app.Contains("drawCubeCanonicalSkeleton", StringComparison.Ordinal) &&
+           app.Contains("roundCanonicalNaturalStandPositions", StringComparison.Ordinal) &&
+           app.Contains("drawRoundCanonicalSkeleton", StringComparison.Ordinal) &&
            !app.Contains("send(\"getImageGuide\"", StringComparison.Ordinal) &&
            !app.Contains("Live pose guide", StringComparison.Ordinal),
-        "the Image editor must render its fixed guides from packaged profiles, and Cube must show its canonical natural-standing pose and skeleton without bridge or game state");
+        "the Image editor must render both fixed guides from packaged profiles, with their canonical natural-standing poses and skeletons independent of bridge or game state");
     Assert(mainForm.Contains("mesh-profiles", StringComparison.Ordinal),
         "the Web host must continue serving the packaged mesh profiles to the Image editor");
+    Assert(roundProfile.RootElement.TryGetProperty("ImageReferencePose", out var roundReferencePose) &&
+           roundReferencePose.TryGetProperty("ComponentTransforms", out var roundTransforms) &&
+           roundReferencePose.TryGetProperty("Vertices", out var roundVertices) &&
+           roundTransforms.ValueKind == JsonValueKind.Array &&
+           roundVertices.ValueKind == JsonValueKind.Array &&
+           roundTransforms.GetArrayLength() == 28 &&
+           roundVertices.GetArrayLength() == 1660,
+        "the round profile must ship one complete captured natural-standing reference pose");
     Assert(bridge.Contains("mesh_first_build_cube_canonical_image_atlas", StringComparison.Ordinal) &&
            bridge.Contains("mesh_first_map_cube_canonical_sample", StringComparison.Ordinal) &&
            bridge.Contains("canonical_natural_stand_v1", StringComparison.Ordinal) &&
            contract.Contains("map_cube_canonical_image_coordinate", StringComparison.Ordinal),
         "Cube image paint must sample the same canonical natural-standing projection as its editor guide");
+    Assert(bridge.Contains("mesh_first_build_round_canonical_image_atlas", StringComparison.Ordinal) &&
+           bridge.Contains("mesh_first_map_round_canonical_sample", StringComparison.Ordinal) &&
+           bridge.Contains("image_paint_round_atlas", StringComparison.Ordinal),
+        "Round image paint must sample the same fixed natural-standing reference as its editor guide");
     Assert(app.Contains("cubeReferenceComponentTransforms", StringComparison.Ordinal) &&
            app.Contains("cubeReferenceVertices", StringComparison.Ordinal) &&
+           app.Contains("roundReferenceComponentTransforms", StringComparison.Ordinal) &&
+           app.Contains("roundReferenceVertices", StringComparison.Ordinal) &&
            app.Contains("ImageReferencePose", StringComparison.Ordinal) &&
            bridge.Contains("image_reference_component_transforms", StringComparison.Ordinal) &&
            bridge.Contains("image_reference_vertices", StringComparison.Ordinal) &&
            bridge.Contains("capture_reference_pose", StringComparison.Ordinal) &&
            !app.Contains("CUBE_CANONICAL_ARM_LOWERING_DEGREES", StringComparison.Ordinal) &&
            !bridge.Contains("CubeCanonicalArmLoweringDegrees", StringComparison.Ordinal),
-        "the cube editor and native mapper must consume one fixed captured profile pose, never an arbitrary arm angle");
+        "the editor and native mappers must consume fixed captured profile poses, never arbitrary arm angles");
+    Assert(refreshScript.Contains("CaptureNeutralPose", StringComparison.Ordinal) &&
+           refreshScript.Contains("scripts\\mesh.ps1", StringComparison.Ordinal) &&
+           refreshScript.Contains("--capture-$BodyType-reference-pose", StringComparison.Ordinal) &&
+           refreshScript.Contains("ImageReferencePose", StringComparison.Ordinal) &&
+           refreshScript.Contains("Restored the previous profile", StringComparison.Ordinal),
+        "the update workflow must safely restore a profile on failure while baking one explicitly confirmed neutral-pose capture");
 }
 
 static void WebUiRendersPassProgressAndTotalEta()

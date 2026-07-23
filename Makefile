@@ -21,13 +21,17 @@ RUN_PS := scripts/dev.ps1
 START_PS := scripts/start.ps1
 PACKAGE_PS := scripts/release.ps1
 MESH_PS := scripts/mesh.ps1
+REFERENCE_PROFILE_PS := scripts/refresh-image-reference-profile.ps1
 REVIEW_DEAD_CODE_PS := scripts/review/runtime-dead-code-inventory.ps1
 START_EXE ?= .build/bin/meccha-camouflage.exe
 DEV_OUT_DIR ?= .build/bin-dev
 RESEARCH_ARTIFACT_FLAGS := $(if $(filter 1 true TRUE yes YES on ON,$(RESEARCH_ARTIFACTS)),-EnableResearchArtifacts,)
 MESH_ARGS := $(if $(PAKS),-PaksPath "$(PAKS)",) $(if $(MAPPINGS),-MappingsPath "$(MAPPINGS)",) $(if $(CUE4PARSE),-Cue4ParsePath "$(CUE4PARSE)",) $(if $(OUTPUT),-OutputPath "$(OUTPUT)",) $(if $(ASSET),-AssetPath "$(ASSET)",) $(if $(EXPORT),-ExportName "$(EXPORT)",) $(if $(GAME_VERSION),-GameVersion "$(GAME_VERSION)",) $(if $(OODLE),-OodlePath "$(OODLE)",) $(if $(ZLIB),-ZlibPath "$(ZLIB)",) $(if $(TEXTURE_SIZE),-TextureSize "$(TEXTURE_SIZE)",) $(if $(EXPECTED_VERTICES),-ExpectedVertices "$(EXPECTED_VERTICES)",) $(if $(EXPECTED_INDICES),-ExpectedIndices "$(EXPECTED_INDICES)",) $(if $(EXPECTED_BONES),-ExpectedBones "$(EXPECTED_BONES)",)
+REFERENCE_BODY ?= round
+REFERENCE_CONFIRM_ARG := $(if $(filter 1 true TRUE yes YES on ON,$(CONFIRM_NEUTRAL_POSE)),-CaptureNeutralPose,)
+REFERENCE_ARGS := -BodyType "$(REFERENCE_BODY)" $(REFERENCE_CONFIRM_ARG) $(if $(PAKS),-PaksPath "$(PAKS)",) $(if $(MAPPINGS),-MappingsPath "$(MAPPINGS)",) $(if $(CUE4PARSE),-Cue4ParsePath "$(CUE4PARSE)",) $(if $(GAME_VERSION),-GameVersion "$(GAME_VERSION)",) $(if $(OODLE),-OodlePath "$(OODLE)",) $(if $(ZLIB),-ZlibPath "$(ZLIB)",)
 
-.PHONY: build build-timed build-dev build-dev-timed run dev start package mesh review-dead-code clean clean-artifacts clean-all
+.PHONY: build build-timed build-dev build-dev-timed run dev start package mesh refresh-image-reference review-dead-code clean clean-artifacts clean-all
 
 define RUN_POWERSHELL
 	@if command -v powershell.exe >/dev/null 2>&1; then \
@@ -77,6 +81,9 @@ package: build
 
 mesh:
 	$(call RUN_POWERSHELL,$(MESH_PS),$(MESH_ARGS))
+
+refresh-image-reference:
+	$(call RUN_POWERSHELL,$(REFERENCE_PROFILE_PS),$(REFERENCE_ARGS))
 
 review-dead-code:
 	$(call RUN_POWERSHELL,$(REVIEW_DEAD_CODE_PS),)

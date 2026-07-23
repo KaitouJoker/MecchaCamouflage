@@ -6364,6 +6364,125 @@ namespace
         return std::isfinite(out.u) && std::isfinite(out.v);
     }
 
+    struct RoundCanonicalImageAtlas
+    {
+        std::vector<sdk::FVector> positions{};
+        double min_x{0.0};
+        double max_x{0.0};
+        double min_y{0.0};
+        double max_y{0.0};
+        double min_z{0.0};
+        double max_z{0.0};
+        bool depth_is_y{false};
+    };
+
+    auto mesh_first_build_round_canonical_image_atlas(const MeshFirstProfile& profile,
+                                                      RoundCanonicalImageAtlas& out,
+                                                      std::string& failure) -> bool
+    {
+        // Just like Cube, Image Paint must map from the profile's one fixed
+        // RuntimePaintable capture rather than whatever animation is live.
+        if (static_cast<int>(profile.image_reference_vertices.size()) != profile.vertex_count ||
+            profile.image_reference_vertices.empty())
+        {
+            failure = "round_image_reference_vertices_missing";
+            return false;
+        }
+        out.positions = profile.image_reference_vertices;
+        out.min_x = std::numeric_limits<double>::infinity();
+        out.max_x = -std::numeric_limits<double>::infinity();
+        out.min_y = std::numeric_limits<double>::infinity();
+        out.max_y = -std::numeric_limits<double>::infinity();
+        out.min_z = std::numeric_limits<double>::infinity();
+        out.max_z = -std::numeric_limits<double>::infinity();
+        for (const auto& position : out.positions)
+        {
+            if (!std::isfinite(position.X) || !std::isfinite(position.Y) || !std::isfinite(position.Z))
+            {
+                failure = "round_canonical_bounds_invalid";
+                return false;
+            }
+            out.min_x = std::min(out.min_x, position.X);
+            out.max_x = std::max(out.max_x, position.X);
+            out.min_y = std::min(out.min_y, position.Y);
+            out.max_y = std::max(out.max_y, position.Y);
+            out.min_z = std::min(out.min_z, position.Z);
+            out.max_z = std::max(out.max_z, position.Z);
+        }
+        const double range_x = out.max_x - out.min_x;
+        const double range_y = out.max_y - out.min_y;
+        const double range_z = out.max_z - out.min_z;
+        if (!std::isfinite(range_x) || !std::isfinite(range_y) || !std::isfinite(range_z) ||
+            range_x <= 0.000001 || range_y <= 0.000001 || range_z <= 0.000001)
+        {
+            failure = "round_canonical_projection_bounds_invalid";
+            return false;
+        }
+        out.depth_is_y = range_y > 0.001 && range_y < range_x;
+        failure.clear();
+        return true;
+    }
+
+    auto mesh_first_map_round_canonical_sample(const MeshFirstProfile& profile,
+                                               const RoundCanonicalImageAtlas& atlas,
+                                               int triangle_index,
+                                               double barycentric_a,
+                                               double barycentric_b,
+                                               double barycentric_c,
+                                               runtime_contract::ImageAtlasMappingResult& out) -> bool
+    {
+        if (triangle_index < 0 || static_cast<std::size_t>(triangle_index) * 3 + 2 >= profile.indices.size())
+        {
+            return false;
+        }
+        const std::size_t index_base = static_cast<std::size_t>(triangle_index) * 3;
+        const int first_index = profile.indices[index_base];
+        const int second_index = profile.indices[index_base + 1];
+        const int third_index = profile.indices[index_base + 2];
+        if (first_index < 0 || second_index < 0 || third_index < 0 ||
+            static_cast<std::size_t>(first_index) >= atlas.positions.size() ||
+            static_cast<std::size_t>(second_index) >= atlas.positions.size() ||
+            static_cast<std::size_t>(third_index) >= atlas.positions.size())
+        {
+            return false;
+        }
+        const auto& first = atlas.positions[static_cast<std::size_t>(first_index)];
+        const auto& second = atlas.positions[static_cast<std::size_t>(second_index)];
+        const auto& third = atlas.positions[static_cast<std::size_t>(third_index)];
+        const auto normal = sdk_vec_normalize(sdk_vec_cross(sdk_vec_sub(second, first), sdk_vec_sub(third, first)));
+        if (sdk_vec_len(normal) <= 0.000001)
+        {
+            return false;
+        }
+        const auto position = sdk_vec_add(
+            sdk_vec_add(sdk_vec_mul(first, barycentric_a), sdk_vec_mul(second, barycentric_b)),
+            sdk_vec_mul(third, barycentric_c));
+        const double depth_normal = atlas.depth_is_y ? normal.Y : normal.X;
+        const auto region = depth_normal <= -0.35
+                                ? runtime_contract::ImageAtlasRegion::Front
+                                : (depth_normal >= 0.35
+                                       ? runtime_contract::ImageAtlasRegion::Back
+                                       : runtime_contract::ImageAtlasRegion::Side);
+        out = runtime_contract::map_image_atlas_coordinate({
+            false,
+            region,
+            atlas.depth_is_y,
+            position.X,
+            position.Y,
+            position.Z,
+            normal.X,
+            normal.Y,
+            normal.Z,
+            atlas.min_x,
+            atlas.max_x,
+            atlas.min_y,
+            atlas.max_y,
+            atlas.min_z,
+            atlas.max_z,
+        });
+        return std::isfinite(out.u) && std::isfinite(out.v);
+    }
+
     auto mesh_first_pose_displacement_metadata(const MeshFirstProfile& profile,
                                                const std::vector<sdk::FVector>& component_positions) -> std::string
     {
@@ -10092,7 +10211,7 @@ namespace
     auto image_guide_on_game_thread(const std::string& request) -> std::string
     {
         const std::string requested_body = lower_copy(json_string_field(request, "image_paint_body_type", "round"));
-        const bool capture_cube_reference_pose = json_bool_field(request, "capture_reference_pose", false);
+        const bool capture_image_reference_pose = json_bool_field(request, "capture_reference_pose", false);
         if (requested_body != "round" && requested_body != "cube")
         {
             return response_json(false,
@@ -10232,30 +10351,30 @@ namespace
 
         // This is an explicit development operation, never part of the
         // editor's guide path. Capture component-space transforms once from
-        // the cube currently standing in-game, validate them, and let the
+        // the selected body mesh currently standing in-game, validate them, and let the
         // controller commit the returned values to the static mesh profile.
-        if (capture_cube_reference_pose)
+        if (capture_image_reference_pose)
         {
             metadata += "," + mesh_first_profile_metadata(live_profile);
-            if (requested_body != "cube" || !live_profile_is_cube || cross_profile_pose_transfer)
+            if (live_profile_is_cube != (requested_body == "cube") || cross_profile_pose_transfer)
             {
                 return response_json(false,
-                                     "cube_reference_pose_wrong_live_mesh",
+                                     "image_reference_pose_wrong_live_mesh",
                                      0,
                                      1,
-                                     "Cube reference capture requires the live cube mesh.",
-                                     metadata + ",\"cube_reference_capture\":false");
+                                     "Image reference capture requires the selected live body mesh.",
+                                     metadata + ",\"image_reference_capture\":false");
             }
             const auto runtime_triangle_cache = mesh_first_resolve_runtime_triangle_cache(ctx.component, live_profile);
             if (!runtime_triangle_cache.ok ||
                 runtime_triangle_cache.triangles.size() != live_profile.indices.size() / 3)
             {
                 return response_json(false,
-                                     "cube_reference_vertices_unavailable",
+                                     "image_reference_vertices_unavailable",
                                      0,
                                      1,
-                                     "The live cube mesh is unavailable for reference capture.",
-                                     metadata + ",\"cube_reference_capture\":false,\"cube_reference_vertex_failure\":\"" +
+                                     "The live body mesh is unavailable for reference capture.",
+                                     metadata + ",\"image_reference_capture\":false,\"image_reference_vertex_failure\":\"" +
                                          json_escape(runtime_triangle_cache.failure) + "\"");
             }
             const auto runtime_topology =
@@ -10263,11 +10382,11 @@ namespace
             if (!runtime_topology.ok)
             {
                 return response_json(false,
-                                     "cube_reference_vertices_untrusted",
+                                     "image_reference_vertices_untrusted",
                                      0,
                                      1,
-                                     "The live cube mesh topology is not trusted for reference capture.",
-                                     metadata + ",\"cube_reference_capture\":false,\"cube_reference_vertex_failure\":\"" +
+                                     "The live body mesh topology is not trusted for reference capture.",
+                                     metadata + ",\"image_reference_capture\":false,\"image_reference_vertex_failure\":\"" +
                                          json_escape(runtime_topology.failure) + "\"");
             }
             std::vector<sdk::FVector> captured_vertices{};
@@ -10278,39 +10397,40 @@ namespace
                                                            captured_vertices_failure))
             {
                 return response_json(false,
-                                     "cube_reference_vertices_invalid",
+                                     "image_reference_vertices_invalid",
                                      0,
                                      1,
-                                     "The live cube mesh has invalid reference vertices.",
-                                     metadata + ",\"cube_reference_capture\":false,\"cube_reference_vertex_failure\":\"" +
+                                     "The live body mesh has invalid reference vertices.",
+                                     metadata + ",\"image_reference_capture\":false,\"image_reference_vertex_failure\":\"" +
                                          json_escape(captured_vertices_failure) + "\"");
             }
             auto pose = sdk_resolve_skinned_pose(ref, selected_mesh.mesh, live_profile.bone_count);
             if (pose.ok && !mesh_first_validate_pose_for_profile(live_profile, pose))
             {
-                pose.stage = "cube_reference_pose_untrusted";
-                pose.message = "cube reference pose failed validation: " + pose.validation_failure;
+                pose.stage = "image_reference_pose_untrusted";
+                pose.message = "image reference pose failed validation: " + pose.validation_failure;
             }
             metadata += "," + sdk_pose_result_metadata(pose);
             if (!pose.ok || !pose.trusted ||
                 static_cast<int>(pose.component_space_transforms.size()) != live_profile.bone_count)
             {
                 return response_json(false,
-                                     "cube_reference_pose_unavailable",
+                                     "image_reference_pose_unavailable",
                                      0,
                                      1,
-                                     pose.message.empty() ? "The live cube reference pose is unavailable." : pose.message,
-                                     metadata + ",\"cube_reference_capture\":false");
+                                     pose.message.empty() ? "The live image reference pose is unavailable." : pose.message,
+                                     metadata + ",\"image_reference_capture\":false");
             }
             const auto append_number = [](std::string& target, double value) {
                 char buffer[64]{};
                 std::snprintf(buffer, sizeof(buffer), "%.9g", value);
                 target += buffer;
             };
-            metadata += ",\"cube_reference_capture\":true";
-            metadata += ",\"cube_reference_profile_id\":\"" + json_escape(live_profile.profile_id) + "\"";
-            metadata += ",\"cube_reference_runtime_triangle_count\":" + std::to_string(runtime_triangle_cache.triangle_count);
-            metadata += ",\"cube_reference_vertices\":[";
+            metadata += ",\"image_reference_capture\":true";
+            metadata += ",\"image_reference_body_type\":\"" + requested_body + "\"";
+            metadata += ",\"image_reference_profile_id\":\"" + json_escape(live_profile.profile_id) + "\"";
+            metadata += ",\"image_reference_runtime_triangle_count\":" + std::to_string(runtime_triangle_cache.triangle_count);
+            metadata += ",\"image_reference_vertices\":[";
             for (std::size_t index = 0; index < captured_vertices.size(); ++index)
             {
                 if (index != 0)
@@ -10324,7 +10444,7 @@ namespace
                 append_number(metadata, vertex.Z); metadata += "]";
             }
             metadata += "]";
-            metadata += ",\"cube_reference_component_transforms\":[";
+            metadata += ",\"image_reference_component_transforms\":[";
             for (std::size_t index = 0; index < pose.component_space_transforms.size(); ++index)
             {
                 if (index != 0)
@@ -10346,10 +10466,10 @@ namespace
             }
             metadata += "]";
             return response_json(true,
-                                 "cube_reference_pose_captured",
+                                 "image_reference_pose_captured",
                                  1,
                                  1,
-                                 "Cube reference pose captured.",
+                                 "Image reference pose captured.",
                                  metadata);
         }
         metadata += "," + mesh_first_profile_metadata(live_profile);
@@ -11972,15 +12092,10 @@ namespace
             int cube_side_assignments = 0;
             int cube_edge_assignments = 0;
             int cube_canonical_mapping_failures = 0;
-            double min_x = std::numeric_limits<double>::infinity();
-            double max_x = -std::numeric_limits<double>::infinity();
-            double min_y = std::numeric_limits<double>::infinity();
-            double max_y = -std::numeric_limits<double>::infinity();
-            double min_z = std::numeric_limits<double>::infinity();
-            double max_z = -std::numeric_limits<double>::infinity();
-            const bool depth_is_y = region_axis == 'y' || region_axis == 'Y';
+            int round_canonical_mapping_failures = 0;
             const bool image_paint_cube = image_paint_body_type == "cube";
             CubeCanonicalImageAtlas cube_canonical_atlas{};
+            RoundCanonicalImageAtlas round_canonical_atlas{};
             if (image_paint_cube)
             {
                 std::string cube_canonical_failure{};
@@ -12000,15 +12115,19 @@ namespace
             }
             else
             {
-                for (const auto& sample : plan_samples)
+                std::string round_canonical_failure{};
+                if (!profile_available || mesh_first_is_cube_profile(profile) ||
+                    !mesh_first_build_round_canonical_image_atlas(profile, round_canonical_atlas, round_canonical_failure))
                 {
-                    min_x = std::min(min_x, sample.local_position.X);
-                    max_x = std::max(max_x, sample.local_position.X);
-                    min_y = std::min(min_y, sample.local_position.Y);
-                    max_y = std::max(max_y, sample.local_position.Y);
-                    min_z = std::min(min_z, sample.local_position.Z);
-                    max_z = std::max(max_z, sample.local_position.Z);
+                    return response_json(false,
+                                         "image_paint_round_reference_unavailable",
+                                         0,
+                                         1,
+                                         "The round image reference pose could not be built from the verified round profile.",
+                                         metadata + ",\"image_paint_round_reference_failure\":\"" +
+                                             json_escape(round_canonical_failure.empty() ? "profile_not_round" : round_canonical_failure) + "\"");
                 }
+                metadata += ",\"image_paint_round_atlas\":\"canonical_natural_stand_v1\"";
             }
             plan_stats.enabled_samples = 0;
             plan_stats.unsafe_candidates = 0;
@@ -12044,29 +12163,21 @@ namespace
                 }
                 else
                 {
-                    const auto normal = sdk_vec_normalize(sample.local_normal);
-                    const auto atlas_region = sample.region == MeshFirstRegion::Side
-                                                  ? runtime_contract::ImageAtlasRegion::Side
-                                                  : (sample.region == MeshFirstRegion::Back
-                                                         ? runtime_contract::ImageAtlasRegion::Back
-                                                         : runtime_contract::ImageAtlasRegion::Front);
-                    const auto image_coordinate = runtime_contract::map_image_atlas_coordinate({
-                        false,
-                        atlas_region,
-                        depth_is_y,
-                        sample.local_position.X,
-                        sample.local_position.Y,
-                        sample.local_position.Z,
-                        normal.X,
-                        normal.Y,
-                        normal.Z,
-                        min_x,
-                        max_x,
-                        min_y,
-                        max_y,
-                        min_z,
-                        max_z,
-                    });
+                    runtime_contract::ImageAtlasMappingResult image_coordinate{};
+                    if (!mesh_first_map_round_canonical_sample(profile,
+                                                               round_canonical_atlas,
+                                                               sample.triangle_index,
+                                                               sample.barycentric_a,
+                                                               sample.barycentric_b,
+                                                               sample.barycentric_c,
+                                                               image_coordinate) ||
+                        image_coordinate.u < -0.000001 || image_coordinate.u > 1.000001 ||
+                        image_coordinate.v < -0.000001 || image_coordinate.v > 1.000001)
+                    {
+                        sample.unsafe = true;
+                        ++round_canonical_mapping_failures;
+                        continue;
+                    }
                     image_u = image_coordinate.u;
                     image_v = image_coordinate.v;
                 }
@@ -12100,6 +12211,7 @@ namespace
             metadata += ",\"image_paint_cube_side_assignments\":" + std::to_string(cube_side_assignments);
             metadata += ",\"image_paint_cube_edge_assignments\":" + std::to_string(cube_edge_assignments);
             metadata += ",\"image_paint_cube_canonical_mapping_failures\":" + std::to_string(cube_canonical_mapping_failures);
+            metadata += ",\"image_paint_round_canonical_mapping_failures\":" + std::to_string(round_canonical_mapping_failures);
             metadata += ",\"image_paint_top_bottom_mode\":\"" + std::string(image_paint_cube ? "orthographic_side_projection" : "not_applicable") + "\"";
             metadata += ",\"image_paint_revision\":" + std::to_string(image_paint_revision);
             metadata += ",\"image_paint_brush_size_texels\":" + std::to_string(image_paint_brush_size_texels);

@@ -316,18 +316,21 @@ public sealed class HostSession
     }
 
     /// <summary>
-    /// Development-only, one-shot capture of the live cube standing pose.
+    /// Development-only, one-shot capture of a live body mesh standing pose.
     /// The regular Image editor deliberately never calls this method.
     /// </summary>
-    public async Task<CubeReferencePoseSnapshot> CaptureCubeReferencePoseAsync(CancellationToken cancellationToken = default)
+    public async Task<ImageReferencePoseSnapshot> CaptureImageReferencePoseAsync(
+        string bodyType,
+        CancellationToken cancellationToken = default)
     {
+        var normalizedBodyType = string.Equals(bodyType, "cube", StringComparison.OrdinalIgnoreCase) ? "cube" : "round";
         lock (paintStateGate)
         {
             if (PaintRunning || nativePaintMayBeRunning)
             {
-                return new CubeReferencePoseSnapshot(
+                return new ImageReferencePoseSnapshot(
                     false,
-                    "Stop the active paint before capturing the cube reference pose.",
+                    "Stop the active paint before capturing the image reference pose.",
                     "",
                     [],
                     []);
@@ -336,21 +339,21 @@ public sealed class HostSession
 
         using var process = Runtime.FindGameProcess(Settings.GameProcessName);
         if (process is null)
-            return new CubeReferencePoseSnapshot(false, "Game process not found.", "", [], []);
+            return new ImageReferencePoseSnapshot(false, "Game process not found.", "", [], []);
         if (!await Runtime.EnsureReadyAsync(process, cancellationToken))
-            return new CubeReferencePoseSnapshot(false, "Bridge is not connected.", "", [], []);
+            return new ImageReferencePoseSnapshot(false, "Bridge is not connected.", "", [], []);
 
         var payload = JsonSerializer.Serialize(new
         {
             type = "image_guide",
-            image_paint_body_type = "cube",
+            image_paint_body_type = normalizedBodyType,
             capture_reference_pose = true
         });
         var reply = await Runtime.SendPaintAsync(payload, cancellationToken);
         if (!reply.Ok || !reply.Success)
         {
-            Log.Warn("Cube reference pose capture unavailable | stage=" + reply.Stage);
-            return new CubeReferencePoseSnapshot(
+            Log.Warn("Image reference pose capture unavailable | body=" + normalizedBodyType + " | stage=" + reply.Stage);
+            return new ImageReferencePoseSnapshot(
                 false,
                 FriendlyBridgeMessage(reply.Message.Length > 0 ? reply.Message : reply.Stage),
                 "",
@@ -362,61 +365,61 @@ public sealed class HostSession
         {
             using var document = JsonDocument.Parse(reply.Raw);
             if (!document.RootElement.TryGetProperty("metadata", out var metadata) ||
-                !metadata.TryGetProperty("cube_reference_profile_id", out var profileElement) ||
+                !metadata.TryGetProperty("image_reference_profile_id", out var profileElement) ||
                 profileElement.ValueKind != JsonValueKind.String ||
-                !metadata.TryGetProperty("cube_reference_component_transforms", out var transformsElement) ||
+                !metadata.TryGetProperty("image_reference_component_transforms", out var transformsElement) ||
                 transformsElement.ValueKind != JsonValueKind.Array ||
-                !metadata.TryGetProperty("cube_reference_vertices", out var verticesElement) ||
+                !metadata.TryGetProperty("image_reference_vertices", out var verticesElement) ||
                 verticesElement.ValueKind != JsonValueKind.Array)
             {
-                return new CubeReferencePoseSnapshot(false, "Bridge returned no usable cube reference pose.", "", [], []);
+                return new ImageReferencePoseSnapshot(false, "Bridge returned no usable image reference pose.", "", [], []);
             }
 
-            var transforms = new List<CubeReferencePoseTransform>(transformsElement.GetArrayLength());
+            var transforms = new List<ImageReferencePoseTransform>(transformsElement.GetArrayLength());
             foreach (var transform in transformsElement.EnumerateArray())
             {
                 if (transform.ValueKind != JsonValueKind.Array || transform.GetArrayLength() != 11)
-                    return new CubeReferencePoseSnapshot(false, "Bridge returned malformed cube reference pose data.", "", [], []);
+                    return new ImageReferencePoseSnapshot(false, "Bridge returned malformed image reference pose data.", "", [], []);
                 var values = transform.EnumerateArray().ToArray();
                 if (values.Any(value => value.ValueKind != JsonValueKind.Number))
-                    return new CubeReferencePoseSnapshot(false, "Bridge returned non-numeric cube reference pose data.", "", [], []);
+                    return new ImageReferencePoseSnapshot(false, "Bridge returned non-numeric image reference pose data.", "", [], []);
                 var index = values[0].GetInt32();
                 var numeric = values.Skip(1).Select(value => value.GetDouble()).ToArray();
                 if (index < 0 || numeric.Any(value => !double.IsFinite(value)))
-                    return new CubeReferencePoseSnapshot(false, "Bridge returned invalid cube reference pose data.", "", [], []);
-                transforms.Add(new CubeReferencePoseTransform(
+                    return new ImageReferencePoseSnapshot(false, "Bridge returned invalid image reference pose data.", "", [], []);
+                transforms.Add(new ImageReferencePoseTransform(
                     index,
                     numeric[0], numeric[1], numeric[2],
                     numeric[3], numeric[4], numeric[5], numeric[6],
                     numeric[7], numeric[8], numeric[9]));
             }
             if (transforms.Count == 0 || transforms.Select(transform => transform.Index).Distinct().Count() != transforms.Count)
-                return new CubeReferencePoseSnapshot(false, "Bridge returned an incomplete cube reference pose.", "", [], []);
+                return new ImageReferencePoseSnapshot(false, "Bridge returned an incomplete image reference pose.", "", [], []);
 
-            var vertices = new List<CubeReferencePoseVertex>(verticesElement.GetArrayLength());
+            var vertices = new List<ImageReferencePoseVertex>(verticesElement.GetArrayLength());
             foreach (var vertex in verticesElement.EnumerateArray())
             {
                 if (vertex.ValueKind != JsonValueKind.Array || vertex.GetArrayLength() != 4)
-                    return new CubeReferencePoseSnapshot(false, "Bridge returned malformed cube reference vertices.", "", [], []);
+                    return new ImageReferencePoseSnapshot(false, "Bridge returned malformed image reference vertices.", "", [], []);
                 var values = vertex.EnumerateArray().ToArray();
                 if (values.Any(value => value.ValueKind != JsonValueKind.Number))
-                    return new CubeReferencePoseSnapshot(false, "Bridge returned non-numeric cube reference vertices.", "", [], []);
+                    return new ImageReferencePoseSnapshot(false, "Bridge returned non-numeric image reference vertices.", "", [], []);
                 var index = values[0].GetInt32();
                 var numeric = values.Skip(1).Select(value => value.GetDouble()).ToArray();
                 if (index < 0 || numeric.Any(value => !double.IsFinite(value)))
-                    return new CubeReferencePoseSnapshot(false, "Bridge returned invalid cube reference vertices.", "", [], []);
-                vertices.Add(new CubeReferencePoseVertex(index, numeric[0], numeric[1], numeric[2]));
+                    return new ImageReferencePoseSnapshot(false, "Bridge returned invalid image reference vertices.", "", [], []);
+                vertices.Add(new ImageReferencePoseVertex(index, numeric[0], numeric[1], numeric[2]));
             }
             if (vertices.Count == 0 || vertices.Select(vertex => vertex.Index).Distinct().Count() != vertices.Count)
-                return new CubeReferencePoseSnapshot(false, "Bridge returned incomplete cube reference vertices.", "", [], []);
+                return new ImageReferencePoseSnapshot(false, "Bridge returned incomplete image reference vertices.", "", [], []);
 
             var profileId = profileElement.GetString() ?? "";
-            Log.Info($"Cube reference pose captured | profile={profileId} | bones={transforms.Count} | vertices={vertices.Count}");
-            return new CubeReferencePoseSnapshot(true, "", profileId, transforms, vertices);
+            Log.Info($"Image reference pose captured | body={normalizedBodyType} | profile={profileId} | bones={transforms.Count} | vertices={vertices.Count}");
+            return new ImageReferencePoseSnapshot(true, "", profileId, transforms, vertices);
         }
         catch (JsonException)
         {
-            return new CubeReferencePoseSnapshot(false, "Bridge returned invalid cube reference pose data.", "", [], []);
+            return new ImageReferencePoseSnapshot(false, "Bridge returned invalid image reference pose data.", "", [], []);
         }
     }
 

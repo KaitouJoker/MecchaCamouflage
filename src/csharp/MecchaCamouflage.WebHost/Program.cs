@@ -10,9 +10,10 @@ internal static class Program
     {
         var paths = new MecchaCamouflage.Core.AppPaths(VersionInfo.Current);
         DiagnosticsState.Initialize(paths, VersionInfo.Current);
-        if (args.Any(argument => string.Equals(argument, "--capture-cube-reference-pose", StringComparison.Ordinal)))
+        var captureBodyType = CaptureReferenceBodyType(args);
+        if (captureBodyType is not null)
         {
-            Environment.ExitCode = CaptureCubeReferencePoseAsync().GetAwaiter().GetResult();
+            Environment.ExitCode = CaptureImageReferencePoseAsync(captureBodyType).GetAwaiter().GetResult();
             return;
         }
 #if MECCHA_RESEARCH_BUILD
@@ -58,18 +59,27 @@ internal static class Program
         }
     }
 
-    private static async Task<int> CaptureCubeReferencePoseAsync()
+    private static string? CaptureReferenceBodyType(string[] args)
+    {
+        if (args.Any(argument => string.Equals(argument, "--capture-cube-reference-pose", StringComparison.Ordinal)))
+            return "cube";
+        if (args.Any(argument => string.Equals(argument, "--capture-round-reference-pose", StringComparison.Ordinal)))
+            return "round";
+        return null;
+    }
+
+    private static async Task<int> CaptureImageReferencePoseAsync(string bodyType)
     {
         var session = new HostSession(VersionInfo.Current);
         try
         {
-            var snapshot = await session.CaptureCubeReferencePoseAsync();
+            var snapshot = await session.CaptureImageReferencePoseAsync(bodyType);
             Console.Out.WriteLine(JsonSerializer.Serialize(snapshot));
             return snapshot.Success ? 0 : 1;
         }
         catch (Exception exception)
         {
-            Console.Error.WriteLine("Cube reference pose capture failed: " + exception.Message);
+            Console.Error.WriteLine("Image reference pose capture failed: " + exception.Message);
             return 1;
         }
         finally

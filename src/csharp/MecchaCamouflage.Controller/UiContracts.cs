@@ -111,11 +111,11 @@ public sealed record ImageGuideSnapshot(
     IReadOnlyList<ImageGuideTriangle>? Triangles = null);
 
 /// <summary>
-/// One development-time capture of the cube's actual neutral standing pose.
+/// One development-time capture of a body's actual neutral standing pose.
 /// This is never used by the editor at runtime: the caller commits the result
 /// to the versioned mesh profile and the editor then reads that static profile.
 /// </summary>
-public sealed record CubeReferencePoseTransform(
+public sealed record ImageReferencePoseTransform(
     int Index,
     double X,
     double Y,
@@ -128,14 +128,14 @@ public sealed record CubeReferencePoseTransform(
     double ScaleY,
     double ScaleZ);
 
-public sealed record CubeReferencePoseVertex(int Index, double X, double Y, double Z);
+public sealed record ImageReferencePoseVertex(int Index, double X, double Y, double Z);
 
-public sealed record CubeReferencePoseSnapshot(
+public sealed record ImageReferencePoseSnapshot(
     bool Success,
     string Message,
     string ProfileId,
-    IReadOnlyList<CubeReferencePoseTransform> ComponentTransforms,
-    IReadOnlyList<CubeReferencePoseVertex> Vertices);
+    IReadOnlyList<ImageReferencePoseTransform> ComponentTransforms,
+    IReadOnlyList<ImageReferencePoseVertex> Vertices);
 
 public sealed record ResetSnapshot(
     IReadOnlyDictionary<string, bool> Settings,
