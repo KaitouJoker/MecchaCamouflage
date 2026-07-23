@@ -1,8 +1,16 @@
 using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using MecchaCamouflage.Core;
 
 namespace MecchaCamouflage.Controller;
+
+public enum PaintKind
+{
+    Standard,
+    Image
+}
 
 public sealed class HostSession
 {
@@ -31,7 +39,11 @@ public sealed class HostSession
         "app.startHotkey",
         "app.previewHotkey",
         "app.unpreviewHotkey",
-        "app.stopHotkey"
+        "app.stopHotkey",
+        "app.imageStartHotkey",
+        "app.imagePreviewHotkey",
+        "app.imageUnpreviewHotkey",
+        "app.imageStopHotkey"
     ];
 
     private enum PaintCancelState
@@ -49,6 +61,10 @@ public sealed class HostSession
         Store = new SettingsStore(Paths);
         Settings = Store.Load();
         Log = new RuntimeLog(Paths);
+        ImagePresets = new ImagePresetStore(Paths);
+        legacyImageDesigns = new ImageDesignLibrary(Paths);
+        RestoreActiveImageState();
+        imagePaint = ToImagePaintOptions(Settings.Image);
         Runtime = new RuntimeBridgeService(Paths, Log);
         this.diagnosticStrokeLimit = Math.Clamp(diagnosticStrokeLimit, 0, 10_000);
     }
@@ -57,12 +73,17 @@ public sealed class HostSession
     public AppPaths Paths { get; }
     public SettingsStore Store { get; }
     public RuntimeLog Log { get; }
+    public ImagePresetStore ImagePresets { get; }
+    // Legacy v1.6.3 library reader, retained solely for a same-version active
+    // state migration. New transactions never create or list this library.
+    private readonly ImageDesignLibrary legacyImageDesigns;
     public RuntimeBridgeService Runtime { get; }
     public AppSettings Settings { get; private set; }
     public bool PaintRunning { get; private set; }
     private readonly SemaphoreSlim bridgeWarmupGate = new(1, 1);
     private readonly object paintStateGate = new();
     private ImagePaintOptions? imagePaint;
+    private bool imageDesignDraftDirty;
     private DateTimeOffset nextBridgeWarmupAttempt;
     private DateTimeOffset currentPaintStartedAt = DateTimeOffset.MinValue;
     private bool finalProgressLogged;
@@ -73,14 +94,425 @@ public sealed class HostSession
     private int activePaintGeneration;
     private int cancelPaintGeneration;
 
-    public void SetImagePaint(ImagePaintOptions? image)
+    private void RestoreActiveImageState()
+    {
+        if (File.Exists(Paths.ActiveImageStatePath))
+        {
+            if (ImagePresets.TryLoadActive(out var active, out var stateMessage))
+            {
+                Settings.Image = active;
+                Settings.ActiveImageDesignId = "";
+                Store.Save(Settings);
+                return;
+            }
+
+            Log.Warn("Image Paint: the active image state could not be loaded: " + stateMessage);
+            Settings.ActiveImageDesignId = "";
+            Settings.Image = new ImagePaintSettings();
+            Store.Save(Settings);
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(Settings.ActiveImageDesignId))
+        {
+            if (legacyImageDesigns.TryLoad(Settings.ActiveImageDesignId, out var active, out var message))
+            {
+                var migratedActive = ImagePresets.SaveActive(active);
+                if (!migratedActive.Success)
+                {
+                    Log.Warn("Image Paint: legacy active image migration failed: " + migratedActive.Message);
+                    return;
+                }
+                Settings.Image = active;
+                Settings.ActiveImageDesignId = "";
+                Store.Save(Settings);
+                Log.Info("Image Paint: migrated legacy active image state.");
+                return;
+            }
+
+            Log.Warn("Image Paint: the active disk design could not be loaded: " + message);
+            Settings.ActiveImageDesignId = "";
+            Settings.Image = new ImagePaintSettings();
+            Store.Save(Settings);
+            return;
+        }
+
+        // v1.6.3 stored sources and the canonical raster inside config.json.
+        // Import it before writing the new, reference-only config so a failed
+        // import can never discard the user's only editable design.
+        if (!Settings.Image.Enabled || !Settings.Image.TryValidate(out _))
+            return;
+        var migrated = ImagePresets.SaveActive(Settings.Image);
+        if (!migrated.Success)
+        {
+            Log.Warn("Image Paint: legacy active image migration failed: " + migrated.Message);
+            return;
+        }
+        Settings.ActiveImageDesignId = "";
+        Store.Save(Settings);
+        Log.Info("Image Paint: migrated legacy embedded image state.");
+    }
+
+    // The browser owns the draft itself. The host keeps only this volatile
+    // interlock so F5-F8 can never run an older committed design while a
+    // newer Image draft is pending Save or Cancel.
+    public void SetImageDesignDraftDirty(bool dirty)
     {
         lock (paintStateGate)
-            imagePaint = image;
-        Log.Info(image is null
-            ? "Image paint: cleared; F1 will use normal camouflage."
-            : $"Image paint: armed for F1 ({image.Width}x{image.Height}, {image.Placement}, wrap={image.WrapMode}, body={image.BodyType})." );
+            imageDesignDraftDirty = dirty;
     }
+
+    /// <summary>
+    /// The GUI Save transaction for Image Paint. It writes the private active
+    /// state before publishing settings, so F5-F8 can only observe a fully
+    /// validated canvas/source bundle.
+    /// </summary>
+    public HostCommandResult CommitSettingsWithImage(IEnumerable<SettingChange> changes, ImagePaintSettings design)
+    {
+        var previous = Clone(Settings);
+        try
+        {
+            var next = Clone(Settings);
+            foreach (var change in changes)
+                ApplySetting(next, change.Key, change.Value);
+            next.Image = CloneImageDesign(design);
+            next.Image.Revision = next.Image.Enabled ? Math.Max(1, previous.Image.Revision + 1) : 0;
+            if (next.Image.Enabled && !next.Image.TryValidate(out var message))
+                return new HostCommandResult(false, message);
+            next = SettingsStore.Clamp(next);
+            var hotkeys = HotkeySet.From(next);
+            if (!hotkeys.TryValidate(out message))
+                return new HostCommandResult(false, message);
+
+            var active = ImagePresets.SaveActive(next.Image);
+            if (!active.Success)
+                return new HostCommandResult(false, active.Message);
+            var committed = CommitSettings(next, previous);
+            if (!committed.Success)
+            {
+                _ = ImagePresets.SaveActive(previous.Image);
+                return committed;
+            }
+            SetImageDesignDraftDirty(false);
+            return committed;
+        }
+        catch (Exception ex)
+        {
+            Settings = previous;
+            lock (paintStateGate)
+                imagePaint = ToImagePaintOptions(Settings.Image);
+            return new HostCommandResult(false, ex.Message);
+        }
+    }
+
+    public ImagePaintSettings GetImageDesign() => Clone(Settings).Image;
+
+    public HostCommandResult SaveImagePreset(string path, ImagePaintSettings design)
+    {
+        var saved = ImagePresets.SavePreset(path, CloneImageDesign(design));
+        return saved.Success ? new HostCommandResult(true, saved.Path) : new HostCommandResult(false, saved.Message);
+    }
+
+    public bool TryLoadImagePreset(string path, out ImagePaintSettings design, out string message) =>
+        ImagePresets.TryLoadPreset(path, out design, out message);
+
+    public ImagePaintSettings GetImageDesignMetadata()
+    {
+        var design = GetImageDesign();
+        design.CanvasRgbaBase64 = "";
+        foreach (var layer in design.Layers)
+            layer.DataBase64 = "";
+        return design;
+    }
+
+    public async Task<ImageGuideSnapshot> GetImageGuideAsync(string bodyType, CancellationToken cancellationToken = default)
+    {
+        var normalizedBodyType = string.Equals(bodyType, "cube", StringComparison.OrdinalIgnoreCase) ? "cube" : "round";
+        lock (paintStateGate)
+        {
+            if (PaintRunning || nativePaintMayBeRunning)
+            {
+                return new ImageGuideSnapshot(false, "Stop the active paint before refreshing the live image guide.", "", []);
+            }
+        }
+
+        using var process = Runtime.FindGameProcess(Settings.GameProcessName);
+        if (process is null)
+            return new ImageGuideSnapshot(false, "Game process not found.", "", []);
+        if (!await Runtime.EnsureReadyAsync(process, cancellationToken))
+            return new ImageGuideSnapshot(false, "Bridge is not connected.", "", []);
+
+        var payload = JsonSerializer.Serialize(new
+        {
+            type = "image_guide",
+            image_paint_body_type = normalizedBodyType
+        });
+        var reply = await Runtime.SendPaintAsync(payload, cancellationToken);
+        if (!reply.Ok || !reply.Success)
+        {
+            var artifactPath = WriteImageGuideArtifacts(normalizedBodyType, reply.Raw, []);
+            Log.Warn("Image guide: unavailable | artifact=" + artifactPath + " | stage=" + reply.Stage);
+            return new ImageGuideSnapshot(false, FriendlyBridgeMessage(reply.Message.Length > 0 ? reply.Message : reply.Stage), "", []);
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(reply.Raw);
+            if (!document.RootElement.TryGetProperty("metadata", out var metadata) ||
+                !metadata.TryGetProperty("guide_profile_id", out var profileElement) ||
+                profileElement.ValueKind != JsonValueKind.String ||
+                !metadata.TryGetProperty("guide_vertices", out var verticesElement) ||
+                verticesElement.ValueKind != JsonValueKind.Array)
+            {
+                return new ImageGuideSnapshot(false, "Bridge returned no usable live image guide.", "", []);
+            }
+            var vertices = new List<ImageGuideVertex>(verticesElement.GetArrayLength());
+            foreach (var vertex in verticesElement.EnumerateArray())
+            {
+                if (vertex.ValueKind != JsonValueKind.Array || vertex.GetArrayLength() != 3)
+                    return new ImageGuideSnapshot(false, "Bridge returned malformed live image guide vertices.", "", []);
+                var values = vertex.EnumerateArray().ToArray();
+                if (values.Any(value => value.ValueKind != JsonValueKind.Number))
+                    return new ImageGuideSnapshot(false, "Bridge returned non-numeric live image guide vertices.", "", []);
+                vertices.Add(new ImageGuideVertex(values[0].GetDouble(), values[1].GetDouble(), values[2].GetDouble()));
+            }
+            if (vertices.Count == 0)
+                return new ImageGuideSnapshot(false, "Bridge returned an empty live image guide.", "", []);
+            var triangles = new List<ImageGuideTriangle>();
+            if (metadata.TryGetProperty("guide_atlas_triangles", out var trianglesElement))
+            {
+                if (trianglesElement.ValueKind != JsonValueKind.Array)
+                    return new ImageGuideSnapshot(false, "Bridge returned malformed image guide atlas triangles.", "", []);
+                foreach (var triangle in trianglesElement.EnumerateArray())
+                {
+                    if (triangle.ValueKind != JsonValueKind.Array || triangle.GetArrayLength() != 7)
+                        return new ImageGuideSnapshot(false, "Bridge returned malformed image guide atlas triangle data.", "", []);
+                    var values = triangle.EnumerateArray().ToArray();
+                    if (values.Take(6).Any(value => value.ValueKind != JsonValueKind.Number) ||
+                        values[6].ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                    {
+                        return new ImageGuideSnapshot(false, "Bridge returned non-numeric image guide atlas coordinates.", "", []);
+                    }
+                    triangles.Add(new ImageGuideTriangle(
+                        values[0].GetDouble(), values[1].GetDouble(),
+                        values[2].GetDouble(), values[3].GetDouble(),
+                        values[4].GetDouble(), values[5].GetDouble(),
+                        values[6].GetBoolean()));
+                }
+            }
+            if (triangles.Count == 0)
+                return new ImageGuideSnapshot(false, "Bridge returned no usable image guide atlas triangles.", "", []);
+            var profileId = profileElement.GetString() ?? "";
+            var artifactPath = WriteImageGuideArtifacts(normalizedBodyType, reply.Raw, triangles);
+            Log.Info("Image guide: " + ImageGuideDiagnosticSummary(metadata, profileId, vertices.Count) +
+                     $" | atlasTriangles={triangles.Count} | artifact={artifactPath}");
+            return new ImageGuideSnapshot(true, "", profileId, vertices, triangles);
+        }
+        catch (JsonException)
+        {
+            _ = WriteImageGuideArtifacts(normalizedBodyType, reply.Raw, []);
+            return new ImageGuideSnapshot(false, "Bridge returned invalid live image guide data.", "", []);
+        }
+    }
+
+    /// <summary>
+    /// Development-only, one-shot capture of the live cube standing pose.
+    /// The regular Image editor deliberately never calls this method.
+    /// </summary>
+    public async Task<CubeReferencePoseSnapshot> CaptureCubeReferencePoseAsync(CancellationToken cancellationToken = default)
+    {
+        lock (paintStateGate)
+        {
+            if (PaintRunning || nativePaintMayBeRunning)
+            {
+                return new CubeReferencePoseSnapshot(
+                    false,
+                    "Stop the active paint before capturing the cube reference pose.",
+                    "",
+                    [],
+                    []);
+            }
+        }
+
+        using var process = Runtime.FindGameProcess(Settings.GameProcessName);
+        if (process is null)
+            return new CubeReferencePoseSnapshot(false, "Game process not found.", "", [], []);
+        if (!await Runtime.EnsureReadyAsync(process, cancellationToken))
+            return new CubeReferencePoseSnapshot(false, "Bridge is not connected.", "", [], []);
+
+        var payload = JsonSerializer.Serialize(new
+        {
+            type = "image_guide",
+            image_paint_body_type = "cube",
+            capture_reference_pose = true
+        });
+        var reply = await Runtime.SendPaintAsync(payload, cancellationToken);
+        if (!reply.Ok || !reply.Success)
+        {
+            Log.Warn("Cube reference pose capture unavailable | stage=" + reply.Stage);
+            return new CubeReferencePoseSnapshot(
+                false,
+                FriendlyBridgeMessage(reply.Message.Length > 0 ? reply.Message : reply.Stage),
+                "",
+                [],
+                []);
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(reply.Raw);
+            if (!document.RootElement.TryGetProperty("metadata", out var metadata) ||
+                !metadata.TryGetProperty("cube_reference_profile_id", out var profileElement) ||
+                profileElement.ValueKind != JsonValueKind.String ||
+                !metadata.TryGetProperty("cube_reference_component_transforms", out var transformsElement) ||
+                transformsElement.ValueKind != JsonValueKind.Array ||
+                !metadata.TryGetProperty("cube_reference_vertices", out var verticesElement) ||
+                verticesElement.ValueKind != JsonValueKind.Array)
+            {
+                return new CubeReferencePoseSnapshot(false, "Bridge returned no usable cube reference pose.", "", [], []);
+            }
+
+            var transforms = new List<CubeReferencePoseTransform>(transformsElement.GetArrayLength());
+            foreach (var transform in transformsElement.EnumerateArray())
+            {
+                if (transform.ValueKind != JsonValueKind.Array || transform.GetArrayLength() != 11)
+                    return new CubeReferencePoseSnapshot(false, "Bridge returned malformed cube reference pose data.", "", [], []);
+                var values = transform.EnumerateArray().ToArray();
+                if (values.Any(value => value.ValueKind != JsonValueKind.Number))
+                    return new CubeReferencePoseSnapshot(false, "Bridge returned non-numeric cube reference pose data.", "", [], []);
+                var index = values[0].GetInt32();
+                var numeric = values.Skip(1).Select(value => value.GetDouble()).ToArray();
+                if (index < 0 || numeric.Any(value => !double.IsFinite(value)))
+                    return new CubeReferencePoseSnapshot(false, "Bridge returned invalid cube reference pose data.", "", [], []);
+                transforms.Add(new CubeReferencePoseTransform(
+                    index,
+                    numeric[0], numeric[1], numeric[2],
+                    numeric[3], numeric[4], numeric[5], numeric[6],
+                    numeric[7], numeric[8], numeric[9]));
+            }
+            if (transforms.Count == 0 || transforms.Select(transform => transform.Index).Distinct().Count() != transforms.Count)
+                return new CubeReferencePoseSnapshot(false, "Bridge returned an incomplete cube reference pose.", "", [], []);
+
+            var vertices = new List<CubeReferencePoseVertex>(verticesElement.GetArrayLength());
+            foreach (var vertex in verticesElement.EnumerateArray())
+            {
+                if (vertex.ValueKind != JsonValueKind.Array || vertex.GetArrayLength() != 4)
+                    return new CubeReferencePoseSnapshot(false, "Bridge returned malformed cube reference vertices.", "", [], []);
+                var values = vertex.EnumerateArray().ToArray();
+                if (values.Any(value => value.ValueKind != JsonValueKind.Number))
+                    return new CubeReferencePoseSnapshot(false, "Bridge returned non-numeric cube reference vertices.", "", [], []);
+                var index = values[0].GetInt32();
+                var numeric = values.Skip(1).Select(value => value.GetDouble()).ToArray();
+                if (index < 0 || numeric.Any(value => !double.IsFinite(value)))
+                    return new CubeReferencePoseSnapshot(false, "Bridge returned invalid cube reference vertices.", "", [], []);
+                vertices.Add(new CubeReferencePoseVertex(index, numeric[0], numeric[1], numeric[2]));
+            }
+            if (vertices.Count == 0 || vertices.Select(vertex => vertex.Index).Distinct().Count() != vertices.Count)
+                return new CubeReferencePoseSnapshot(false, "Bridge returned incomplete cube reference vertices.", "", [], []);
+
+            var profileId = profileElement.GetString() ?? "";
+            Log.Info($"Cube reference pose captured | profile={profileId} | bones={transforms.Count} | vertices={vertices.Count}");
+            return new CubeReferencePoseSnapshot(true, "", profileId, transforms, vertices);
+        }
+        catch (JsonException)
+        {
+            return new CubeReferencePoseSnapshot(false, "Bridge returned invalid cube reference pose data.", "", [], []);
+        }
+    }
+
+    private static string ImageGuideDiagnosticSummary(JsonElement metadata, string profileId, int vertexCount)
+    {
+        static string Number(JsonElement objectValue, string name, string fallback = "?") =>
+            objectValue.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.Number
+                ? value.ToString()
+                : fallback;
+        static string Text(JsonElement objectValue, string name, string fallback = "?") =>
+            objectValue.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+                ? value.GetString() ?? fallback
+                : fallback;
+
+        var faces = metadata.TryGetProperty("guide_face_triangles", out var faceValue) &&
+                    faceValue.ValueKind == JsonValueKind.Object
+            ? string.Concat("F/R/B/L=", Number(faceValue, "front"), "/", Number(faceValue, "right"), "/", Number(faceValue, "back"), "/", Number(faceValue, "left"))
+            : "F/R/B/L=?";
+        var regions = metadata.TryGetProperty("guide_body_regions", out var regionValue) &&
+                      regionValue.ValueKind == JsonValueKind.Object
+            ? regionValue.GetRawText()
+            : "{}";
+        var source = metadata.TryGetProperty("guide_source", out var sourceValue) && sourceValue.ValueKind == JsonValueKind.String
+            ? sourceValue.GetString() ?? "?"
+            : "?";
+        var crossProfile = metadata.TryGetProperty("guide_cross_profile_pose_transfer", out var transferValue) &&
+                           transferValue.ValueKind is JsonValueKind.True or JsonValueKind.False
+            ? transferValue.GetBoolean().ToString().ToLowerInvariant()
+            : "?";
+        return $"profile={profileId} | source={source} | vertices={vertexCount} | {faces} | invalidTriangles={Number(metadata, "guide_invalid_triangles")} | " +
+               $"runtimeTriangles={Number(metadata, "guide_runtime_triangle_count")} | cacheOffset={Text(metadata, "guide_runtime_cache_offset")} | " +
+               $"coordinateError={Number(metadata, "guide_runtime_coordinate_avg_error")} | continuityError={Number(metadata, "guide_runtime_continuity_avg_error")} | " +
+               $"continuityMismatch={Number(metadata, "guide_runtime_continuity_mismatches")} | " +
+               $"crossProfilePoseTransfer={crossProfile} | poseValidationAvg={Number(metadata, "guide_pose_validation_avg_error")} | " +
+               $"poseValidationMax={Number(metadata, "guide_pose_validation_max_error")} | emitted={Number(metadata, "guide_emitted_triangles")} | " +
+               $"splits={Number(metadata, "guide_split_triangles")} | seamRejects={Number(metadata, "guide_seam_rejections")} | " +
+               $"maxUSpan={Number(metadata, "guide_max_emitted_u_span")} | regions={regions}";
+    }
+
+    private string WriteImageGuideArtifacts(string bodyType, string rawResponse, IReadOnlyList<ImageGuideTriangle> triangles)
+    {
+        try
+        {
+            Directory.CreateDirectory(Paths.DebugDirectory);
+            var stem = "image-guide-" + (bodyType == "cube" ? "cube" : "round") + "-latest";
+            var jsonPath = Path.Combine(Paths.DebugDirectory, stem + ".json");
+            var svgPath = Path.Combine(Paths.DebugDirectory, stem + ".svg");
+            File.WriteAllText(jsonPath, rawResponse);
+
+            var svg = new StringBuilder();
+            svg.Append("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1024 512\" shape-rendering=\"geometricPrecision\">");
+            svg.Append("<rect width=\"1024\" height=\"512\" fill=\"#141414\"/>");
+            foreach (var triangle in triangles)
+            {
+                var points = FormattableString.Invariant(
+                    $"{triangle.U0 * 1024:F3},{(1.0 - triangle.V0) * 512:F3} {triangle.U1 * 1024:F3},{(1.0 - triangle.V1) * 512:F3} {triangle.U2 * 1024:F3},{(1.0 - triangle.V2) * 512:F3}");
+                svg.Append("<polygon points=\"").Append(points).Append("\" fill=\"#d8d8d8\" fill-opacity=\".32\"");
+                if (triangle.Edge)
+                    svg.Append(" stroke=\"#ffffff\" stroke-opacity=\".72\" stroke-width=\"2\"");
+                svg.Append("/>");
+            }
+            for (var face = 0; face < 4; ++face)
+            {
+                var x = face * 256;
+                svg.Append("<rect x=\"").Append(x).Append("\" y=\"0\" width=\"256\" height=\"512\" fill=\"none\" stroke=\"#ffffff\" stroke-opacity=\".36\"/>");
+            }
+            svg.Append("</svg>");
+            File.WriteAllText(svgPath, svg.ToString());
+            return jsonPath;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Log.Warn("Image guide: debug artifact write failed: " + ex.Message);
+            return "unavailable";
+        }
+    }
+
+    public bool TryGetImageDesignAsset(string asset, out string data)
+    {
+        data = "";
+        var image = Settings.Image;
+        if (asset == "canvas")
+        {
+            data = image.CanvasRgbaBase64;
+            return image.Enabled && data.Length > 0;
+        }
+        if (!asset.StartsWith("layer", StringComparison.Ordinal) ||
+            !int.TryParse(asset["layer".Length..], out var index) ||
+            index < 0 || index >= image.Layers.Count)
+        {
+            return false;
+        }
+        data = image.Layers[index].DataBase64;
+        return data.Length > 0;
+    }
+
     // This becomes non-zero only immediately before the authenticated paint request begins.
     // A stop during process/bridge attachment must latch locally instead of asking native to
     // cancel a job which does not exist yet and then allowing the late send to proceed.
@@ -214,6 +646,9 @@ public sealed class HostSession
                 next.Paint.FillRoughness = defaults.Paint.FillRoughness;
                 next.Paint.FillEmissive = defaults.Paint.FillEmissive;
                 break;
+            case "image":
+                next.Image = defaults.Image;
+                break;
             case "app":
                 next.GameProcessName = defaults.GameProcessName;
                 next.AlwaysOnTop = defaults.AlwaysOnTop;
@@ -223,6 +658,10 @@ public sealed class HostSession
                 next.PreviewHotkey = defaults.PreviewHotkey;
                 next.UnPreviewHotkey = defaults.UnPreviewHotkey;
                 next.StopHotkey = defaults.StopHotkey;
+                next.ImageStartHotkey = defaults.ImageStartHotkey;
+                next.ImagePreviewHotkey = defaults.ImagePreviewHotkey;
+                next.ImageUnPreviewHotkey = defaults.ImageUnPreviewHotkey;
+                next.ImageStopHotkey = defaults.ImageStopHotkey;
                 break;
             default:
                 return new HostCommandResult(false, $"Unknown section: {section}");
@@ -241,6 +680,8 @@ public sealed class HostSession
             PanelHeight = Settings.PanelHeight
         };
         Settings = defaults;
+        lock (paintStateGate)
+            imagePaint = null;
         Store.Save(Settings);
         return new HostCommandResult(true);
     }
@@ -257,8 +698,37 @@ public sealed class HostSession
         Store.Save(Settings);
     }
 
-    public async Task<HostCommandResult> RunPaintAsync(bool previewOnly, bool unpreviewOnly, CancellationToken cancellationToken = default)
+    public Task<HostCommandResult> RunPaintAsync(bool previewOnly, bool unpreviewOnly, CancellationToken cancellationToken = default) =>
+        RunPaintAsync(PaintKind.Standard, previewOnly, unpreviewOnly, cancellationToken);
+
+    public Task<HostCommandResult> RunImagePaintAsync(bool previewOnly, bool unpreviewOnly, CancellationToken cancellationToken = default) =>
+        RunPaintAsync(PaintKind.Image, previewOnly, unpreviewOnly, cancellationToken);
+
+    public async Task<HostCommandResult> RunPaintAsync(PaintKind kind, bool previewOnly, bool unpreviewOnly, CancellationToken cancellationToken = default)
     {
+        ImagePaintOptions? selectedImage;
+        bool imageDraftDirty;
+        lock (paintStateGate)
+        {
+            selectedImage = kind == PaintKind.Image ? imagePaint : null;
+            imageDraftDirty = kind == PaintKind.Image && imageDesignDraftDirty;
+        }
+        if (kind == PaintKind.Image && imageDraftDirty)
+        {
+            const string message = "Image Paint: save or cancel the image design before starting.";
+            Log.Warn(message);
+            return new HostCommandResult(false, message);
+        }
+        if (kind == PaintKind.Image && selectedImage is null)
+        {
+            var message = Settings.Image.Enabled &&
+                          Settings.Image.AlphaMode == "background" &&
+                          Settings.Image.CanvasEncodingVersion != ImagePaintSettings.BackgroundPbrCanvasEncodingVersion
+                ? "Image Paint: open Image settings and Save the design to migrate Background material data."
+                : "Image Paint: save an image design before starting.";
+            Log.Warn(message);
+            return new HostCommandResult(false, message);
+        }
         int runGeneration;
         lock (paintStateGate)
         {
@@ -297,8 +767,11 @@ public sealed class HostSession
             }
             if (!ready)
                 return new HostCommandResult(false, "Bridge is not connected.");
-            var startedMessage = previewOnly ? "Preview: started." : (unpreviewOnly ? "UnPreview: started." : "Paint: started.");
+            var startedMessage = previewOnly ? "Preview: started." :
+                (unpreviewOnly ? "UnPreview: started." : (kind == PaintKind.Image ? "Image Paint: started." : "Paint: started."));
             Log.Info(startedMessage);
+            if (kind == PaintKind.Image && selectedImage is not null)
+                LogImageDesignRunSummary(selectedImage);
             var payload = BridgePayloadBuilder.BuildPaintPayload(
                 Settings,
                 process.Id,
@@ -308,7 +781,7 @@ public sealed class HostSession
                     UnPreviewOnly: unpreviewOnly,
                     ResearchArtifacts: BuildFeatures.ResearchArtifactsEnabled,
                     DiagnosticStrokeLimit: diagnosticStrokeLimit,
-                    Image: imagePaint));
+                    Image: selectedImage));
             if (!TryBeginPaintDispatch(runGeneration))
             {
                 const string canceledBeforeDispatch = "Paint: canceled.";
@@ -316,6 +789,8 @@ public sealed class HostSession
                 return new HostCommandResult(false, canceledBeforeDispatch);
             }
             var response = await Runtime.SendPaintAsync(payload, cancellationToken);
+            if (kind == PaintKind.Image)
+                LogImagePaintNativeSummary(response);
             if (diagnosticStrokeLimit > 0)
             {
                 var diagnostic = PaintDiagnosticSummary(response);
@@ -629,14 +1104,26 @@ public sealed class HostSession
             }
             string[] fields =
             [
-                "local_visual_sync_failure"
+                "local_visual_sync_failure",
+                "image_decode_failure",
+                "image_request_bytes",
+                "image_base64_characters",
+                "image_decoded_bytes",
+                "image_expected_bytes",
+                "image_width",
+                "image_height",
+                "image_alpha_mode",
+                "image_body_type"
             ];
             var parts = new List<string>();
             foreach (var field in fields)
             {
-                if (!metadata.TryGetProperty(field, out var value) || value.ValueKind != JsonValueKind.String)
+                if (!metadata.TryGetProperty(field, out var value) ||
+                    value.ValueKind is not (JsonValueKind.String or JsonValueKind.Number))
                     continue;
-                var text = value.GetString();
+                var text = value.ValueKind == JsonValueKind.String
+                    ? value.GetString()
+                    : value.ToString();
                 if (string.IsNullOrWhiteSpace(text))
                     continue;
                 parts.Add(field + "=" + text);
@@ -699,6 +1186,12 @@ public sealed class HostSession
         Process.Start(new ProcessStartInfo(Paths.VersionRoot) { UseShellExecute = true });
     }
 
+    public void OpenImagePresetsFolder()
+    {
+        Directory.CreateDirectory(Paths.ImagePresetsDirectory);
+        Process.Start(new ProcessStartInfo(Paths.ImagePresetsDirectory) { UseShellExecute = true });
+    }
+
     public string ClipboardLogText()
     {
         if (!currentProgressIsServerPaint)
@@ -731,8 +1224,108 @@ public sealed class HostSession
             return new HostCommandResult(false, message);
         }
         Settings = next;
+        lock (paintStateGate)
+            imagePaint = ToImagePaintOptions(Settings.Image);
         Store.Save(Settings);
         return new HostCommandResult(true);
+    }
+
+    private static ImagePaintOptions? ToImagePaintOptions(ImagePaintSettings image)
+    {
+        if (!image.Enabled || !image.TryValidate(out _) ||
+            image.AlphaMode == "background" &&
+            image.CanvasEncodingVersion != ImagePaintSettings.BackgroundPbrCanvasEncodingVersion)
+            return null;
+        return new ImagePaintOptions(
+            ImagePaintSettings.CanvasWidth,
+            ImagePaintSettings.CanvasHeight,
+            image.CanvasRgbaBase64,
+            image.AlphaMode,
+            image.BackgroundColor,
+            image.Placement,
+            image.BodyType,
+            image.BrushSizeTexels,
+            image.ColorCompressionTolerance,
+            image.Metallic,
+            image.Roughness,
+            image.Emissive,
+            image.BackgroundMetallic,
+            image.BackgroundRoughness,
+            image.BackgroundEmissive,
+            image.Revision);
+    }
+
+    private void LogImageDesignRunSummary(ImagePaintOptions image)
+    {
+        var sourceBytes = 0L;
+        var cropCount = 0;
+        var wrapCount = 0;
+        var mirrorCount = 0;
+        foreach (var layer in Settings.Image.Layers)
+        {
+            try
+            {
+                sourceBytes += Convert.FromBase64String(layer.DataBase64).LongLength;
+            }
+            catch (FormatException)
+            {
+                // The saved ImagePaintOptions was validated before it was armed.
+                // Retain the run log even if a later caller supplied stale data.
+            }
+            if (Math.Abs(layer.CropX) > 0.000001 || Math.Abs(layer.CropY) > 0.000001 ||
+                Math.Abs(layer.CropWidth - 1.0) > 0.000001 || Math.Abs(layer.CropHeight - 1.0) > 0.000001)
+            {
+                ++cropCount;
+            }
+            if (layer.WrapAtlasSeam)
+                ++wrapCount;
+            if (layer.MirrorFrontBack)
+                ++mirrorCount;
+        }
+
+        var canvas = Convert.FromBase64String(image.RgbaBase64);
+        var canvasHash = Convert.ToHexString(SHA256.HashData(canvas)).ToLowerInvariant();
+        Log.Info(
+            "Image Paint detail: " +
+            $"revision={image.Revision} | " +
+            $"layers={Settings.Image.Layers.Count} | source_bytes={sourceBytes} | crops={cropCount} | wraps={wrapCount} | mirrors={mirrorCount} | " +
+            $"canvas_bytes={canvas.Length} | canvas_sha256={canvasHash} | body_type={image.BodyType} | " +
+            $"alpha_mode={image.AlphaMode} | brush_size_texels={image.BrushSizeTexels:F3} | " +
+            $"compression_tolerance={image.ColorCompressionTolerance:F3} | metallic={image.Metallic:F3} | " +
+            $"roughness={image.Roughness:F3} | emissive={image.Emissive:F3} | " +
+            $"background_metallic={image.BackgroundMetallic:F3} | background_roughness={image.BackgroundRoughness:F3} | " +
+            $"background_emissive={image.BackgroundEmissive:F3}");
+    }
+
+    private void LogImagePaintNativeSummary(BridgeReply response)
+    {
+        if (string.IsNullOrWhiteSpace(response.Raw))
+            return;
+        try
+        {
+            using var document = JsonDocument.Parse(response.Raw);
+            if (!document.RootElement.TryGetProperty("metadata", out var metadata) ||
+                metadata.ValueKind != JsonValueKind.Object)
+            {
+                return;
+            }
+            static string Field(JsonElement source, string name) =>
+                source.TryGetProperty(name, out var value) &&
+                value.ValueKind is JsonValueKind.String or JsonValueKind.Number
+                    ? value.ToString()
+                    : "?";
+            Log.Info(
+                "Image Paint native: " +
+                $"active_profile={Field(metadata, "profile_id")} | body_type={Field(metadata, "image_paint_body_type")} | " +
+                $"assignments={Field(metadata, "image_paint_assignments")} | transparent_skips={Field(metadata, "image_paint_transparent_skips")} | " +
+                $"background_assignments={Field(metadata, "image_paint_background_assignments")} | cube_edge_assignments={Field(metadata, "image_paint_cube_edge_assignments")} | " +
+                $"cube_side_assignments={Field(metadata, "image_paint_cube_side_assignments")} | revision={Field(metadata, "image_paint_revision")} | " +
+                $"metallic={Field(metadata, "image_paint_metallic")} | roughness={Field(metadata, "image_paint_roughness")} | emissive={Field(metadata, "image_paint_emissive")}");
+        }
+        catch (JsonException)
+        {
+            // The bridge response is already handled by the normal paint path.
+        }
     }
 
     public static string FriendlyBridgeMessage(string message)
@@ -814,6 +1407,9 @@ public sealed class HostSession
         message.Equals("Paint: no active paint to cancel.", StringComparison.OrdinalIgnoreCase) ||
         message.Equals("Preview: no active preview to restore.", StringComparison.OrdinalIgnoreCase);
 
+    private static ImagePaintSettings CloneImageDesign(ImagePaintSettings source) =>
+        JsonSerializer.Deserialize<ImagePaintSettings>(JsonSerializer.Serialize(source)) ?? new ImagePaintSettings();
+
     private static AppSettings Clone(AppSettings source) =>
         JsonSerializer.Deserialize<AppSettings>(JsonSerializer.Serialize(source)) ?? new AppSettings();
 
@@ -878,7 +1474,28 @@ public sealed class HostSession
                 settings.StartHotkey,
                 settings.PreviewHotkey,
                 settings.UnPreviewHotkey,
-                settings.StopHotkey));
+                settings.StopHotkey,
+                settings.ImageStartHotkey,
+                settings.ImagePreviewHotkey,
+                settings.ImageUnPreviewHotkey,
+                settings.ImageStopHotkey),
+            new ImageSnapshot(
+                settings.Image.Enabled,
+                settings.Image.Revision,
+                settings.Image.BodyType,
+                settings.Image.AlphaMode,
+                settings.Image.BackgroundColor.ToHex(),
+                settings.Image.Placement,
+                settings.Image.BrushSizeTexels,
+                settings.Image.ColorCompressionTolerance,
+                settings.Image.Metallic,
+                settings.Image.Roughness,
+                settings.Image.Emissive,
+                settings.Image.BackgroundMetallic,
+                settings.Image.BackgroundRoughness,
+                settings.Image.BackgroundEmissive,
+                settings.Image.Layers.Count,
+                !string.IsNullOrWhiteSpace(settings.Image.CanvasRgbaBase64)));
     }
 
     private static ResetSnapshot BuildResetSnapshot(AppSettings settings, AppSettings defaults)
@@ -890,8 +1507,10 @@ public sealed class HostSession
             ["paint.material"] = map["paint.autoMaterial"] || map["paint.metallic"] || map["paint.roughness"] || map["paint.emissive"],
             ["regions"] = map["paint.frontRegionMode"] || map["paint.sideRegionMode"] || map["paint.backRegionMode"],
             ["fill.material"] = map["paint.fillColor"] || map["paint.fillMetallic"] || map["paint.fillRoughness"] || map["paint.fillEmissive"],
+            ["image"] = settings.Image.Enabled != defaults.Image.Enabled || settings.Image.Revision != defaults.Image.Revision,
             ["app"] = map["app.processName"] || map["app.alwaysOnTop"] || map["app.opacity"] || map["app.themeColor"] ||
-                    map["app.startHotkey"] || map["app.previewHotkey"] || map["app.unpreviewHotkey"] || map["app.stopHotkey"]
+                    map["app.startHotkey"] || map["app.previewHotkey"] || map["app.unpreviewHotkey"] || map["app.stopHotkey"] ||
+                    map["app.imageStartHotkey"] || map["app.imagePreviewHotkey"] || map["app.imageUnpreviewHotkey"] || map["app.imageStopHotkey"]
         };
         return new ResetSnapshot(map, sections);
     }
@@ -919,6 +1538,10 @@ public sealed class HostSession
         "app.previewHotkey" => left.PreviewHotkey == right.PreviewHotkey,
         "app.unpreviewHotkey" => left.UnPreviewHotkey == right.UnPreviewHotkey,
         "app.stopHotkey" => left.StopHotkey == right.StopHotkey,
+        "app.imageStartHotkey" => left.ImageStartHotkey == right.ImageStartHotkey,
+        "app.imagePreviewHotkey" => left.ImagePreviewHotkey == right.ImagePreviewHotkey,
+        "app.imageUnpreviewHotkey" => left.ImageUnPreviewHotkey == right.ImageUnPreviewHotkey,
+        "app.imageStopHotkey" => left.ImageStopHotkey == right.ImageStopHotkey,
         _ => true
     };
 
@@ -947,6 +1570,10 @@ public sealed class HostSession
             case "app.previewHotkey": settings.PreviewHotkey = defaults.PreviewHotkey; break;
             case "app.unpreviewHotkey": settings.UnPreviewHotkey = defaults.UnPreviewHotkey; break;
             case "app.stopHotkey": settings.StopHotkey = defaults.StopHotkey; break;
+            case "app.imageStartHotkey": settings.ImageStartHotkey = defaults.ImageStartHotkey; break;
+            case "app.imagePreviewHotkey": settings.ImagePreviewHotkey = defaults.ImagePreviewHotkey; break;
+            case "app.imageUnpreviewHotkey": settings.ImageUnPreviewHotkey = defaults.ImageUnPreviewHotkey; break;
+            case "app.imageStopHotkey": settings.ImageStopHotkey = defaults.ImageStopHotkey; break;
             default: throw new ArgumentException($"Unknown setting: {key}");
         }
     }
@@ -985,6 +1612,10 @@ public sealed class HostSession
             case "app.previewHotkey": settings.PreviewHotkey = HotkeySet.Normalize(value.GetString()); break;
             case "app.unpreviewHotkey": settings.UnPreviewHotkey = HotkeySet.Normalize(value.GetString()); break;
             case "app.stopHotkey": settings.StopHotkey = HotkeySet.Normalize(value.GetString()); break;
+            case "app.imageStartHotkey": settings.ImageStartHotkey = HotkeySet.Normalize(value.GetString()); break;
+            case "app.imagePreviewHotkey": settings.ImagePreviewHotkey = HotkeySet.Normalize(value.GetString()); break;
+            case "app.imageUnpreviewHotkey": settings.ImageUnPreviewHotkey = HotkeySet.Normalize(value.GetString()); break;
+            case "app.imageStopHotkey": settings.ImageStopHotkey = HotkeySet.Normalize(value.GetString()); break;
             default: throw new ArgumentException($"Unknown setting: {key}");
         }
     }

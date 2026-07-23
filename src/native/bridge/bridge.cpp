@@ -271,6 +271,8 @@ namespace
 
     auto paint_full_route_native_direct(const std::string& request) -> std::string;
     auto is_mesh_first_paint_request(const std::string& request) -> bool;
+    auto is_image_guide_request(const std::string& request) -> bool;
+    auto image_guide_on_game_thread(const std::string& request) -> std::string;
     auto paint_mesh_first_on_game_thread(const std::string& request,
                                          const std::shared_ptr<QueuedPaintJob>& queued_job = {}) -> std::string;
     auto start_mesh_first_paint_async_job(const std::string& request,
@@ -1627,6 +1629,53 @@ namespace
                 return false;
             }
             bytes.push_back(static_cast<std::uint8_t>((high << 4) | low));
+        }
+        return true;
+    }
+
+    auto base64_to_bytes(const std::string& text, std::vector<std::uint8_t>& bytes, std::string& failure) -> bool
+    {
+        bytes.clear();
+        if (text.empty() || (text.size() % 4) != 0 || text.size() > 8 * 1024 * 1024)
+        {
+            failure = "base64_invalid_length";
+            return false;
+        }
+        const auto value = [](char character) -> int {
+            if (character >= 'A' && character <= 'Z') return character - 'A';
+            if (character >= 'a' && character <= 'z') return character - 'a' + 26;
+            if (character >= '0' && character <= '9') return character - '0' + 52;
+            if (character == '+') return 62;
+            if (character == '/') return 63;
+            return -1;
+        };
+        bytes.reserve(text.size() / 4 * 3);
+        for (std::size_t index = 0; index < text.size(); index += 4)
+        {
+            const char c0 = text[index + 0];
+            const char c1 = text[index + 1];
+            const char c2 = text[index + 2];
+            const char c3 = text[index + 3];
+            const int a = value(c0);
+            const int b = value(c1);
+            const int c = c2 == '=' ? 0 : value(c2);
+            const int d = c3 == '=' ? 0 : value(c3);
+            const bool final_group = index + 4 == text.size();
+            if (a < 0 || b < 0 || c < 0 || d < 0 ||
+                (!final_group && (c2 == '=' || c3 == '=')) ||
+                (c2 == '=' && c3 != '='))
+            {
+                bytes.clear();
+                failure = "base64_invalid_character offset=" + std::to_string(index);
+                return false;
+            }
+            const std::uint32_t packed = (static_cast<std::uint32_t>(a) << 18) |
+                                         (static_cast<std::uint32_t>(b) << 12) |
+                                         (static_cast<std::uint32_t>(c) << 6) |
+                                         static_cast<std::uint32_t>(d);
+            bytes.push_back(static_cast<std::uint8_t>((packed >> 16) & 0xFF));
+            if (c2 != '=') bytes.push_back(static_cast<std::uint8_t>((packed >> 8) & 0xFF));
+            if (c3 != '=') bytes.push_back(static_cast<std::uint8_t>(packed & 0xFF));
         }
         return true;
     }
@@ -5100,6 +5149,8 @@ namespace
         std::vector<Vertex> vertices{};
         std::vector<Bone> bones{};
         std::vector<TriangleMeta> triangles{};
+        std::vector<sdk::FTransform> image_reference_component_transforms{};
+        std::vector<sdk::FVector> image_reference_vertices{};
     };
 
     auto json_matching_bracket(const std::string& text, std::size_t open, char open_ch, char close_ch) -> std::size_t
@@ -5170,6 +5221,32 @@ namespace
         }
         begin = open + 1;
         end = close;
+        return true;
+    }
+
+    auto json_find_object_span(const std::string& text,
+                               const std::string& key,
+                               std::size_t& begin,
+                               std::size_t& end) -> bool
+    {
+        const std::string needle = std::string("\"") + key + "\"";
+        const auto key_pos = text.find(needle);
+        if (key_pos == std::string::npos)
+        {
+            return false;
+        }
+        const auto open = text.find('{', key_pos + needle.size());
+        if (open == std::string::npos)
+        {
+            return false;
+        }
+        const auto close = json_matching_bracket(text, open, '{', '}');
+        if (close == std::string::npos || close <= open)
+        {
+            return false;
+        }
+        begin = open;
+        end = close + 1;
         return true;
     }
 
@@ -5346,6 +5423,77 @@ namespace
         return std::all_of(seen.begin(), seen.end(), [](bool value) { return value; });
     }
 
+    auto mesh_first_parse_image_reference_pose(const std::string& text,
+                                               int expected_bones,
+                                               std::vector<sdk::FTransform>& transforms) -> bool
+    {
+        std::size_t begin = 0;
+        std::size_t end = 0;
+        if (!json_find_array_span(text, "ComponentTransforms", begin, end) || expected_bones <= 0 || expected_bones > 512)
+        {
+            return false;
+        }
+        transforms.assign(static_cast<std::size_t>(expected_bones), {});
+        std::vector<bool> seen(static_cast<std::size_t>(expected_bones), false);
+        json_for_each_object_in_array(text, begin, end, [&](const std::string& transform_text) {
+            const int index = json_int_field(transform_text, "Index", -1, -1, 4096);
+            if (index < 0 || index >= expected_bones)
+            {
+                return;
+            }
+            sdk::FTransform transform{};
+            transform.Translation.X = json_number_field(transform_text, "X", 0.0);
+            transform.Translation.Y = json_number_field(transform_text, "Y", 0.0);
+            transform.Translation.Z = json_number_field(transform_text, "Z", 0.0);
+            transform.Rotation.X = json_number_field(transform_text, "RotationX", 0.0);
+            transform.Rotation.Y = json_number_field(transform_text, "RotationY", 0.0);
+            transform.Rotation.Z = json_number_field(transform_text, "RotationZ", 0.0);
+            transform.Rotation.W = json_number_field(transform_text, "RotationW", 1.0);
+            transform.Scale3D.X = json_number_field(transform_text, "ScaleX", 1.0);
+            transform.Scale3D.Y = json_number_field(transform_text, "ScaleY", 1.0);
+            transform.Scale3D.Z = json_number_field(transform_text, "ScaleZ", 1.0);
+            if (sdk_transform_score(transform) <= 0)
+            {
+                return;
+            }
+            transforms[static_cast<std::size_t>(index)] = transform;
+            seen[static_cast<std::size_t>(index)] = true;
+        });
+        return std::all_of(seen.begin(), seen.end(), [](bool value) { return value; });
+    }
+
+    auto mesh_first_parse_image_reference_vertices(const std::string& text,
+                                                    int expected_vertices,
+                                                    std::vector<sdk::FVector>& vertices) -> bool
+    {
+        std::size_t begin = 0;
+        std::size_t end = 0;
+        if (!json_find_array_span(text, "Vertices", begin, end) || expected_vertices <= 0 || expected_vertices > 10'000'000)
+        {
+            return false;
+        }
+        vertices.assign(static_cast<std::size_t>(expected_vertices), {});
+        std::vector<bool> seen(static_cast<std::size_t>(expected_vertices), false);
+        json_for_each_object_in_array(text, begin, end, [&](const std::string& vertex_text) {
+            const int index = json_int_field(vertex_text, "Index", -1, -1, 10'000'000);
+            if (index < 0 || index >= expected_vertices)
+            {
+                return;
+            }
+            sdk::FVector vertex{};
+            vertex.X = json_number_field(vertex_text, "X", 0.0);
+            vertex.Y = json_number_field(vertex_text, "Y", 0.0);
+            vertex.Z = json_number_field(vertex_text, "Z", 0.0);
+            if (!std::isfinite(vertex.X) || !std::isfinite(vertex.Y) || !std::isfinite(vertex.Z))
+            {
+                return;
+            }
+            vertices[static_cast<std::size_t>(index)] = vertex;
+            seen[static_cast<std::size_t>(index)] = true;
+        });
+        return std::all_of(seen.begin(), seen.end(), [](bool value) { return value; });
+    }
+
     auto parse_mesh_first_profile_text(const std::string& text, const std::string& source_label) -> MeshFirstProfile
     {
         MeshFirstProfile profile{};
@@ -5404,6 +5552,27 @@ namespace
             profile.stage = "mesh_profile_data_mismatch";
             profile.message = "mesh profile parsed data does not match exported counts";
             return profile;
+        }
+
+        // During a development capture the cube profile does not have this
+        // field yet. Once it is present, malformed fixed pose data is fatal;
+        // the canonical mapper itself has no synthetic fallback.
+        if (text.find("\"ImageReferencePose\"") != std::string::npos)
+        {
+            std::size_t reference_begin = 0;
+            std::size_t reference_end = 0;
+            if (!json_find_object_span(text, "ImageReferencePose", reference_begin, reference_end) ||
+                !mesh_first_parse_image_reference_pose(text.substr(reference_begin, reference_end - reference_begin),
+                                                        profile.bone_count,
+                                                        profile.image_reference_component_transforms) ||
+                !mesh_first_parse_image_reference_vertices(text.substr(reference_begin, reference_end - reference_begin),
+                                                            profile.vertex_count,
+                                                            profile.image_reference_vertices))
+            {
+                profile.stage = "mesh_profile_reference_pose_invalid";
+                profile.message = "mesh profile has malformed ImageReferencePose data";
+                return profile;
+            }
         }
 
         profile.ok = true;
@@ -5992,6 +6161,207 @@ namespace
             world_positions[i] = mesh_first_transform_apply_point(component_to_world, skinned);
         }
         return true;
+    }
+
+    // Cube Image Paint uses the recorded, static development reference pose.
+    // There is deliberately no angle or live-pose fallback here.
+    auto mesh_first_build_cube_canonical_component_transforms(const MeshFirstProfile& profile,
+                                                               std::vector<sdk::FTransform>& out,
+                                                               std::string& failure) -> bool
+    {
+        if (profile.bone_count <= 0 ||
+            static_cast<int>(profile.image_reference_component_transforms.size()) != profile.bone_count)
+        {
+            failure = "cube_image_reference_pose_missing";
+            return false;
+        }
+        for (const auto& transform : profile.image_reference_component_transforms)
+        {
+            if (sdk_transform_score(transform) <= 0)
+            {
+                failure = "cube_image_reference_pose_invalid";
+                return false;
+            }
+        }
+        out = profile.image_reference_component_transforms;
+        failure.clear();
+        return true;
+    }
+
+    auto mesh_first_skin_vertices_to_component_transforms(const MeshFirstProfile& profile,
+                                                           const std::vector<sdk::FTransform>& target_component_transforms,
+                                                           std::vector<sdk::FVector>& component_positions,
+                                                           std::string& failure) -> bool
+    {
+        if (static_cast<int>(target_component_transforms.size()) < profile.bone_count)
+        {
+            failure = "cube_canonical_transform_count_mismatch";
+            return false;
+        }
+        std::vector<sdk::FTransform> reference{};
+        if (!mesh_first_build_reference_component_transforms(profile, reference, failure))
+        {
+            return false;
+        }
+        component_positions.assign(profile.vertices.size(), {});
+        for (std::size_t i = 0; i < profile.vertices.size(); ++i)
+        {
+            const auto& vertex = profile.vertices[i];
+            sdk::FVector skinned{};
+            double weight_sum = 0.0;
+            for (const auto& influence : vertex.influences)
+            {
+                if (influence.bone < 0 || influence.bone >= profile.bone_count ||
+                    !std::isfinite(influence.weight) || influence.weight < 0.0)
+                {
+                    failure = "cube_canonical_skin_weight_invalid";
+                    return false;
+                }
+                const auto& ref_bone = reference[static_cast<std::size_t>(influence.bone)];
+                const auto& target_bone = target_component_transforms[static_cast<std::size_t>(influence.bone)];
+                const auto bone_local = mesh_first_transform_inverse_apply_point(ref_bone, vertex.position);
+                const auto target_component = mesh_first_transform_apply_point(target_bone, bone_local);
+                skinned = sdk_vec_add(skinned, sdk_vec_mul(target_component, influence.weight));
+                weight_sum += influence.weight;
+            }
+            if (weight_sum > 0.000001)
+            {
+                skinned = sdk_vec_mul(skinned, 1.0 / weight_sum);
+            }
+            else
+            {
+                skinned = vertex.position;
+            }
+            if (!std::isfinite(skinned.X) || !std::isfinite(skinned.Y) || !std::isfinite(skinned.Z))
+            {
+                failure = "cube_canonical_skinned_vertex_invalid";
+                return false;
+            }
+            component_positions[i] = skinned;
+        }
+        failure.clear();
+        return true;
+    }
+
+    struct CubeCanonicalImageAtlas
+    {
+        std::vector<sdk::FVector> positions{};
+        double center_x{0.0};
+        double center_y{0.0};
+        double center_z{0.0};
+        double pixels_per_unit{1.0};
+    };
+
+    auto mesh_first_build_cube_canonical_image_atlas(const MeshFirstProfile& profile,
+                                                     CubeCanonicalImageAtlas& out,
+                                                     std::string& failure) -> bool
+    {
+        // The development capture stores the exact RuntimePaintable vertex
+        // locations. Do not re-skin them from component transforms: those
+        // include the actor's scale and would reintroduce a unit conversion
+        // guess into the fixed Image Paint profile.
+        if (static_cast<int>(profile.image_reference_vertices.size()) != profile.vertex_count ||
+            profile.image_reference_vertices.empty())
+        {
+            failure = "cube_image_reference_vertices_missing";
+            return false;
+        }
+        out.positions = profile.image_reference_vertices;
+        double min_x = std::numeric_limits<double>::infinity();
+        double max_x = -std::numeric_limits<double>::infinity();
+        double min_y = std::numeric_limits<double>::infinity();
+        double max_y = -std::numeric_limits<double>::infinity();
+        double min_z = std::numeric_limits<double>::infinity();
+        double max_z = -std::numeric_limits<double>::infinity();
+        for (const auto& position : out.positions)
+        {
+            if (!std::isfinite(position.X) || !std::isfinite(position.Y) || !std::isfinite(position.Z))
+            {
+                failure = "cube_canonical_bounds_invalid";
+                return false;
+            }
+            min_x = std::min(min_x, position.X);
+            max_x = std::max(max_x, position.X);
+            min_y = std::min(min_y, position.Y);
+            max_y = std::max(max_y, position.Y);
+            min_z = std::min(min_z, position.Z);
+            max_z = std::max(max_z, position.Z);
+        }
+        const double horizontal_span = std::max(max_x - min_x, max_y - min_y);
+        const double vertical_span = max_z - min_z;
+        if (!std::isfinite(horizontal_span) || !std::isfinite(vertical_span) ||
+            horizontal_span <= 0.000001 || vertical_span <= 0.000001)
+        {
+            failure = "cube_canonical_projection_bounds_invalid";
+            return false;
+        }
+        out.center_x = (min_x + max_x) * 0.5;
+        out.center_y = (min_y + max_y) * 0.5;
+        out.center_z = (min_z + max_z) * 0.5;
+        out.pixels_per_unit = std::min((256.0 - 32.0) / horizontal_span,
+                                       (512.0 - 64.0) / vertical_span);
+        if (!std::isfinite(out.pixels_per_unit) || out.pixels_per_unit <= 0.000001)
+        {
+            failure = "cube_canonical_projection_scale_invalid";
+            return false;
+        }
+        failure.clear();
+        return true;
+    }
+
+    auto mesh_first_is_cube_profile(const MeshFirstProfile& profile) -> bool
+    {
+        return lower_copy(profile.profile_id).find("cube") != std::string::npos ||
+               lower_copy(profile.source_path).find("cube") != std::string::npos ||
+               lower_copy(profile.export_name).find("cube") != std::string::npos;
+    }
+
+    auto mesh_first_map_cube_canonical_sample(const MeshFirstProfile& profile,
+                                              const CubeCanonicalImageAtlas& atlas,
+                                              int triangle_index,
+                                              double barycentric_a,
+                                              double barycentric_b,
+                                              double barycentric_c,
+                                              runtime_contract::CubeCanonicalImageProjectionResult& out) -> bool
+    {
+        if (triangle_index < 0 || static_cast<std::size_t>(triangle_index) * 3 + 2 >= profile.indices.size())
+        {
+            return false;
+        }
+        const std::size_t index_base = static_cast<std::size_t>(triangle_index) * 3;
+        const int first_index = profile.indices[index_base];
+        const int second_index = profile.indices[index_base + 1];
+        const int third_index = profile.indices[index_base + 2];
+        if (first_index < 0 || second_index < 0 || third_index < 0 ||
+            static_cast<std::size_t>(first_index) >= atlas.positions.size() ||
+            static_cast<std::size_t>(second_index) >= atlas.positions.size() ||
+            static_cast<std::size_t>(third_index) >= atlas.positions.size())
+        {
+            return false;
+        }
+        const auto& first = atlas.positions[static_cast<std::size_t>(first_index)];
+        const auto& second = atlas.positions[static_cast<std::size_t>(second_index)];
+        const auto& third = atlas.positions[static_cast<std::size_t>(third_index)];
+        const auto normal = sdk_vec_normalize(sdk_vec_cross(sdk_vec_sub(second, first), sdk_vec_sub(third, first)));
+        if (sdk_vec_len(normal) <= 0.000001)
+        {
+            return false;
+        }
+        const auto position = sdk_vec_add(
+            sdk_vec_add(sdk_vec_mul(first, barycentric_a), sdk_vec_mul(second, barycentric_b)),
+            sdk_vec_mul(third, barycentric_c));
+        out = runtime_contract::map_cube_canonical_image_coordinate({
+            position.X,
+            position.Y,
+            position.Z,
+            normal.X,
+            normal.Y,
+            atlas.center_x,
+            atlas.center_y,
+            atlas.center_z,
+            atlas.pixels_per_unit,
+        });
+        return std::isfinite(out.u) && std::isfinite(out.v);
     }
 
     auto mesh_first_pose_displacement_metadata(const MeshFirstProfile& profile,
@@ -7277,6 +7647,7 @@ namespace
         int uv_island{-1};
         int dominant_bone{-1};
         std::string body_region{"unknown"};
+        sdk::FVector local_normal{};
         double r{1.0};
         double g{1.0};
         double b{1.0};
@@ -7287,6 +7658,7 @@ namespace
         bool source_candidate{false};
         bool unsafe{false};
         bool image_transparent_skip{false};
+        bool image_background{false};
     };
 
     struct MeshFirstRuntimeTriangle
@@ -7631,7 +8003,10 @@ namespace
             double uv_error_sum = 0.0;
             int checked = 0;
             bool valid = true;
-            const int check_count = std::min(num, 96);
+            // A partial UV check can match a neighbouring cache member whose
+            // first triangles happen to look right while later topology does
+            // not. Image guide and paint must agree on the complete cache.
+            const int check_count = num;
             for (int i = 0; i < check_count; ++i)
             {
                 MeshFirstRuntimeTriangle triangle{};
@@ -8086,6 +8461,7 @@ namespace
         sample.uv_island = meta.uv_island;
         sample.dominant_bone = meta.dominant_bone;
         sample.body_region = meta.body_region;
+        sample.local_normal = meta.local_normal;
         samples.push_back(sample);
     }
 
@@ -9563,6 +9939,1107 @@ namespace
                request.find("\"route\":\"native_recorded_paint\"") != std::string::npos;
     }
 
+    // This is deliberately a read-only, game-thread command. The web editor
+    // cannot infer the current mesh from the exported bind-pose profile: doing
+    // so makes a standing character's arms appear as a T-pose in the
+    // FRONT/RIGHT/BACK/LEFT guide. Return the identity-checked profile's
+    // current RuntimePaintable mesh vertices; indices remain in the packaged
+    // profile and no material or paint APIs are touched here.
+    auto is_image_guide_request(const std::string& request) -> bool
+    {
+        return request.find("\"type\":\"image_guide\"") != std::string::npos;
+    }
+
+    struct MeshFirstRuntimeGuideTopologyValidation
+    {
+        bool ok{false};
+        int checked_triangles{0};
+        int checked_vertices{0};
+        int continuity_samples{0};
+        int continuity_mismatches{0};
+        int invalid_areas{0};
+        double continuity_avg_error{0.0};
+        double continuity_max_error{0.0};
+        std::string failure{"not_run"};
+    };
+
+    // The guide used to average cache corners back into profile vertices even
+    // when a later cache triangle belonged to a different topology. That made
+    // the preview look like bones or spikes. Treat all topology evidence as a
+    // prerequisite and return no guide on a mismatch.
+    auto mesh_first_validate_runtime_guide_topology(const MeshFirstProfile& profile,
+                                                    const std::vector<MeshFirstRuntimeTriangle>& runtime) -> MeshFirstRuntimeGuideTopologyValidation
+    {
+        MeshFirstRuntimeGuideTopologyValidation out{};
+        if (runtime.size() != profile.indices.size() / 3 || profile.vertices.empty())
+        {
+            out.failure = "runtime_triangle_count_mismatch";
+            return out;
+        }
+        std::vector<sdk::FVector> first_positions(profile.vertices.size());
+        std::vector<bool> seen(profile.vertices.size(), false);
+        constexpr double kContinuityMaxErrorCm = 0.05;
+        for (std::size_t tri = 0; tri < runtime.size(); ++tri)
+        {
+            const auto& current = runtime[tri];
+            const auto local_edge0 = sdk_vec_sub(current.local[1], current.local[0]);
+            const auto local_edge1 = sdk_vec_sub(current.local[2], current.local[0]);
+            if (!mesh_first_finite_vector(current.local[0]) ||
+                !mesh_first_finite_vector(current.local[1]) ||
+                !mesh_first_finite_vector(current.local[2]) ||
+                sdk_vec_len(sdk_vec_cross(local_edge0, local_edge1)) <= 0.000001)
+            {
+                ++out.invalid_areas;
+                out.failure = "runtime_triangle_area_invalid";
+                return out;
+            }
+            for (int corner = 0; corner < 3; ++corner)
+            {
+                const int index = profile.indices[tri * 3 + static_cast<std::size_t>(corner)];
+                if (index < 0 || static_cast<std::size_t>(index) >= first_positions.size())
+                {
+                    out.failure = "runtime_triangle_profile_index_invalid";
+                    return out;
+                }
+                const auto& position = current.local[corner];
+                auto& first = first_positions[static_cast<std::size_t>(index)];
+                if (!seen[static_cast<std::size_t>(index)])
+                {
+                    first = position;
+                    seen[static_cast<std::size_t>(index)] = true;
+                    ++out.checked_vertices;
+                    continue;
+                }
+                const double error = sdk_vec_len(sdk_vec_sub(position, first));
+                if (!std::isfinite(error))
+                {
+                    out.failure = "runtime_vertex_continuity_non_finite";
+                    return out;
+                }
+                ++out.continuity_samples;
+                out.continuity_avg_error += error;
+                out.continuity_max_error = std::max(out.continuity_max_error, error);
+                if (error > kContinuityMaxErrorCm)
+                    ++out.continuity_mismatches;
+            }
+            ++out.checked_triangles;
+        }
+        if (out.checked_vertices != profile.vertices.size())
+        {
+            out.failure = "runtime_vertex_coverage_incomplete";
+            return out;
+        }
+        if (out.continuity_samples > 0)
+            out.continuity_avg_error /= static_cast<double>(out.continuity_samples);
+        if (out.continuity_mismatches > 0)
+        {
+            out.failure = "runtime_vertex_continuity_mismatch";
+            return out;
+        }
+        out.ok = true;
+        out.failure.clear();
+        return out;
+    }
+
+    auto mesh_first_extract_runtime_guide_vertices(const MeshFirstProfile& profile,
+                                                    const std::vector<MeshFirstRuntimeTriangle>& runtime,
+                                                    std::vector<sdk::FVector>& vertices,
+                                                    std::string& failure) -> bool
+    {
+        if (runtime.size() != profile.indices.size() / 3 || profile.vertices.empty())
+        {
+            failure = "runtime_reference_triangle_count_mismatch";
+            return false;
+        }
+        vertices.assign(profile.vertices.size(), {});
+        std::vector<int> samples(profile.vertices.size(), 0);
+        for (std::size_t tri = 0; tri < runtime.size(); ++tri)
+        {
+            const auto& current = runtime[tri];
+            for (int corner = 0; corner < 3; ++corner)
+            {
+                const int index = profile.indices[tri * 3 + static_cast<std::size_t>(corner)];
+                const auto& position = current.local[corner];
+                if (index < 0 || static_cast<std::size_t>(index) >= vertices.size() ||
+                    !std::isfinite(position.X) || !std::isfinite(position.Y) || !std::isfinite(position.Z))
+                {
+                    failure = "runtime_reference_vertex_invalid";
+                    return false;
+                }
+                auto& target = vertices[static_cast<std::size_t>(index)];
+                target.X += position.X;
+                target.Y += position.Y;
+                target.Z += position.Z;
+                ++samples[static_cast<std::size_t>(index)];
+            }
+        }
+        for (std::size_t index = 0; index < vertices.size(); ++index)
+        {
+            if (samples[index] <= 0)
+            {
+                failure = "runtime_reference_vertex_incomplete";
+                return false;
+            }
+            const double reciprocal = 1.0 / static_cast<double>(samples[index]);
+            vertices[index].X *= reciprocal;
+            vertices[index].Y *= reciprocal;
+            vertices[index].Z *= reciprocal;
+        }
+        failure.clear();
+        return true;
+    }
+
+    auto image_guide_on_game_thread(const std::string& request) -> std::string
+    {
+        const std::string requested_body = lower_copy(json_string_field(request, "image_paint_body_type", "round"));
+        const bool capture_cube_reference_pose = json_bool_field(request, "capture_reference_pose", false);
+        if (requested_body != "round" && requested_body != "cube")
+        {
+            return response_json(false,
+                                 "image_guide_body_type_invalid",
+                                 0,
+                                 1,
+                                 "Image guide body type must be round or cube.");
+        }
+
+        Reflection ref{};
+        std::string failure{};
+        if (!ref.init(failure))
+        {
+            return response_json(false,
+                                 "sdk_update_required",
+                                 0,
+                                 1,
+                                 failure.empty() ? "SDK reflection init failed" : failure);
+        }
+
+        SdkContext ctx{};
+        try
+        {
+            ctx = sdk_resolve_context(ref);
+        }
+        catch (const SdkResolutionException& ex)
+        {
+            return response_json(false,
+                                 ex.stage.c_str(),
+                                 0,
+                                 1,
+                                 ex.what(),
+                                 "\"image_guide\":true,\"sdk_resolution_exception\":true");
+        }
+        std::string metadata{"\"image_guide\":true,"};
+        metadata += sdk_context_metadata(ref, ctx);
+        if (!ctx.ok)
+        {
+            return response_json(false, ctx.stage.c_str(), 0, 1, ctx.message, metadata);
+        }
+
+        const auto mesh_candidates = sdk_collect_front_mesh_candidates(ref, ctx);
+        metadata += ",\"front_mesh_candidate_count\":" + std::to_string(mesh_candidates.size());
+        SdkFrontMeshCandidate selected_mesh{};
+        if (mesh_candidates.empty() || !sdk_select_profile_mesh_candidate(ref, mesh_candidates, selected_mesh))
+        {
+            return response_json(false,
+                                 "image_guide_mesh_unavailable",
+                                 0,
+                                 1,
+                                 "No live skeletal mesh matched an image guide profile.",
+                                 metadata);
+        }
+        metadata += ",\"selected_mesh\":\"" + hex_address(selected_mesh.mesh) + "\"";
+        metadata += ",\"selected_mesh_source\":\"" + json_escape(selected_mesh.source) + "\"";
+
+        const auto profile_catalog = load_mesh_first_profile_catalog();
+        MeshFirstProfile live_profile{};
+        std::string profile_failure{};
+        if (!select_mesh_first_profile_for_candidate(ref, profile_catalog, selected_mesh, live_profile, profile_failure))
+        {
+            return response_json(false,
+                                 "image_guide_profile_unavailable",
+                                 0,
+                                 1,
+                                 "The live mesh does not match a usable image guide profile.",
+                                 metadata + ",\"profile_failure\":\"" + json_escape(profile_failure) + "\"");
+        }
+        const auto profile_is_cube = [](const MeshFirstProfile& candidate) {
+            return candidate.profile_id.rfind("paintman_cube:", 0) == 0;
+        };
+        const auto shares_skeleton = [](const MeshFirstProfile& a, const MeshFirstProfile& b) {
+            if (a.bone_count <= 0 || a.bone_count != b.bone_count ||
+                a.bones.size() != b.bones.size())
+            {
+                return false;
+            }
+            for (std::size_t index = 0; index < a.bones.size(); ++index)
+            {
+                if (a.bones[index].index != b.bones[index].index ||
+                    a.bones[index].parent_index != b.bones[index].parent_index ||
+                    lower_copy(a.bones[index].name) != lower_copy(b.bones[index].name))
+                {
+                    return false;
+                }
+                const auto& left = a.bones[index].local_bind;
+                const auto& right = b.bones[index].local_bind;
+                const double translation_delta = sdk_vec_len(sdk_vec_sub(left.Translation, right.Translation));
+                const double direct_rotation_delta = std::sqrt(
+                    (left.Rotation.X - right.Rotation.X) * (left.Rotation.X - right.Rotation.X) +
+                    (left.Rotation.Y - right.Rotation.Y) * (left.Rotation.Y - right.Rotation.Y) +
+                    (left.Rotation.Z - right.Rotation.Z) * (left.Rotation.Z - right.Rotation.Z) +
+                    (left.Rotation.W - right.Rotation.W) * (left.Rotation.W - right.Rotation.W));
+                const double inverse_rotation_delta = std::sqrt(
+                    (left.Rotation.X + right.Rotation.X) * (left.Rotation.X + right.Rotation.X) +
+                    (left.Rotation.Y + right.Rotation.Y) * (left.Rotation.Y + right.Rotation.Y) +
+                    (left.Rotation.Z + right.Rotation.Z) * (left.Rotation.Z + right.Rotation.Z) +
+                    (left.Rotation.W + right.Rotation.W) * (left.Rotation.W + right.Rotation.W));
+                if (!std::isfinite(translation_delta) ||
+                    translation_delta > 0.01 ||
+                    std::min(direct_rotation_delta, inverse_rotation_delta) > 0.0001)
+                {
+                    return false;
+                }
+            }
+            return true;
+        };
+        const bool live_profile_is_cube = profile_is_cube(live_profile);
+        const bool cross_profile_pose_transfer = live_profile_is_cube != (requested_body == "cube");
+        bool guide_bind_valid = !cross_profile_pose_transfer;
+        MeshFirstProfile guide_profile = live_profile;
+        if (cross_profile_pose_transfer)
+        {
+            bool found_target = false;
+            for (const auto& candidate : profile_catalog)
+            {
+                if (profile_is_cube(candidate) == (requested_body == "cube") &&
+                    shares_skeleton(live_profile, candidate))
+                {
+                    guide_profile = candidate;
+                    guide_bind_valid = true;
+                    found_target = true;
+                    break;
+                }
+            }
+            if (!found_target)
+            {
+                return response_json(false,
+                                     "image_guide_cross_profile_unavailable",
+                                     0,
+                                     1,
+                                     "The requested guide profile does not share the live mesh skeleton.",
+                                     metadata + "," + mesh_first_profile_metadata(live_profile) +
+                                         ",\"requested_body_type\":\"" + requested_body + "\"");
+            }
+        }
+
+        // This is an explicit development operation, never part of the
+        // editor's guide path. Capture component-space transforms once from
+        // the cube currently standing in-game, validate them, and let the
+        // controller commit the returned values to the static mesh profile.
+        if (capture_cube_reference_pose)
+        {
+            metadata += "," + mesh_first_profile_metadata(live_profile);
+            if (requested_body != "cube" || !live_profile_is_cube || cross_profile_pose_transfer)
+            {
+                return response_json(false,
+                                     "cube_reference_pose_wrong_live_mesh",
+                                     0,
+                                     1,
+                                     "Cube reference capture requires the live cube mesh.",
+                                     metadata + ",\"cube_reference_capture\":false");
+            }
+            const auto runtime_triangle_cache = mesh_first_resolve_runtime_triangle_cache(ctx.component, live_profile);
+            if (!runtime_triangle_cache.ok ||
+                runtime_triangle_cache.triangles.size() != live_profile.indices.size() / 3)
+            {
+                return response_json(false,
+                                     "cube_reference_vertices_unavailable",
+                                     0,
+                                     1,
+                                     "The live cube mesh is unavailable for reference capture.",
+                                     metadata + ",\"cube_reference_capture\":false,\"cube_reference_vertex_failure\":\"" +
+                                         json_escape(runtime_triangle_cache.failure) + "\"");
+            }
+            const auto runtime_topology =
+                mesh_first_validate_runtime_guide_topology(live_profile, runtime_triangle_cache.triangles);
+            if (!runtime_topology.ok)
+            {
+                return response_json(false,
+                                     "cube_reference_vertices_untrusted",
+                                     0,
+                                     1,
+                                     "The live cube mesh topology is not trusted for reference capture.",
+                                     metadata + ",\"cube_reference_capture\":false,\"cube_reference_vertex_failure\":\"" +
+                                         json_escape(runtime_topology.failure) + "\"");
+            }
+            std::vector<sdk::FVector> captured_vertices{};
+            std::string captured_vertices_failure{};
+            if (!mesh_first_extract_runtime_guide_vertices(live_profile,
+                                                           runtime_triangle_cache.triangles,
+                                                           captured_vertices,
+                                                           captured_vertices_failure))
+            {
+                return response_json(false,
+                                     "cube_reference_vertices_invalid",
+                                     0,
+                                     1,
+                                     "The live cube mesh has invalid reference vertices.",
+                                     metadata + ",\"cube_reference_capture\":false,\"cube_reference_vertex_failure\":\"" +
+                                         json_escape(captured_vertices_failure) + "\"");
+            }
+            auto pose = sdk_resolve_skinned_pose(ref, selected_mesh.mesh, live_profile.bone_count);
+            if (pose.ok && !mesh_first_validate_pose_for_profile(live_profile, pose))
+            {
+                pose.stage = "cube_reference_pose_untrusted";
+                pose.message = "cube reference pose failed validation: " + pose.validation_failure;
+            }
+            metadata += "," + sdk_pose_result_metadata(pose);
+            if (!pose.ok || !pose.trusted ||
+                static_cast<int>(pose.component_space_transforms.size()) != live_profile.bone_count)
+            {
+                return response_json(false,
+                                     "cube_reference_pose_unavailable",
+                                     0,
+                                     1,
+                                     pose.message.empty() ? "The live cube reference pose is unavailable." : pose.message,
+                                     metadata + ",\"cube_reference_capture\":false");
+            }
+            const auto append_number = [](std::string& target, double value) {
+                char buffer[64]{};
+                std::snprintf(buffer, sizeof(buffer), "%.9g", value);
+                target += buffer;
+            };
+            metadata += ",\"cube_reference_capture\":true";
+            metadata += ",\"cube_reference_profile_id\":\"" + json_escape(live_profile.profile_id) + "\"";
+            metadata += ",\"cube_reference_runtime_triangle_count\":" + std::to_string(runtime_triangle_cache.triangle_count);
+            metadata += ",\"cube_reference_vertices\":[";
+            for (std::size_t index = 0; index < captured_vertices.size(); ++index)
+            {
+                if (index != 0)
+                {
+                    metadata += ",";
+                }
+                const auto& vertex = captured_vertices[index];
+                metadata += "[" + std::to_string(index) + ",";
+                append_number(metadata, vertex.X); metadata += ",";
+                append_number(metadata, vertex.Y); metadata += ",";
+                append_number(metadata, vertex.Z); metadata += "]";
+            }
+            metadata += "]";
+            metadata += ",\"cube_reference_component_transforms\":[";
+            for (std::size_t index = 0; index < pose.component_space_transforms.size(); ++index)
+            {
+                if (index != 0)
+                {
+                    metadata += ",";
+                }
+                const auto& transform = pose.component_space_transforms[index];
+                metadata += "[" + std::to_string(index) + ",";
+                append_number(metadata, transform.Translation.X); metadata += ",";
+                append_number(metadata, transform.Translation.Y); metadata += ",";
+                append_number(metadata, transform.Translation.Z); metadata += ",";
+                append_number(metadata, transform.Rotation.X); metadata += ",";
+                append_number(metadata, transform.Rotation.Y); metadata += ",";
+                append_number(metadata, transform.Rotation.Z); metadata += ",";
+                append_number(metadata, transform.Rotation.W); metadata += ",";
+                append_number(metadata, transform.Scale3D.X); metadata += ",";
+                append_number(metadata, transform.Scale3D.Y); metadata += ",";
+                append_number(metadata, transform.Scale3D.Z); metadata += "]";
+            }
+            metadata += "]";
+            return response_json(true,
+                                 "cube_reference_pose_captured",
+                                 1,
+                                 1,
+                                 "Cube reference pose captured.",
+                                 metadata);
+        }
+        metadata += "," + mesh_first_profile_metadata(live_profile);
+        metadata += ",\"guide_requested_body_type\":\"" + requested_body + "\"";
+        metadata += ",\"guide_live_profile_id\":\"" + json_escape(live_profile.profile_id) + "\"";
+        metadata += ",\"guide_cross_profile_pose_transfer\":" + std::string(json_bool(cross_profile_pose_transfer));
+        metadata += ",\"guide_bind_validation\":\"strict_local_bind\"";
+        metadata += ",\"guide_bind_valid\":" + std::string(json_bool(guide_bind_valid));
+        metadata += ",\"guide_target_profile_id\":\"" + json_escape(guide_profile.profile_id) + "\"";
+
+        // A direct guide maps the RuntimePaintable cache by its relative
+        // surface bounds. It does not need a component-to-world transform:
+        // recent game builds retain these cache corners in a representation
+        // that is UV/topology-correct but not comparable to that transform.
+        sdk::FTransform component_to_world{};
+        std::string component_transform_source{"not_required_for_runtime_cache"};
+
+        auto runtime_triangle_cache = mesh_first_resolve_runtime_triangle_cache(ctx.component, live_profile);
+        if (!runtime_triangle_cache.ok ||
+            runtime_triangle_cache.triangles.size() != live_profile.indices.size() / 3)
+        {
+            return response_json(false,
+                                 runtime_triangle_cache.failure.empty()
+                                     ? "image_guide_runtime_mesh_unavailable"
+                                     : runtime_triangle_cache.failure.c_str(),
+                                 0,
+                                 1,
+                                 "The current RuntimePaintable mesh is unavailable for the image guide.",
+                                 metadata + ",\"guide_source\":\"runtime_triangle_cache\"" +
+                                     ",\"guide_runtime_triangle_count\":" +
+                                     std::to_string(runtime_triangle_cache.triangle_count) +
+                                     ",\"guide_runtime_triangle_failure\":\"" +
+                                     json_escape(runtime_triangle_cache.failure) + "\"");
+        }
+        const auto runtime_topology =
+            mesh_first_validate_runtime_guide_topology(live_profile, runtime_triangle_cache.triangles);
+        metadata += ",\"guide_runtime_topology_checked_triangles\":" + std::to_string(runtime_topology.checked_triangles);
+        metadata += ",\"guide_runtime_topology_checked_vertices\":" + std::to_string(runtime_topology.checked_vertices);
+        metadata += ",\"guide_runtime_continuity_samples\":" + std::to_string(runtime_topology.continuity_samples);
+        metadata += ",\"guide_runtime_continuity_mismatches\":" + std::to_string(runtime_topology.continuity_mismatches);
+        metadata += ",\"guide_runtime_continuity_avg_error\":" + std::to_string(runtime_topology.continuity_avg_error);
+        metadata += ",\"guide_runtime_continuity_max_error\":" + std::to_string(runtime_topology.continuity_max_error);
+        if (!runtime_topology.ok)
+        {
+            return response_json(false,
+                                 "image_guide_runtime_topology_untrusted",
+                                 0,
+                                 1,
+                                 "The current RuntimePaintable mesh topology does not match the verified image guide profile.",
+                                 metadata + ",\"guide_source\":\"runtime_triangle_cache\"" +
+                                     ",\"guide_runtime_topology_failure\":\"" +
+                                     json_escape(runtime_topology.failure) + "\"");
+        }
+        auto runtime_coordinate_selection = MeshFirstRuntimeTriangleCoordinateSelection{};
+        std::string guide_runtime_coordinate_mode{"relative_atlas_no_transform"};
+
+        std::vector<sdk::FVector> runtime_component_positions{};
+        runtime_component_positions.resize(live_profile.vertices.size());
+        std::vector<int> component_position_samples(live_profile.vertices.size(), 0);
+        for (std::size_t tri = 0; tri < runtime_triangle_cache.triangles.size(); ++tri)
+        {
+            const std::size_t index_base = tri * 3;
+            const auto& runtime_triangle = runtime_triangle_cache.triangles[tri];
+            for (int corner = 0; corner < 3; ++corner)
+            {
+                const int vertex_index = live_profile.indices[index_base + static_cast<std::size_t>(corner)];
+                const auto& vertex = runtime_triangle.local[corner];
+                if (vertex_index < 0 || static_cast<std::size_t>(vertex_index) >= runtime_component_positions.size() ||
+                    !mesh_first_finite_vector(vertex))
+                {
+                    return response_json(false,
+                                         "image_guide_runtime_mesh_invalid",
+                                         0,
+                                         1,
+                                         "The current RuntimePaintable mesh contains an invalid guide vertex.",
+                                         metadata + ",\"guide_source\":\"runtime_triangle_cache\"");
+                }
+                auto& accumulated = runtime_component_positions[static_cast<std::size_t>(vertex_index)];
+                accumulated.X += vertex.X;
+                accumulated.Y += vertex.Y;
+                accumulated.Z += vertex.Z;
+                ++component_position_samples[static_cast<std::size_t>(vertex_index)];
+            }
+        }
+        for (std::size_t index = 0; index < runtime_component_positions.size(); ++index)
+        {
+            const int samples = component_position_samples[index];
+            if (samples <= 0)
+            {
+                return response_json(false,
+                                     "image_guide_runtime_mesh_incomplete",
+                                     0,
+                                     1,
+                                     "The current RuntimePaintable mesh is missing an image guide vertex.",
+                                     metadata + ",\"guide_source\":\"runtime_triangle_cache\"" +
+                                         ",\"guide_missing_vertex\":" + std::to_string(index));
+            }
+            auto& vertex = runtime_component_positions[index];
+            const double inverse_samples = 1.0 / static_cast<double>(samples);
+            vertex.X *= inverse_samples;
+            vertex.Y *= inverse_samples;
+            vertex.Z *= inverse_samples;
+        }
+
+        std::vector<sdk::FVector> component_positions = runtime_component_positions;
+        double guide_pose_validation_avg_error = 0.0;
+        double guide_pose_validation_max_error = 0.0;
+        if (cross_profile_pose_transfer)
+        {
+            if (!mesh_first_resolve_component_to_world(ref,
+                                                       selected_mesh.mesh,
+                                                       ctx.body_world_position,
+                                                       component_to_world,
+                                                       component_transform_source))
+            {
+                return response_json(false,
+                                     "image_guide_component_transform_unavailable",
+                                     0,
+                                     1,
+                                     "The live mesh component transform is unavailable for cross-profile pose transfer.",
+                                     metadata + ",\"component_world_transform_source\":\"" +
+                                         json_escape(component_transform_source) + "\"");
+            }
+            // The direct guide's cache representation is sufficient for
+            // relative atlas mapping. Cross-profile skinning has the stronger
+            // pose-to-cache check below, so keep this as diagnostic evidence
+            // only and do not let it reject a valid direct Cube guide.
+            auto coordinate_probe = runtime_triangle_cache.triangles;
+            runtime_coordinate_selection =
+                mesh_first_select_runtime_triangle_coordinates(coordinate_probe, component_to_world);
+            guide_runtime_coordinate_mode = runtime_coordinate_selection.mode;
+            auto pose = sdk_resolve_skinned_pose(ref, selected_mesh.mesh, live_profile.bone_count);
+            if (pose.ok && !mesh_first_validate_pose_for_profile(live_profile, pose))
+            {
+                pose.stage = "image_guide_pose_untrusted";
+                pose.message = "current pose failed validation: " + pose.validation_failure;
+            }
+            metadata += "," + sdk_pose_result_metadata(pose);
+            if (!pose.ok || !pose.trusted)
+            {
+                return response_json(false,
+                                     "image_guide_pose_unavailable",
+                                     0,
+                                     1,
+                                     pose.message.empty() ? "The current skeletal pose is unavailable for the requested guide." : pose.message,
+                                     metadata + ",\"guide_source\":\"pose_transfer\"");
+            }
+
+            std::vector<sdk::FVector> skinned_live_component{};
+            std::vector<sdk::FVector> skinned_live_world{};
+            std::string skin_failure{};
+            if (!mesh_first_skin_vertices(live_profile,
+                                          pose,
+                                          component_to_world,
+                                          skinned_live_component,
+                                          skinned_live_world,
+                                          skin_failure) ||
+                skinned_live_component.size() != runtime_component_positions.size())
+            {
+                return response_json(false,
+                                     "image_guide_pose_validation_unavailable",
+                                     0,
+                                     1,
+                                     "The live pose could not be validated against RuntimePaintable vertices.",
+                                     metadata + ",\"guide_skin_failure\":\"" + json_escape(skin_failure) + "\"");
+            }
+            for (std::size_t index = 0; index < skinned_live_component.size(); ++index)
+            {
+                const double delta = sdk_vec_len(sdk_vec_sub(skinned_live_component[index], runtime_component_positions[index]));
+                if (!std::isfinite(delta))
+                {
+                    return response_json(false,
+                                         "image_guide_pose_validation_invalid",
+                                         0,
+                                         1,
+                                         "The live pose validation produced an invalid vertex delta.",
+                                         metadata);
+                }
+                guide_pose_validation_avg_error += delta;
+                guide_pose_validation_max_error = std::max(guide_pose_validation_max_error, delta);
+            }
+            guide_pose_validation_avg_error /= static_cast<double>(std::max<std::size_t>(1, skinned_live_component.size()));
+            const double max_allowed_error = std::max(10.0, MeshFirstRuntimeCoordinateMaxAvgErrorCm * 4.0);
+            if (guide_pose_validation_avg_error > MeshFirstRuntimeCoordinateMaxAvgErrorCm ||
+                guide_pose_validation_max_error > max_allowed_error)
+            {
+                return response_json(false,
+                                     "image_guide_pose_validation_mismatch",
+                                     0,
+                                     1,
+                                     "The current pose does not agree with the RuntimePaintable guide mesh.",
+                                     metadata + ",\"guide_pose_validation_avg_error\":" + std::to_string(guide_pose_validation_avg_error) +
+                                         ",\"guide_pose_validation_max_error\":" + std::to_string(guide_pose_validation_max_error) +
+                                         ",\"guide_pose_validation_max_allowed_error\":" + std::to_string(max_allowed_error));
+            }
+
+            std::vector<sdk::FVector> skinned_target_component{};
+            std::vector<sdk::FVector> skinned_target_world{};
+            if (!mesh_first_skin_vertices(guide_profile,
+                                          pose,
+                                          component_to_world,
+                                          skinned_target_component,
+                                          skinned_target_world,
+                                          skin_failure) ||
+                skinned_target_component.size() != guide_profile.vertices.size())
+            {
+                return response_json(false,
+                                     "image_guide_target_skin_failed",
+                                     0,
+                                     1,
+                                     "The requested guide profile could not be skinned to the current pose.",
+                                     metadata + ",\"guide_skin_failure\":\"" + json_escape(skin_failure) + "\"");
+            }
+            component_positions = std::move(skinned_target_component);
+        }
+
+        const auto append_bounds = [](std::string& target,
+                                      const char* name,
+                                      const std::vector<sdk::FVector>& vertices) {
+            double min_x = std::numeric_limits<double>::infinity();
+            double max_x = -std::numeric_limits<double>::infinity();
+            double min_y = std::numeric_limits<double>::infinity();
+            double max_y = -std::numeric_limits<double>::infinity();
+            double min_z = std::numeric_limits<double>::infinity();
+            double max_z = -std::numeric_limits<double>::infinity();
+            for (const auto& vertex : vertices)
+            {
+                min_x = std::min(min_x, vertex.X);
+                max_x = std::max(max_x, vertex.X);
+                min_y = std::min(min_y, vertex.Y);
+                max_y = std::max(max_y, vertex.Y);
+                min_z = std::min(min_z, vertex.Z);
+                max_z = std::max(max_z, vertex.Z);
+            }
+            target += ",\"" + std::string(name) + "\":{\"min_x\":" + std::to_string(min_x) +
+                      ",\"max_x\":" + std::to_string(max_x) +
+                      ",\"min_y\":" + std::to_string(min_y) +
+                      ",\"max_y\":" + std::to_string(max_y) +
+                      ",\"min_z\":" + std::to_string(min_z) +
+                      ",\"max_z\":" + std::to_string(max_z) + "}";
+        };
+        std::vector<sdk::FVector> reference_positions{};
+        reference_positions.reserve(guide_profile.vertices.size());
+        for (const auto& vertex : guide_profile.vertices)
+        {
+            reference_positions.push_back(vertex.position);
+        }
+        std::vector<sdk::FVector> guide_mapping_positions{};
+        if (!cross_profile_pose_transfer)
+        {
+            guide_mapping_positions.reserve(runtime_triangle_cache.triangles.size() * 3);
+            for (const auto& triangle : runtime_triangle_cache.triangles)
+            {
+                guide_mapping_positions.push_back(triangle.local[0]);
+                guide_mapping_positions.push_back(triangle.local[1]);
+                guide_mapping_positions.push_back(triangle.local[2]);
+            }
+        }
+        else
+        {
+            guide_mapping_positions = component_positions;
+        }
+        const char guide_region_axis = mesh_first_region_axis(guide_profile);
+        const bool guide_depth_is_y = guide_region_axis == 'y' || guide_region_axis == 'Y';
+        const auto guide_horizontal = [guide_depth_is_y](const sdk::FVector& value) {
+            return guide_depth_is_y ? value.X : value.Y;
+        };
+        double guide_horizontal_min = std::numeric_limits<double>::infinity();
+        double guide_horizontal_max = -std::numeric_limits<double>::infinity();
+        double guide_min_x = std::numeric_limits<double>::infinity();
+        double guide_max_x = -std::numeric_limits<double>::infinity();
+        double guide_min_y = std::numeric_limits<double>::infinity();
+        double guide_max_y = -std::numeric_limits<double>::infinity();
+        double guide_min_z = std::numeric_limits<double>::infinity();
+        double guide_max_z = -std::numeric_limits<double>::infinity();
+        for (const auto& vertex : guide_mapping_positions)
+        {
+            const double horizontal = guide_horizontal(vertex);
+            guide_horizontal_min = std::min(guide_horizontal_min, horizontal);
+            guide_horizontal_max = std::max(guide_horizontal_max, horizontal);
+            guide_min_x = std::min(guide_min_x, vertex.X);
+            guide_max_x = std::max(guide_max_x, vertex.X);
+            guide_min_y = std::min(guide_min_y, vertex.Y);
+            guide_max_y = std::max(guide_max_y, vertex.Y);
+            guide_min_z = std::min(guide_min_z, vertex.Z);
+            guide_max_z = std::max(guide_max_z, vertex.Z);
+        }
+        const double guide_horizontal_midpoint = (guide_horizontal_min + guide_horizontal_max) * 0.5;
+        int guide_front_triangles = 0;
+        int guide_right_triangles = 0;
+        int guide_back_triangles = 0;
+        int guide_left_triangles = 0;
+        int guide_invalid_triangles = 0;
+        int guide_atlas_invalid_coordinates = 0;
+        int guide_edge_triangles = 0;
+        int guide_split_triangles = 0;
+        int guide_emitted_triangles = 0;
+        int guide_seam_rejections = 0;
+        double guide_max_emitted_u_span = 0.0;
+        struct GuideAtlasTriangle
+        {
+            std::array<double, 6> uv{};
+            bool edge{false};
+        };
+        std::vector<GuideAtlasTriangle> guide_atlas_triangles{};
+        guide_atlas_triangles.reserve(guide_profile.triangles.size() * 2);
+        constexpr double GuideAtlasEpsilon = 0.0000001;
+        constexpr double GuideAtlasTileWidth = 0.25;
+        constexpr double GuideCubeEdgeBand = 0.018;
+        const auto guide_lerp = [](const sdk::FVector& left, const sdk::FVector& right, double amount) {
+            return sdk_vec_add(left, sdk_vec_mul(sdk_vec_sub(right, left), amount));
+        };
+        const auto guide_tile = [GuideAtlasEpsilon](double u) {
+            const double clamped = std::clamp(u, 0.0, 1.0);
+            return std::clamp(static_cast<int>(std::floor(clamped * 4.0 - GuideAtlasEpsilon)), 0, 3);
+        };
+        const auto guide_append_atlas_triangle = [&](const std::array<double, 6>& uv, bool edge) {
+            if (std::any_of(uv.begin(), uv.end(), [GuideAtlasEpsilon](double value) {
+                    return !std::isfinite(value) || value < -GuideAtlasEpsilon || value > 1.0 + GuideAtlasEpsilon;
+                }))
+            {
+                ++guide_atlas_invalid_coordinates;
+                return false;
+            }
+            const auto minmax_u = std::minmax({uv[0], uv[2], uv[4]});
+            const double u_span = minmax_u.second - minmax_u.first;
+            if (u_span > GuideAtlasTileWidth + GuideAtlasEpsilon ||
+                guide_tile(uv[0]) != guide_tile(uv[2]) ||
+                guide_tile(uv[0]) != guide_tile(uv[4]))
+            {
+                ++guide_seam_rejections;
+                return false;
+            }
+            guide_max_emitted_u_span = std::max(guide_max_emitted_u_span, u_span);
+            guide_atlas_triangles.push_back({uv, edge});
+            ++guide_emitted_triangles;
+            return true;
+        };
+        std::vector<std::pair<std::string, int>> guide_body_regions{};
+        const auto count_body_region = [&guide_body_regions](const std::string& region) {
+            const std::string name = region.empty() ? "unknown" : region;
+            for (auto& entry : guide_body_regions)
+            {
+                if (entry.first == name)
+                {
+                    ++entry.second;
+                    return;
+                }
+            }
+            guide_body_regions.emplace_back(name, 1);
+        };
+        for (std::size_t tri = 0; tri < guide_profile.triangles.size(); ++tri)
+        {
+            const std::size_t index_base = tri * 3;
+            if (index_base + 2 >= guide_profile.indices.size())
+            {
+                ++guide_invalid_triangles;
+                continue;
+            }
+            const int first_index = guide_profile.indices[index_base];
+            const int second_index = guide_profile.indices[index_base + 1];
+            const int third_index = guide_profile.indices[index_base + 2];
+            if (first_index < 0 || second_index < 0 || third_index < 0 ||
+                static_cast<std::size_t>(first_index) >= component_positions.size() ||
+                static_cast<std::size_t>(second_index) >= component_positions.size() ||
+                static_cast<std::size_t>(third_index) >= component_positions.size())
+            {
+                ++guide_invalid_triangles;
+                continue;
+            }
+            // Round guides use the fully verified runtime cache corners
+            // directly. Re-indexing them through a profile vertex array was
+            // the source of the old spiky/bone-shaped preview on a topology
+            // mismatch. Cross-profile Cube still has to use CPU-skinned
+            // target vertices after its pose/bind checks above.
+            std::array<sdk::FVector, 3> triangle_positions{};
+            if (!cross_profile_pose_transfer)
+            {
+                const auto& runtime_triangle = runtime_triangle_cache.triangles[tri];
+                triangle_positions = {runtime_triangle.local[0], runtime_triangle.local[1], runtime_triangle.local[2]};
+            }
+            else
+            {
+                triangle_positions = {
+                    component_positions[static_cast<std::size_t>(first_index)],
+                    component_positions[static_cast<std::size_t>(second_index)],
+                    component_positions[static_cast<std::size_t>(third_index)]};
+            }
+            const auto& triangle = guide_profile.triangles[tri];
+            const double depth_normal = mesh_first_axis_component(triangle.local_normal, guide_region_axis);
+            if (!std::isfinite(depth_normal))
+            {
+                ++guide_invalid_triangles;
+                continue;
+            }
+            count_body_region(triangle.body_region);
+            runtime_contract::ImageAtlasRegion guide_atlas_region = runtime_contract::ImageAtlasRegion::Side;
+            if (depth_normal <= -0.35)
+            {
+                ++guide_front_triangles;
+                guide_atlas_region = runtime_contract::ImageAtlasRegion::Front;
+            }
+            else if (depth_normal >= 0.35)
+            {
+                ++guide_back_triangles;
+                guide_atlas_region = runtime_contract::ImageAtlasRegion::Back;
+            }
+            else
+            {
+                const double horizontal =
+                    (guide_horizontal(triangle_positions[0]) +
+                     guide_horizontal(triangle_positions[1]) +
+                     guide_horizontal(triangle_positions[2])) / 3.0;
+                horizontal > guide_horizontal_midpoint ? ++guide_right_triangles : ++guide_left_triangles;
+            }
+
+            const auto normal = sdk_vec_normalize(triangle.local_normal);
+            const bool side_region = guide_atlas_region == runtime_contract::ImageAtlasRegion::Side;
+            const double side_seam = guide_depth_is_y
+                                         ? (guide_min_x + guide_max_x) * 0.5
+                                         : (guide_min_y + guide_max_y) * 0.5;
+            const auto side_value = [guide_depth_is_y](const sdk::FVector& position) {
+                return guide_depth_is_y ? position.X : position.Y;
+            };
+            const auto map_vertex = [&](sdk::FVector position, bool force_side_right) {
+                // A side triangle cut at the body-centre seam has one vertex
+                // which maps to two discontinuous atlas tiles. Nudge that
+                // atlas-only copy toward its owning half before delegating to
+                // the same helper used by Image Paint.
+                if (side_region && std::abs(side_value(position) - side_seam) <= GuideAtlasEpsilon)
+                {
+                    if (guide_depth_is_y)
+                        position.X = std::nextafter(side_seam, force_side_right ? std::numeric_limits<double>::infinity() : -std::numeric_limits<double>::infinity());
+                    else
+                        position.Y = std::nextafter(side_seam, force_side_right ? std::numeric_limits<double>::infinity() : -std::numeric_limits<double>::infinity());
+                }
+                return runtime_contract::map_image_atlas_coordinate({
+                    requested_body == "cube",
+                    guide_atlas_region,
+                    guide_depth_is_y,
+                    position.X,
+                    position.Y,
+                    position.Z,
+                    normal.X,
+                    normal.Y,
+                    normal.Z,
+                    guide_min_x,
+                    guide_max_x,
+                    guide_min_y,
+                    guide_max_y,
+                    guide_min_z,
+                    guide_max_z,
+                });
+            };
+            struct GuideSourcePolygon
+            {
+                std::vector<sdk::FVector> vertices{};
+                bool force_side_right{false};
+            };
+            std::vector<GuideSourcePolygon> polygons{};
+            if (side_region)
+            {
+                const auto clip_side = [&](bool keep_right) {
+                    GuideSourcePolygon clipped{};
+                    clipped.force_side_right = keep_right;
+                    for (std::size_t vertex = 0; vertex < triangle_positions.size(); ++vertex)
+                    {
+                        const auto& current = triangle_positions[vertex];
+                        const auto& next = triangle_positions[(vertex + 1) % triangle_positions.size()];
+                        const double current_value = side_value(current);
+                        const double next_value = side_value(next);
+                        const bool current_inside = keep_right
+                                                        ? current_value >= side_seam - GuideAtlasEpsilon
+                                                        : current_value <= side_seam + GuideAtlasEpsilon;
+                        const bool next_inside = keep_right
+                                                     ? next_value >= side_seam - GuideAtlasEpsilon
+                                                     : next_value <= side_seam + GuideAtlasEpsilon;
+                        if (current_inside)
+                            clipped.vertices.push_back(current);
+                        if (current_inside != next_inside)
+                        {
+                            const double denominator = next_value - current_value;
+                            if (std::abs(denominator) <= GuideAtlasEpsilon)
+                            {
+                                clipped.vertices.clear();
+                                return clipped;
+                            }
+                            const double amount = std::clamp((side_seam - current_value) / denominator, 0.0, 1.0);
+                            clipped.vertices.push_back(guide_lerp(current, next, amount));
+                        }
+                    }
+                    return clipped;
+                };
+                for (const bool keep_right : {false, true})
+                {
+                    auto clipped = clip_side(keep_right);
+                    if (clipped.vertices.size() >= 3)
+                        polygons.push_back(std::move(clipped));
+                }
+            }
+            else
+            {
+                polygons.push_back({{triangle_positions[0], triangle_positions[1], triangle_positions[2]}, false});
+            }
+
+            for (const auto& polygon : polygons)
+            {
+                for (std::size_t fan = 1; fan + 1 < polygon.vertices.size(); ++fan)
+                {
+                    const std::array<sdk::FVector, 3> source{{polygon.vertices[0], polygon.vertices[fan], polygon.vertices[fan + 1]}};
+                    const auto source_edge0 = sdk_vec_sub(source[1], source[0]);
+                    const auto source_edge1 = sdk_vec_sub(source[2], source[0]);
+                    if (sdk_vec_len(sdk_vec_cross(source_edge0, source_edge1)) <= 0.000001)
+                        continue;
+                    const auto first_atlas = map_vertex(source[0], polygon.force_side_right);
+                    const auto second_atlas = map_vertex(source[1], polygon.force_side_right);
+                    const auto third_atlas = map_vertex(source[2], polygon.force_side_right);
+                    const bool edge = first_atlas.cube_edge || second_atlas.cube_edge || third_atlas.cube_edge;
+                    if (edge)
+                    {
+                        if (!(first_atlas.cube_edge && second_atlas.cube_edge && third_atlas.cube_edge))
+                        {
+                            ++guide_seam_rejections;
+                            continue;
+                        }
+                        ++guide_edge_triangles;
+                        std::array<double, 3> unwrapped_u{{first_atlas.u, second_atlas.u, third_atlas.u}};
+                        const auto initial_span = *std::max_element(unwrapped_u.begin(), unwrapped_u.end()) -
+                                                  *std::min_element(unwrapped_u.begin(), unwrapped_u.end());
+                        if (initial_span > 0.5)
+                        {
+                            for (auto& value : unwrapped_u)
+                                if (value < 0.5)
+                                    value += 1.0;
+                        }
+                        const double min_u = *std::min_element(unwrapped_u.begin(), unwrapped_u.end());
+                        const double max_u = *std::max_element(unwrapped_u.begin(), unwrapped_u.end());
+                        if (!std::isfinite(min_u) || !std::isfinite(max_u) || max_u - min_u > 0.500001)
+                        {
+                            ++guide_seam_rejections;
+                            continue;
+                        }
+                        const double outer_v = normal.Z >= 0.0 ? 0.0 : 1.0;
+                        const double inner_v = normal.Z >= 0.0 ? GuideCubeEdgeBand : 1.0 - GuideCubeEdgeBand;
+                        for (double start = min_u; start < max_u - GuideAtlasEpsilon; )
+                        {
+                            const double boundary = (std::floor(start / GuideAtlasTileWidth) + 1.0) * GuideAtlasTileWidth;
+                            const double end = std::min(max_u, boundary);
+                            if (end - start <= GuideAtlasEpsilon)
+                            {
+                                start = boundary;
+                                continue;
+                            }
+                            const auto wrap_u = [GuideAtlasEpsilon, GuideAtlasTileWidth](double value, bool right_edge) {
+                                const double wrapped = value - std::floor(value);
+                                if (right_edge && value > 0.0 && std::abs(std::fmod(value, GuideAtlasTileWidth)) <= GuideAtlasEpsilon)
+                                    return std::nextafter(wrapped == 0.0 ? 1.0 : wrapped, 0.0);
+                                return wrapped;
+                            };
+                            const double start_u = wrap_u(start, false);
+                            const double end_u = wrap_u(end, true);
+                            if (!guide_append_atlas_triangle({start_u, outer_v, end_u, outer_v, end_u, inner_v}, true) ||
+                                !guide_append_atlas_triangle({start_u, outer_v, end_u, inner_v, start_u, inner_v}, true))
+                            {
+                                continue;
+                            }
+                            guide_split_triangles += 2;
+                            start = end;
+                        }
+                        continue;
+                    }
+                    if (!guide_append_atlas_triangle({
+                            first_atlas.u, first_atlas.v,
+                            second_atlas.u, second_atlas.v,
+                            third_atlas.u, third_atlas.v}, false))
+                    {
+                        continue;
+                    }
+                    ++guide_split_triangles;
+                }
+            }
+        }
+
+        if (guide_invalid_triangles > 0 || guide_seam_rejections > 0 ||
+            guide_atlas_invalid_coordinates > 0 || guide_atlas_triangles.empty())
+        {
+            return response_json(false,
+                                 "image_guide_atlas_seam_untrusted",
+                                 0,
+                                 1,
+                                 "The image guide atlas contains an unresolved mapping seam.",
+                                 metadata + ",\"guide_invalid_triangles\":" + std::to_string(guide_invalid_triangles) +
+                                     ",\"guide_atlas_invalid_coordinates\":" + std::to_string(guide_atlas_invalid_coordinates) +
+                                     ",\"guide_seam_rejections\":" + std::to_string(guide_seam_rejections) +
+                                     ",\"guide_emitted_triangles\":" + std::to_string(guide_emitted_triangles) +
+                                     ",\"guide_split_triangles\":" + std::to_string(guide_split_triangles) +
+                                     ",\"guide_max_emitted_u_span\":" + std::to_string(guide_max_emitted_u_span));
+        }
+
+        metadata += ",\"guide_profile_id\":\"" + json_escape(guide_profile.profile_id) + "\"";
+        metadata += ",\"guide_coordinate_space\":\"component\"";
+        metadata += ",\"guide_source\":\"" + std::string(cross_profile_pose_transfer ? "pose_skinned_cross_profile" : "runtime_triangle_cache") + "\"";
+        metadata += ",\"guide_pose\":\"" + std::string(cross_profile_pose_transfer ? "current_component_space_pose" : "current_runtime_mesh") + "\"";
+        metadata += ",\"guide_pose_validation_avg_error\":" + std::to_string(guide_pose_validation_avg_error);
+        metadata += ",\"guide_pose_validation_max_error\":" + std::to_string(guide_pose_validation_max_error);
+        metadata += ",\"guide_runtime_triangle_count\":" +
+                    std::to_string(runtime_triangle_cache.triangle_count);
+        metadata += ",\"guide_runtime_profile_uv_avg_error\":" +
+                    std::to_string(runtime_triangle_cache.profile_uv_avg_error);
+        metadata += ",\"guide_runtime_cache_offset\":\"" +
+                    hex_address(static_cast<std::uintptr_t>(runtime_triangle_cache.owner_offset)) + "\"";
+        metadata += ",\"guide_runtime_coordinate_mode\":\"" +
+                    json_escape(guide_runtime_coordinate_mode) + "\"";
+        metadata += ",\"guide_runtime_coordinate_avg_error\":" +
+                    std::to_string(runtime_coordinate_selection.selected_avg_error);
+        metadata += ",\"guide_region_axis\":\"" + std::string(mesh_first_region_axis_label(guide_region_axis)) + "\"";
+        metadata += ",\"guide_vertex_count\":" + std::to_string(component_positions.size());
+        metadata += ",\"guide_profile_triangle_count\":" + std::to_string(guide_profile.triangles.size());
+        metadata += ",\"guide_invalid_triangles\":" + std::to_string(guide_invalid_triangles);
+        metadata += ",\"guide_atlas_invalid_coordinates\":" + std::to_string(guide_atlas_invalid_coordinates);
+        metadata += ",\"guide_edge_triangles\":" + std::to_string(guide_edge_triangles);
+        metadata += ",\"guide_split_triangles\":" + std::to_string(guide_split_triangles);
+        metadata += ",\"guide_emitted_triangles\":" + std::to_string(guide_emitted_triangles);
+        metadata += ",\"guide_seam_rejections\":" + std::to_string(guide_seam_rejections);
+        metadata += ",\"guide_max_emitted_u_span\":" + std::to_string(guide_max_emitted_u_span);
+        metadata += ",\"guide_face_triangles\":{\"front\":" + std::to_string(guide_front_triangles) +
+                    ",\"right\":" + std::to_string(guide_right_triangles) +
+                    ",\"back\":" + std::to_string(guide_back_triangles) +
+                    ",\"left\":" + std::to_string(guide_left_triangles) + "}";
+        metadata += ",\"guide_body_regions\":{";
+        for (std::size_t index = 0; index < guide_body_regions.size(); ++index)
+        {
+            if (index != 0)
+            {
+                metadata += ",";
+            }
+            metadata += "\"" + json_escape(guide_body_regions[index].first) + "\":" +
+                        std::to_string(guide_body_regions[index].second);
+        }
+        metadata += "}";
+        metadata += ",\"guide_atlas_triangles\":[";
+        for (std::size_t index = 0; index < guide_atlas_triangles.size(); ++index)
+        {
+            if (index != 0)
+            {
+                metadata += ",";
+            }
+            const auto& triangle = guide_atlas_triangles[index];
+            metadata += "[" + std::to_string(triangle.uv[0]) + "," + std::to_string(triangle.uv[1]) +
+                        "," + std::to_string(triangle.uv[2]) + "," + std::to_string(triangle.uv[3]) +
+                        "," + std::to_string(triangle.uv[4]) + "," + std::to_string(triangle.uv[5]) +
+                        "," + std::string(json_bool(triangle.edge)) + "]";
+        }
+        metadata += "]";
+        // Keep a deterministic raw runtime record in the host-side JSON
+        // artifact. It never crosses into the WebView snapshot; the UI sees
+        // only the validated atlas triangles above.
+        metadata += ",\"guide_runtime_triangles\":[";
+        for (std::size_t index = 0; index < runtime_triangle_cache.triangles.size(); ++index)
+        {
+            if (index != 0)
+                metadata += ",";
+            const auto& triangle = runtime_triangle_cache.triangles[index];
+            metadata += "[[" + std::to_string(triangle.local[0].X) + "," + std::to_string(triangle.local[0].Y) + "," + std::to_string(triangle.local[0].Z) + "," + std::to_string(triangle.uv[0].X) + "," + std::to_string(triangle.uv[0].Y) + "],";
+            metadata += "[" + std::to_string(triangle.local[1].X) + "," + std::to_string(triangle.local[1].Y) + "," + std::to_string(triangle.local[1].Z) + "," + std::to_string(triangle.uv[1].X) + "," + std::to_string(triangle.uv[1].Y) + "],";
+            metadata += "[" + std::to_string(triangle.local[2].X) + "," + std::to_string(triangle.local[2].Y) + "," + std::to_string(triangle.local[2].Z) + "," + std::to_string(triangle.uv[2].X) + "," + std::to_string(triangle.uv[2].Y) + "]]";
+        }
+        metadata += "]";
+        append_bounds(metadata, "guide_component_bounds", guide_mapping_positions);
+        append_bounds(metadata, "guide_reference_bounds", reference_positions);
+        metadata += ",\"guide_vertices\":[";
+        for (std::size_t index = 0; index < component_positions.size(); ++index)
+        {
+            if (index != 0)
+            {
+                metadata += ",";
+            }
+            const auto& vertex = component_positions[index];
+            metadata += "[" + std::to_string(vertex.X) + "," + std::to_string(vertex.Y) + "," +
+                        std::to_string(vertex.Z) + "]";
+        }
+        metadata += "]";
+        return response_json(true,
+                             "image_guide",
+                             static_cast<int>(component_positions.size()),
+                             0,
+                             "Current RuntimePaintable image guide ready.",
+                             metadata);
+    }
+
     auto paint_mesh_first_on_game_thread(const std::string& request,
                                          const std::shared_ptr<QueuedPaintJob>& queued_job) -> std::string
     {
@@ -9615,7 +11092,7 @@ namespace
                                             : -1;
         const bool research_uv_replay_atlas =
             research_artifacts && json_bool_field(request, "research_uv_replay_atlas", false);
-        const double tuning_brush_size_texels =
+        double tuning_brush_size_texels =
             clamp_range(json_number_field(request, "brush_size_texels", 4.0), 1.0, 10.0);
         const double tuning_color_compression_tolerance =
             clamp_range(json_number_field(request, "color_compression_tolerance", 4.0), 0.0, 10.0);
@@ -9631,28 +11108,58 @@ namespace
         const double fill_metallic = clamp_range(json_number_field(request, "fill_metallic", 1.0), 0.0, 1.0);
         const double fill_roughness = clamp_range(json_number_field(request, "fill_roughness", 0.0), 0.0, 1.0);
         const double fill_emissive = clamp_range(json_number_field(request, "fill_emissive", 0.0), 0.0, 1.0);
-        const int image_paint_width = json_int_field(request, "image_paint_width", 0, 0, 512);
-        const int image_paint_height = json_int_field(request, "image_paint_height", 0, 0, 128);
+        const int image_paint_width = json_int_field(request, "image_paint_width", 0, 0, 1024);
+        const int image_paint_height = json_int_field(request, "image_paint_height", 0, 0, 512);
         const std::string image_paint_alpha_mode = lower_copy(json_string_field(request, "image_paint_alpha_mode", "skip"));
-        const std::string image_paint_wrap_mode = lower_copy(json_string_field(request, "image_paint_wrap_mode", "base"));
         const std::string image_paint_body_type = lower_copy(json_string_field(request, "image_paint_body_type", "round"));
+        const double image_paint_brush_size_texels =
+            clamp_range(json_number_field(request, "image_paint_brush_size_texels", 5.0), 1.0, 10.0);
+        const double image_paint_color_compression_tolerance =
+            clamp_range(json_number_field(request, "image_paint_color_compression_tolerance", 0.0), 0.0, 10.0);
+        const double image_paint_metallic = clamp_range(json_number_field(request, "image_paint_metallic", 0.0), 0.0, 1.0);
+        const double image_paint_roughness = clamp_range(json_number_field(request, "image_paint_roughness", 1.0), 0.0, 1.0);
+        const double image_paint_emissive = clamp_range(json_number_field(request, "image_paint_emissive", 0.0), 0.0, 1.0);
+        const double image_paint_background_metallic =
+            clamp_range(json_number_field(request, "image_paint_background_metallic", 0.0), 0.0, 1.0);
+        const double image_paint_background_roughness =
+            clamp_range(json_number_field(request, "image_paint_background_roughness", 1.0), 0.0, 1.0);
+        const double image_paint_background_emissive =
+            clamp_range(json_number_field(request, "image_paint_background_emissive", 0.0), 0.0, 1.0);
+        const int image_paint_revision = json_int_field(request, "image_paint_revision", 0, 0, 1000000000);
         const double image_paint_background_r = clamp_range(json_number_field(request, "image_paint_background_r", 1.0), 0.0, 1.0);
         const double image_paint_background_g = clamp_range(json_number_field(request, "image_paint_background_g", 1.0), 0.0, 1.0);
         const double image_paint_background_b = clamp_range(json_number_field(request, "image_paint_background_b", 1.0), 0.0, 1.0);
+        const std::string image_paint_rgba_base64 =
+            json_string_field(request, "image_paint_rgba_base64", "");
         std::vector<std::uint8_t> image_paint_rgba{};
         if (image_paint_enabled)
         {
+            tuning_brush_size_texels = image_paint_brush_size_texels;
             std::string image_decode_failure{};
-            if (image_paint_width <= 0 || image_paint_height <= 0 ||
-                !hex_to_bytes(json_string_field(request, "image_paint_rgba_hex", ""), image_paint_rgba, image_decode_failure) ||
-                image_paint_rgba.size() != static_cast<std::size_t>(image_paint_width * image_paint_height * 4))
+            const bool image_dimensions_valid = image_paint_width == 1024 && image_paint_height == 512;
+            const bool image_alpha_valid = image_paint_alpha_mode == "skip" || image_paint_alpha_mode == "background";
+            const bool image_body_valid = image_paint_body_type == "round" || image_paint_body_type == "cube";
+            const bool image_decoded = base64_to_bytes(
+                image_paint_rgba_base64, image_paint_rgba, image_decode_failure);
+            const std::size_t expected_image_paint_bytes =
+                static_cast<std::size_t>(image_paint_width * image_paint_height * 4);
+            if (!image_dimensions_valid || !image_alpha_valid || !image_body_valid ||
+                !image_decoded || image_paint_rgba.size() != expected_image_paint_bytes)
             {
                 return response_json(false,
                                      "image_paint_invalid",
                                      0,
                                      1,
                                      "Imported image data is invalid; painting was not started",
-                                     "\"replay_blocked\":true,\"image_decode_failure\":\"" + json_escape(image_decode_failure) + "\"");
+                                     "\"replay_blocked\":true,\"image_decode_failure\":\"" + json_escape(image_decode_failure) +
+                                         "\",\"image_request_bytes\":" + std::to_string(request.size()) +
+                                         ",\"image_base64_characters\":" + std::to_string(image_paint_rgba_base64.size()) +
+                                         ",\"image_decoded_bytes\":" + std::to_string(image_paint_rgba.size()) +
+                                         ",\"image_expected_bytes\":" + std::to_string(expected_image_paint_bytes) +
+                                         ",\"image_width\":" + std::to_string(image_paint_width) +
+                                         ",\"image_height\":" + std::to_string(image_paint_height) +
+                                         ",\"image_alpha_mode\":\"" + json_escape(image_paint_alpha_mode) +
+                                         "\",\"image_body_type\":\"" + json_escape(image_paint_body_type) + "\"");
             }
         }
         const bool research_force_paint_color =
@@ -9715,8 +11222,10 @@ namespace
         metadata += ",\"brush_pipeline\":\"fill_single_brush\"";
         metadata += ",\"brush_size_texels\":" + std::to_string(tuning_brush_size_texels);
         metadata += ",\"coverage_step_texels\":" + std::to_string(tuning_brush_size_texels);
+        const double active_color_compression_tolerance =
+            image_paint_enabled ? image_paint_color_compression_tolerance : tuning_color_compression_tolerance;
         metadata += ",\"color_compression_tolerance\":" +
-                    std::to_string(tuning_color_compression_tolerance);
+                    std::to_string(active_color_compression_tolerance);
         metadata += ",\"side_source_max_uv\":" + std::to_string(tuning_side_source_max_uv);
         metadata += ",\"front_back_source_max_uv\":" + std::to_string(tuning_front_back_source_max_uv);
         metadata += ",\"auto_material\":" + std::string(json_bool(tuning_auto_material));
@@ -9964,6 +11473,22 @@ namespace
                                  1,
                                  "mesh profile is required; dynamic runtime scan fallback is disabled",
                                  metadata + ",\"replay_blocked\":true");
+        }
+        if (image_paint_enabled)
+        {
+            const bool profile_is_cube = profile.profile_id.rfind("paintman_cube:", 0) == 0;
+            const bool requested_cube = image_paint_body_type == "cube";
+            metadata += ",\"image_paint_body_type\":\"" + json_escape(image_paint_body_type) + "\"";
+            metadata += ",\"image_paint_profile_kind\":\"" + std::string(profile_is_cube ? "cube" : "round") + "\"";
+            if (profile_is_cube != requested_cube)
+            {
+                return response_json(false,
+                                     "image_paint_profile_mismatch",
+                                     0,
+                                     1,
+                                     "The selected image body does not match the live mesh profile",
+                                     metadata + ",\"replay_blocked\":true");
+            }
         }
 
         write_bridge_progress("pose_resolve",
@@ -10443,58 +11968,108 @@ namespace
             metadata += ",\"image_paint_height\":" + std::to_string(image_paint_height);
             int assigned = 0;
             int transparent_skipped = 0;
+            int background_assignments = 0;
+            int cube_side_assignments = 0;
+            int cube_edge_assignments = 0;
+            int cube_canonical_mapping_failures = 0;
             double min_x = std::numeric_limits<double>::infinity();
             double max_x = -std::numeric_limits<double>::infinity();
             double min_y = std::numeric_limits<double>::infinity();
             double max_y = -std::numeric_limits<double>::infinity();
             double min_z = std::numeric_limits<double>::infinity();
             double max_z = -std::numeric_limits<double>::infinity();
-            for (const auto& sample : plan_samples)
-            {
-                min_x = std::min(min_x, sample.local_position.X);
-                max_x = std::max(max_x, sample.local_position.X);
-                min_y = std::min(min_y, sample.local_position.Y);
-                max_y = std::max(max_y, sample.local_position.Y);
-                min_z = std::min(min_z, sample.local_position.Z);
-                max_z = std::max(max_z, sample.local_position.Z);
-            }
-            const double range_x = std::max(0.000001, max_x - min_x);
-            const double range_y = std::max(0.000001, max_y - min_y);
-            const double range_z = std::max(0.000001, max_z - min_z);
             const bool depth_is_y = region_axis == 'y' || region_axis == 'Y';
-            const double horizontal_midpoint = depth_is_y
-                                                   ? (min_x + max_x) * 0.5
-                                                   : (min_y + max_y) * 0.5;
+            const bool image_paint_cube = image_paint_body_type == "cube";
+            CubeCanonicalImageAtlas cube_canonical_atlas{};
+            if (image_paint_cube)
+            {
+                std::string cube_canonical_failure{};
+                if (!profile_available || !mesh_first_is_cube_profile(profile) ||
+                    !mesh_first_build_cube_canonical_image_atlas(profile, cube_canonical_atlas, cube_canonical_failure))
+                {
+                    return response_json(false,
+                                         "image_paint_cube_reference_unavailable",
+                                         0,
+                                         1,
+                                         "The cube image reference pose could not be built from the verified cube profile.",
+                                         metadata + ",\"image_paint_cube_reference_failure\":\"" +
+                                             json_escape(cube_canonical_failure.empty() ? "profile_not_cube" : cube_canonical_failure) + "\"");
+                }
+                metadata += ",\"image_paint_cube_atlas\":\"canonical_natural_stand_v1\"";
+                metadata += ",\"image_paint_cube_pixels_per_unit\":" + std::to_string(cube_canonical_atlas.pixels_per_unit);
+            }
+            else
+            {
+                for (const auto& sample : plan_samples)
+                {
+                    min_x = std::min(min_x, sample.local_position.X);
+                    max_x = std::max(max_x, sample.local_position.X);
+                    min_y = std::min(min_y, sample.local_position.Y);
+                    max_y = std::max(max_y, sample.local_position.Y);
+                    min_z = std::min(min_z, sample.local_position.Z);
+                    max_z = std::max(max_z, sample.local_position.Z);
+                }
+            }
             plan_stats.enabled_samples = 0;
             plan_stats.unsafe_candidates = 0;
             plan_stats.unsafe_enabled = 0;
             for (auto& sample : plan_samples)
             {
-                const double horizontal_normalized = depth_is_y
-                                                         ? (sample.local_position.X - min_x) / range_x
-                                                         : (sample.local_position.Y - min_y) / range_y;
-                const double depth_normalized = depth_is_y
-                                                    ? (sample.local_position.Y - min_y) / range_y
-                                                    : (sample.local_position.X - min_x) / range_x;
                 double image_u = 0.125;
-                if (sample.region == MeshFirstRegion::Side)
+                double image_v = 0.5;
+                if (image_paint_cube)
                 {
-                    const double side_coordinate = depth_is_y
-                                                       ? sample.local_position.X
-                                                       : sample.local_position.Y;
-                    image_u = side_coordinate > horizontal_midpoint
-                                  ? 0.25 + clamp01(depth_normalized) * 0.25
-                                  : 0.75 + (1.0 - clamp01(depth_normalized)) * 0.25;
-                }
-                else if (sample.region == MeshFirstRegion::Back)
-                {
-                    image_u = 0.5 + (1.0 - clamp01(horizontal_normalized)) * 0.25;
+                    runtime_contract::CubeCanonicalImageProjectionResult image_coordinate{};
+                    if (!mesh_first_map_cube_canonical_sample(profile,
+                                                              cube_canonical_atlas,
+                                                              sample.triangle_index,
+                                                              sample.barycentric_a,
+                                                              sample.barycentric_b,
+                                                              sample.barycentric_c,
+                                                              image_coordinate) ||
+                        image_coordinate.u < -0.000001 || image_coordinate.u > 1.000001 ||
+                        image_coordinate.v < -0.000001 || image_coordinate.v > 1.000001)
+                    {
+                        sample.unsafe = true;
+                        ++cube_canonical_mapping_failures;
+                        continue;
+                    }
+                    image_u = image_coordinate.u;
+                    image_v = image_coordinate.v;
+                    if (image_coordinate.face == runtime_contract::CubeCanonicalImageFace::Right ||
+                        image_coordinate.face == runtime_contract::CubeCanonicalImageFace::Left)
+                    {
+                        ++cube_side_assignments;
+                    }
                 }
                 else
                 {
-                    image_u = clamp01(horizontal_normalized) * 0.25;
+                    const auto normal = sdk_vec_normalize(sample.local_normal);
+                    const auto atlas_region = sample.region == MeshFirstRegion::Side
+                                                  ? runtime_contract::ImageAtlasRegion::Side
+                                                  : (sample.region == MeshFirstRegion::Back
+                                                         ? runtime_contract::ImageAtlasRegion::Back
+                                                         : runtime_contract::ImageAtlasRegion::Front);
+                    const auto image_coordinate = runtime_contract::map_image_atlas_coordinate({
+                        false,
+                        atlas_region,
+                        depth_is_y,
+                        sample.local_position.X,
+                        sample.local_position.Y,
+                        sample.local_position.Z,
+                        normal.X,
+                        normal.Y,
+                        normal.Z,
+                        min_x,
+                        max_x,
+                        min_y,
+                        max_y,
+                        min_z,
+                        max_z,
+                    });
+                    image_u = image_coordinate.u;
+                    image_v = image_coordinate.v;
                 }
-                const double image_v = (sample.local_position.Z - min_z) / range_z;
                 const int x = std::max(0, std::min(image_paint_width - 1,
                     static_cast<int>(std::round(clamp01(image_u) * static_cast<double>(image_paint_width - 1)))));
                 const int y = std::max(0, std::min(image_paint_height - 1,
@@ -10507,19 +12082,38 @@ namespace
                     ++transparent_skipped;
                     continue;
                 }
+                sample.image_background = image_paint_alpha_mode == "background" && alpha == 254;
+                if (sample.image_background)
+                    ++background_assignments;
                 sample.r = static_cast<double>(image_paint_rgba[pixel + 0]) / 255.0;
                 sample.g = static_cast<double>(image_paint_rgba[pixel + 1]) / 255.0;
                 sample.b = static_cast<double>(image_paint_rgba[pixel + 2]) / 255.0;
-                sample.roughness = 1.0;
-                sample.metallic = 0.0;
+                sample.roughness = image_paint_roughness;
+                sample.metallic = image_paint_metallic;
                 sample.unsafe = false;
                 ++assigned;
                 ++plan_stats.enabled_samples;
             }
             metadata += ",\"image_paint_assignments\":" + std::to_string(assigned);
             metadata += ",\"image_paint_transparent_skips\":" + std::to_string(transparent_skipped);
-            metadata += ",\"image_paint_wrap_mode\":\"" + json_escape(image_paint_wrap_mode) + "\"";
-            metadata += ",\"image_paint_body_type\":\"" + json_escape(image_paint_body_type) + "\"";
+            metadata += ",\"image_paint_background_assignments\":" + std::to_string(background_assignments);
+            metadata += ",\"image_paint_cube_side_assignments\":" + std::to_string(cube_side_assignments);
+            metadata += ",\"image_paint_cube_edge_assignments\":" + std::to_string(cube_edge_assignments);
+            metadata += ",\"image_paint_cube_canonical_mapping_failures\":" + std::to_string(cube_canonical_mapping_failures);
+            metadata += ",\"image_paint_top_bottom_mode\":\"" + std::string(image_paint_cube ? "orthographic_side_projection" : "not_applicable") + "\"";
+            metadata += ",\"image_paint_revision\":" + std::to_string(image_paint_revision);
+            metadata += ",\"image_paint_brush_size_texels\":" + std::to_string(image_paint_brush_size_texels);
+            metadata += ",\"image_paint_color_compression_tolerance\":" +
+                        std::to_string(image_paint_color_compression_tolerance);
+            metadata += ",\"image_paint_metallic\":" + std::to_string(image_paint_metallic);
+            metadata += ",\"image_paint_roughness\":" + std::to_string(image_paint_roughness);
+            metadata += ",\"image_paint_emissive\":" + std::to_string(image_paint_emissive);
+            metadata += ",\"image_paint_background_metallic\":" +
+                        std::to_string(image_paint_background_metallic);
+            metadata += ",\"image_paint_background_roughness\":" +
+                        std::to_string(image_paint_background_roughness);
+            metadata += ",\"image_paint_background_emissive\":" +
+                        std::to_string(image_paint_background_emissive);
         }
         else if (research_force_paint_color && any_paint_region)
         {
@@ -10681,8 +12275,7 @@ namespace
         paint_brush.Radius = static_cast<float>(brush_radius_uv);
         metadata += ",\"brush_radius_texels\":" + std::to_string(tuning_brush_size_texels);
         metadata += ",\"brush_radius_uv\":" + std::to_string(brush_radius_uv);
-        const bool any_fill_region = image_paint_enabled ||
-                                     front_region_mode == MeshFirstRegionMode::Fill ||
+        const bool any_fill_region = front_region_mode == MeshFirstRegionMode::Fill ||
                                      side_region_mode == MeshFirstRegionMode::Fill ||
                                      back_region_mode == MeshFirstRegionMode::Fill;
         metadata += ",\"fill_all_regions\":" + std::string(json_bool(any_fill_region));
@@ -10772,8 +12365,9 @@ namespace
             };
             if (image_paint_enabled)
             {
-                // Clear the previous design first so repeated F1 runs are deterministic.
-                append_candidate(MeshFirstRegionMode::Fill);
+                // Imported designs are a single direct-paint pass. Do not emit
+                // a clearing Fill pass first: that is visually delayed by the
+                // game and made transparent pixels overwrite prior paint.
                 if (!sample.image_transparent_skip)
                 {
                     append_candidate(MeshFirstRegionMode::Paint);
@@ -10998,11 +12592,11 @@ namespace
             previous_pass = entry.pass;
             previous_spatial_key = entry.spatial_key;
         }
-        const bool compression_requested = tuning_color_compression_tolerance > 0.0 && !image_paint_enabled;
+        const bool compression_requested = active_color_compression_tolerance > 0.0;
         // Auto Detect may fall back to source PBR values per sample. Do not
         // merge those samples merely because their albedo happens to match.
         const bool compression_enabled = compression_requested &&
-                                         (!tuning_auto_material || material_properties.ok);
+                                         (image_paint_enabled || !tuning_auto_material || material_properties.ok);
         std::vector<runtime_contract::AdaptivePaintSample> adaptive_samples{};
         adaptive_samples.reserve(plan_samples.size());
         for (const auto& sample : plan_samples)
@@ -11030,7 +12624,7 @@ namespace
             replay_plan.entries,
             adaptive_samples,
             brush_radius_uv,
-            compression_enabled ? tuning_color_compression_tolerance : 0.0,
+            compression_enabled ? active_color_compression_tolerance : 0.0,
             0.8 / static_cast<double>(std::max(1, active_texture_size)));
         metadata += ",\"color_compression_requested\":" +
                     std::string(json_bool(compression_requested));
@@ -11038,7 +12632,7 @@ namespace
                     std::string(json_bool(compression_enabled));
         metadata += ",\"color_compression_disabled_reason\":\"" +
                     std::string(!compression_requested
-                                    ? (image_paint_enabled ? "imported_image_detail_preserved" : "tolerance_zero")
+                                    ? "tolerance_zero"
                                     : (compression_enabled ? "" : "auto_material_source_fallback")) +
                     "\"";
         metadata += ",\"color_compression_expanded_strokes\":" +
@@ -11066,9 +12660,15 @@ namespace
                 const double reset_b = image_paint_enabled && image_paint_alpha_mode == "background"
                                            ? image_paint_background_b
                                            : (image_paint_enabled ? 0.73535698 : fill_color_b);
-                const double stroke_metallic = image_paint_enabled ? 0.0 : fill_metallic;
-                const double stroke_roughness = image_paint_enabled ? 1.0 : fill_roughness;
-                const double stroke_emissive = image_paint_enabled ? 0.0 : fill_emissive;
+                const double stroke_metallic = image_paint_enabled
+                                                   ? (sample.image_background ? image_paint_background_metallic : image_paint_metallic)
+                                                   : fill_metallic;
+                const double stroke_roughness = image_paint_enabled
+                                                    ? (sample.image_background ? image_paint_background_roughness : image_paint_roughness)
+                                                    : fill_roughness;
+                const double stroke_emissive = image_paint_enabled
+                                                   ? (sample.image_background ? image_paint_background_emissive : image_paint_emissive)
+                                                   : fill_emissive;
                 ++material_properties_fill_manual_samples;
                 const auto apply_mode = research_apply_mode >= 0
                                             ? static_cast<sdk::EPaintChannelApplyMode>(research_apply_mode)
@@ -11083,9 +12683,15 @@ namespace
             }
             else
             {
-                double stroke_metallic = image_paint_enabled ? 0.0 : tuning_metallic;
-                double stroke_roughness = image_paint_enabled ? 1.0 : tuning_roughness;
-                double stroke_emissive = image_paint_enabled ? 0.0 : tuning_emissive;
+                double stroke_metallic = image_paint_enabled
+                                             ? (sample.image_background ? image_paint_background_metallic : image_paint_metallic)
+                                             : tuning_metallic;
+                double stroke_roughness = image_paint_enabled
+                                              ? (sample.image_background ? image_paint_background_roughness : image_paint_roughness)
+                                              : tuning_roughness;
+                double stroke_emissive = image_paint_enabled
+                                             ? (sample.image_background ? image_paint_background_emissive : image_paint_emissive)
+                                             : tuning_emissive;
                 if (tuning_auto_material && !image_paint_enabled)
                 {
                     if (material_properties.ok)
@@ -15304,6 +16910,13 @@ namespace
                 complete_queued_paint_job(job, response);
                 continue;
             }
+            if (is_image_guide_request(job->request))
+            {
+                mark_queued_paint_job_dispatched(job);
+                const auto response = image_guide_on_game_thread(job->request);
+                complete_queued_paint_job(job, response);
+                continue;
+            }
             if (is_mesh_first_paint_request(job->request))
             {
                 start_mesh_first_paint_async_job(job->request, job);
@@ -16028,7 +17641,7 @@ namespace
         }
         if (line.find("\"type\":\"capabilities\"") != std::string::npos)
         {
-            std::string commands = "[\"ping\",\"capabilities\",\"paint_full_route\",\"cancel_paint\",\"shutdown\"]";
+            std::string commands = "[\"ping\",\"capabilities\",\"paint_full_route\",\"image_guide\",\"cancel_paint\",\"shutdown\"]";
             return std::string("{\"success\":true,\"stage\":\"capabilities\",\"applied\":0,\"failures\":0,") +
                    "\"message\":\"ok\",\"timing_ms\":{}," +
                    "\"metadata\":{\"commands\":" + commands + "," +
@@ -16119,6 +17732,10 @@ namespace
                                      ",\"hook_callbacks_quiescent\":true");
         }
         if (line.find("\"type\":\"paint_full_route\"") != std::string::npos)
+        {
+            return paint_full_route_native(line);
+        }
+        if (line.find("\"type\":\"image_guide\"") != std::string::npos)
         {
             return paint_full_route_native(line);
         }

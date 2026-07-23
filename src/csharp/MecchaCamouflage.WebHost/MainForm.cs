@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.Json;
 using System.Diagnostics;
 using Microsoft.Web.WebView2.Core;
@@ -19,6 +20,16 @@ public sealed class MainForm : Form
     private const int HotkeyPreview = 2;
     private const int HotkeyUnPreview = 3;
     private const int HotkeyStop = 4;
+    private const int HotkeyImageStart = 5;
+    private const int HotkeyImagePreview = 6;
+    private const int HotkeyImageUnPreview = 7;
+    private const int HotkeyImageStop = 8;
+    // Keep WebView messages comfortably below the sizes where Windows message
+    // transport or JSON allocation becomes unreliable. Image assets are never
+    // included in a regular settings snapshot.
+    private const int ImageTransferChunkCharacters = 128 * 1024;
+    private const int MaximumImageTransferCharacters = 40 * 1024 * 1024;
+    private static readonly TimeSpan ImageTransferLifetime = TimeSpan.FromMinutes(5);
     private const int WmInput = 0x00FF;
     private const uint RidInput = 0x10000003;
     private const uint RimTypeKeyboard = 1;
@@ -52,6 +63,29 @@ public sealed class MainForm : Form
     private bool webViewRecoveryInProgress;
     private bool bridgeShutdownInProgress;
     private bool bridgeShutdownCompleted;
+    private readonly Dictionary<string, StagedImageDesignTransfer> stagedImageDesigns = new(StringComparer.Ordinal);
+    // Presets are loaded through a native dialog and held only long enough for
+    // the WebView to request their assets in bounded chunks. They are drafts:
+    // loading never changes the active game state.
+    private readonly Dictionary<string, LoadedImagePresetTransfer> loadedImagePresets = new(StringComparer.Ordinal);
+
+    private sealed class StagedImageDesignTransfer
+    {
+        public DateTimeOffset LastUpdated { get; set; } = DateTimeOffset.UtcNow;
+        public Dictionary<string, StagedImageAsset> Assets { get; } = new(StringComparer.Ordinal);
+    }
+
+    private sealed class StagedImageAsset
+    {
+        public int NextChunkIndex { get; set; }
+        public StringBuilder Data { get; } = new();
+    }
+
+    private sealed class LoadedImagePresetTransfer
+    {
+        public DateTimeOffset LastUpdated { get; set; } = DateTimeOffset.UtcNow;
+        public required ImagePaintSettings Design { get; init; }
+    }
 
     public MainForm(HostSession session)
     {
@@ -205,7 +239,14 @@ public sealed class MainForm : Form
         if (!Directory.Exists(webRoot))
             throw new DirectoryNotFoundException("MC-WV-105 Packaged web assets are missing: " + webRoot);
 
-        foreach (var fileName in new[] { "index.html", "app.js", "styles.css" })
+        foreach (var fileName in new[]
+                 {
+                     "index.html",
+                     "app.js",
+                     "styles.css",
+                     Path.Combine("mesh-profiles", "paintman.mesh-profile-v2.json"),
+                     Path.Combine("mesh-profiles", "paintman_cube.mesh-profile-v2.json")
+                 })
         {
             var path = Path.Combine(webRoot, fileName);
             if (!File.Exists(path))
@@ -788,14 +829,39 @@ public sealed class MainForm : Form
             case "setHotkeyRecording":
                 hotkeyRecording = command.Payload.GetProperty("recording").GetBoolean();
                 return new { success = true };
+            case "setImageDesignDraftState":
+                if (!command.Payload.TryGetProperty("dirty", out var dirtyPayload) ||
+                    dirtyPayload.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                {
+                    return new { success = false, message = "Image design draft state is invalid." };
+                }
+                session.SetImageDesignDraftDirty(dirtyPayload.GetBoolean());
+                return new { success = true };
             case "previewWindow":
                 HandlePreviewWindow(command.Payload);
                 return new { success = true };
             case "setWindowState":
                 PersistWindowSnapshot();
                 return new { success = true };
-            case "setImagePaint":
-                return HandleSetImagePaint(command.Payload);
+            case "getActiveImage":
+                return new { success = true, design = session.GetImageDesignMetadata() };
+            case "getImageGuide":
+                return await HandleGetImageGuideAsync(command.Payload);
+            case "getImageAssetChunk":
+                return HandleGetImageAssetChunk(command.Payload);
+            case "getLoadedImagePresetChunk":
+                return HandleGetLoadedImagePresetChunk(command.Payload);
+            case "stageImageDesignChunk":
+                return HandleStageImageDesignChunk(command.Payload);
+            case "commitSettingsWithImage":
+                return HandleCommitSettingsWithImage(command.Payload);
+            case "loadImagePreset":
+                return HandleLoadImagePreset();
+            case "saveImagePreset":
+                return HandleSaveImagePreset(command.Payload);
+            case "openImagePresetsFolder":
+                session.OpenImagePresetsFolder();
+                return new { success = true };
             case "paint":
                 return ApplyResult(await RunPaintCommandAsync(previewOnly: false, unpreviewOnly: false));
             case "preview":
@@ -804,44 +870,316 @@ public sealed class MainForm : Form
                 return ApplyResult(await RunPaintCommandAsync(previewOnly: false, unpreviewOnly: true));
             case "stop":
                 return ApplyResult(await session.StopPaintAsync());
+            case "imagePaint":
+                return ApplyResult(await RunPaintCommandAsync(PaintKind.Image, previewOnly: false, unpreviewOnly: false));
+            case "imagePreview":
+                return ApplyResult(await RunPaintCommandAsync(PaintKind.Image, previewOnly: true, unpreviewOnly: false));
+            case "imageUnpreview":
+                return ApplyResult(await RunPaintCommandAsync(PaintKind.Image, previewOnly: false, unpreviewOnly: true));
+            case "imageStop":
+                return ApplyResult(await session.StopPaintAsync());
             default:
                 return new { success = false, message = "Unknown command: " + command.Command };
         }
     }
 
-    private object HandleSetImagePaint(JsonElement payload)
+    private async Task<object> HandleGetImageGuideAsync(JsonElement payload)
     {
-        if (!payload.TryGetProperty("enabled", out var enabledValue) || !enabledValue.GetBoolean())
+        var bodyType = "round";
+        if (payload.TryGetProperty("bodyType", out var bodyTypePayload) &&
+            bodyTypePayload.ValueKind == JsonValueKind.String &&
+            string.Equals(bodyTypePayload.GetString(), "cube", StringComparison.OrdinalIgnoreCase))
         {
-            session.SetImagePaint(null);
-            return new { success = true, armed = false };
+            bodyType = "cube";
         }
-        var width = payload.GetProperty("width").GetInt32();
-        var height = payload.GetProperty("height").GetInt32();
-        var rgbaHex = payload.GetProperty("rgbaHex").GetString() ?? "";
-        var alphaMode = payload.GetProperty("alphaMode").GetString() ?? "skip";
-        var backgroundText = payload.GetProperty("backgroundColor").GetString() ?? "#FFFFFF";
-        var placement = payload.GetProperty("placement").GetString() ?? "fit";
-        var wrapMode = payload.GetProperty("wrapMode").GetString() ?? "base";
-        var bodyType = payload.TryGetProperty("bodyType", out var bodyTypeValue) ? bodyTypeValue.GetString() ?? "round" : "round";
-        var fileName = payload.GetProperty("fileName").GetString() ?? "image";
-        if (width is < 1 or > 512 || height is < 1 or > 128 || rgbaHex.Length != width * height * 8)
-            return new { success = false, message = "The prepared image data is invalid." };
-        if (alphaMode is not ("skip" or "background"))
-            return new { success = false, message = "The transparency option is invalid." };
-        if (placement is not ("fit" or "crop"))
-            return new { success = false, message = "The image placement option is invalid." };
-        if (wrapMode is not ("base" or "meet" or "full"))
-            return new { success = false, message = "The image wrap option is invalid." };
-        if (bodyType is not ("round" or "cube"))
-            return new { success = false, message = "The preview body option is invalid." };
-        if (!RgbColor.TryParse(backgroundText, out var backgroundColor))
-            return new { success = false, message = "The background color is invalid." };
-        session.SetImagePaint(new ImagePaintOptions(width, height, rgbaHex, alphaMode, backgroundColor, placement, wrapMode, bodyType, fileName));
-        return new { success = true, armed = true };
+        return await session.GetImageGuideAsync(bodyType);
     }
 
-    private async Task<HostCommandResult> RunPaintCommandAsync(bool previewOnly, bool unpreviewOnly)
+    private object HandleCommitSettingsWithImage(JsonElement payload)
+    {
+        if (!settingsEditing)
+            return new { success = false, message = "Open Edit before changing Image Paint." };
+        if (!TryReadSettingChanges(payload, out var changes, out var settingsMessage))
+            return new { success = false, message = settingsMessage };
+        if (!TryReadImageDesign(payload, out var design, out var imageMessage))
+            return new { success = false, message = imageMessage };
+        var result = session.CommitSettingsWithImage(changes, design);
+        return new
+        {
+            success = result.Success,
+            message = result.Message,
+            revision = result.Success ? session.Settings.Image.Revision : 0
+        };
+    }
+
+    private object HandleLoadImagePreset()
+    {
+        if (!settingsEditing)
+            return new { success = false, message = "Open Edit before loading an Image preset." };
+
+        Directory.CreateDirectory(session.Paths.ImagePresetsDirectory);
+        using var dialog = new OpenFileDialog
+        {
+            Title = "Load MecchaCamouflage Image Preset",
+            InitialDirectory = session.Paths.ImagePresetsDirectory,
+            Filter = "MecchaCamouflage Image Preset (*.mcpreset)|*.mcpreset",
+            DefaultExt = ImagePresetStore.PresetExtension.TrimStart('.'),
+            Multiselect = false,
+            CheckFileExists = true,
+            CheckPathExists = true
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+            return new { success = true, cancelled = true };
+        if (!session.TryLoadImagePreset(dialog.FileName, out var design, out var message))
+            return new { success = false, message };
+
+        PruneExpiredImageTransfers();
+        var transferId = Guid.NewGuid().ToString("D");
+        loadedImagePresets[transferId] = new LoadedImagePresetTransfer { Design = design };
+        return new { success = true, transferId, design = WithoutImageAssets(design) };
+    }
+
+    private object HandleSaveImagePreset(JsonElement payload)
+    {
+        if (!settingsEditing)
+            return new { success = false, message = "Open Edit before saving an Image preset." };
+        if (!TryReadImageDesign(payload, out var design, out var message))
+            return new { success = false, message };
+
+        Directory.CreateDirectory(session.Paths.ImagePresetsDirectory);
+        using var dialog = new SaveFileDialog
+        {
+            Title = "Save MecchaCamouflage Image Preset",
+            InitialDirectory = session.Paths.ImagePresetsDirectory,
+            Filter = "MecchaCamouflage Image Preset (*.mcpreset)|*.mcpreset",
+            DefaultExt = ImagePresetStore.PresetExtension.TrimStart('.'),
+            AddExtension = true,
+            OverwritePrompt = true,
+            CheckPathExists = true
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+            return new { success = true, cancelled = true };
+        var result = session.SaveImagePreset(dialog.FileName, design);
+        return new { success = result.Success, message = result.Message, path = result.Success ? result.Message : "" };
+    }
+
+    private bool TryReadImageDesign(JsonElement payload, out ImagePaintSettings design, out string message)
+    {
+        design = new ImagePaintSettings();
+        message = "";
+        if (!payload.TryGetProperty("design", out var designPayload))
+        {
+            message = "The image design is missing.";
+            return false;
+        }
+        try
+        {
+            design = designPayload.Deserialize<ImagePaintSettings>(JsonOptions) ?? new ImagePaintSettings();
+        }
+        catch (JsonException)
+        {
+            message = "The image design is invalid.";
+            return false;
+        }
+        if (design.Enabled && !TryTakeStagedImageDesign(payload, design, out message))
+            return false;
+        return true;
+    }
+
+    private object HandleGetImageAssetChunk(JsonElement payload)
+    {
+        if (!TryReadImageAssetRequest(payload, out var asset, out var index, out var message))
+            return new { success = false, message };
+        var data = "";
+        var available = session.TryGetImageDesignAsset(asset, out data);
+        if (!available)
+            return new { success = false, message = "The requested active image asset is unavailable." };
+        return ImageAssetChunk(data, index);
+    }
+
+    private object HandleGetLoadedImagePresetChunk(JsonElement payload)
+    {
+        if (!TryReadImageAssetRequest(payload, out var asset, out var index, out var message) ||
+            !TryReadTransferId(payload, out var transferId, out message))
+        {
+            return new { success = false, message = message ?? "The Image preset asset request is invalid." };
+        }
+        PruneExpiredImageTransfers();
+        if (!loadedImagePresets.TryGetValue(transferId, out var transfer) ||
+            !TryGetImageAssetBase64(transfer.Design, asset, out var data))
+        {
+            return new { success = false, message = "The loaded Image preset is no longer available." };
+        }
+        transfer.LastUpdated = DateTimeOffset.UtcNow;
+        return ImageAssetChunk(data, index);
+    }
+
+    private static object ImageAssetChunk(string data, int index)
+    {
+        if (index > data.Length / ImageTransferChunkCharacters + 1)
+            return new { success = false, message = "The requested image chunk is unavailable." };
+        var offset = index * ImageTransferChunkCharacters;
+        if (offset >= data.Length)
+            return new { success = false, message = "The requested image chunk is unavailable." };
+        var length = Math.Min(ImageTransferChunkCharacters, data.Length - offset);
+        return new { success = true, index, data = data.Substring(offset, length), complete = offset + length >= data.Length };
+    }
+
+    private object HandleStageImageDesignChunk(JsonElement payload)
+    {
+        if (!settingsEditing)
+            return new { success = false, message = "Open Edit before uploading an image design." };
+        if (!TryReadImageAssetRequest(payload, out var asset, out var index, out var message) ||
+            !TryReadTransferId(payload, out var transferId, out message) ||
+            !payload.TryGetProperty("data", out var dataPayload) ||
+            dataPayload.ValueKind != JsonValueKind.String)
+        {
+            return new { success = false, message = message ?? "The image chunk is invalid." };
+        }
+        var data = dataPayload.GetString() ?? "";
+        if (data.Length == 0 || data.Length > ImageTransferChunkCharacters)
+            return new { success = false, message = "The image chunk has an invalid size." };
+
+        PruneExpiredImageTransfers();
+        if (!stagedImageDesigns.TryGetValue(transferId, out var transfer))
+        {
+            if (stagedImageDesigns.Count >= 16)
+                return new { success = false, message = "Too many pending image uploads. Try saving again." };
+            transfer = new StagedImageDesignTransfer();
+            stagedImageDesigns.Add(transferId, transfer);
+        }
+        if (!transfer.Assets.TryGetValue(asset, out var staged))
+        {
+            staged = new StagedImageAsset();
+            transfer.Assets.Add(asset, staged);
+        }
+        if (index != staged.NextChunkIndex)
+            return new { success = false, message = "The image chunks arrived out of order." };
+        if (staged.Data.Length > MaximumImageTransferCharacters - data.Length)
+            return new { success = false, message = "The staged image is too large." };
+        staged.Data.Append(data);
+        staged.NextChunkIndex++;
+        transfer.LastUpdated = DateTimeOffset.UtcNow;
+        return new { success = true, index };
+    }
+
+    private bool TryTakeStagedImageDesign(JsonElement payload, ImagePaintSettings design, out string message)
+    {
+        message = "";
+        if (!TryReadTransferId(payload, out var transferId, out message) ||
+            !stagedImageDesigns.Remove(transferId, out var transfer))
+        {
+            message = string.IsNullOrWhiteSpace(message) ? "The image upload was not found. Save the design again." : message;
+            return false;
+        }
+        if (!transfer.Assets.TryGetValue("canvas", out var canvas))
+        {
+            message = "The canonical image canvas is missing.";
+            return false;
+        }
+        design.CanvasRgbaBase64 = canvas.Data.ToString();
+        for (var index = 0; index < design.Layers.Count; index++)
+        {
+            if (!transfer.Assets.TryGetValue($"layer{index}", out var layer))
+            {
+                message = $"Image layer {index + 1} is missing.";
+                return false;
+            }
+            design.Layers[index].DataBase64 = layer.Data.ToString();
+        }
+        return true;
+    }
+
+    private static bool TryReadImageAssetRequest(JsonElement payload, out string asset, out int index, out string? message)
+    {
+        asset = "";
+        index = -1;
+        message = null;
+        if (!payload.TryGetProperty("asset", out var assetPayload) || assetPayload.ValueKind != JsonValueKind.String)
+        {
+            message = "The image asset is missing.";
+            return false;
+        }
+        asset = assetPayload.GetString() ?? "";
+        if (asset != "canvas" &&
+            (!asset.StartsWith("layer", StringComparison.Ordinal) ||
+             !int.TryParse(asset["layer".Length..], out var layerIndex) ||
+             layerIndex < 0 || layerIndex > 4095))
+        {
+            message = "The requested image asset is invalid.";
+            return false;
+        }
+        if (!payload.TryGetProperty("index", out var indexPayload) || !indexPayload.TryGetInt32(out index) || index < 0)
+        {
+            message = "The image chunk index is invalid.";
+            return false;
+        }
+        return true;
+    }
+
+    private static bool TryReadTransferId(JsonElement payload, out string transferId, out string message)
+    {
+        transferId = "";
+        message = "";
+        if (!payload.TryGetProperty("transferId", out var transferPayload) ||
+            transferPayload.ValueKind != JsonValueKind.String ||
+            !Guid.TryParse(transferPayload.GetString(), out var transfer))
+        {
+            message = "The image upload id is invalid.";
+            return false;
+        }
+        transferId = transfer.ToString("D");
+        return true;
+    }
+
+    private void PruneExpiredImageTransfers()
+    {
+        var cutoff = DateTimeOffset.UtcNow - ImageTransferLifetime;
+        foreach (var transferId in stagedImageDesigns
+                     .Where(entry => entry.Value.LastUpdated < cutoff)
+                     .Select(entry => entry.Key)
+                     .ToArray())
+        {
+            stagedImageDesigns.Remove(transferId);
+        }
+        foreach (var transferId in loadedImagePresets
+                     .Where(entry => entry.Value.LastUpdated < cutoff)
+                     .Select(entry => entry.Key)
+                     .ToArray())
+        {
+            loadedImagePresets.Remove(transferId);
+        }
+    }
+
+    private static ImagePaintSettings WithoutImageAssets(ImagePaintSettings source)
+    {
+        var clone = JsonSerializer.Deserialize<ImagePaintSettings>(JsonSerializer.Serialize(source, JsonOptions), JsonOptions)
+                    ?? new ImagePaintSettings();
+        clone.CanvasRgbaBase64 = "";
+        foreach (var layer in clone.Layers)
+            layer.DataBase64 = "";
+        return clone;
+    }
+
+    private static bool TryGetImageAssetBase64(ImagePaintSettings design, string asset, out string data)
+    {
+        data = "";
+        if (asset == "canvas")
+        {
+            data = design.CanvasRgbaBase64;
+            return data.Length > 0;
+        }
+        if (!asset.StartsWith("layer", StringComparison.Ordinal) ||
+            !int.TryParse(asset["layer".Length..], out var index) ||
+            index < 0 || index >= design.Layers.Count)
+        {
+            return false;
+        }
+        data = design.Layers[index].DataBase64;
+        return data.Length > 0;
+    }
+
+    private async Task<HostCommandResult> RunPaintCommandAsync(PaintKind kind = PaintKind.Standard, bool previewOnly = false, bool unpreviewOnly = false)
     {
         var previousInterval = statusTimer.Interval;
         statusTimer.Interval = 250;
@@ -849,7 +1187,7 @@ public sealed class MainForm : Form
         var refreshTask = RefreshSnapshotsUntilCancelledAsync(refresh.Token);
         try
         {
-            return await session.RunPaintAsync(previewOnly, unpreviewOnly);
+            return await session.RunPaintAsync(kind, previewOnly, unpreviewOnly);
         }
         finally
         {
@@ -885,16 +1223,36 @@ public sealed class MainForm : Form
 
     private object HandleUpdateSettings(JsonElement payload)
     {
-        var changes = new List<SettingChange>();
-        foreach (var item in payload.GetProperty("changes").EnumerateArray())
-        {
-            var key = item.GetProperty("key").GetString() ?? "";
-            changes.Add(new SettingChange(key, item.GetProperty("value")));
-        }
-
+        if (!TryReadSettingChanges(payload, out var changes, out var message))
+            return new { success = false, message };
         var result = session.UpdateSettings(changes);
         ApplyWindowSettings();
         return ApplyResult(result);
+    }
+
+    private static bool TryReadSettingChanges(JsonElement payload, out List<SettingChange> changes, out string message)
+    {
+        changes = [];
+        message = "";
+        if (!payload.TryGetProperty("changes", out var entries) || entries.ValueKind != JsonValueKind.Array)
+        {
+            message = "The setting changes are missing.";
+            return false;
+        }
+        try
+        {
+            foreach (var item in entries.EnumerateArray())
+            {
+                var key = item.GetProperty("key").GetString() ?? "";
+                changes.Add(new SettingChange(key, item.GetProperty("value")));
+            }
+            return true;
+        }
+        catch (InvalidOperationException)
+        {
+            message = "A setting change is invalid.";
+            return false;
+        }
     }
 
     private object HandleResetSetting(JsonElement payload)
@@ -947,6 +1305,18 @@ public sealed class MainForm : Form
                 _ = await RunPaintCommandAsync(previewOnly: false, unpreviewOnly: true);
                 break;
             case HotkeyStop:
+                _ = await session.StopPaintAsync();
+                break;
+            case HotkeyImageStart:
+                _ = await RunPaintCommandAsync(PaintKind.Image, previewOnly: false, unpreviewOnly: false);
+                break;
+            case HotkeyImagePreview:
+                _ = await RunPaintCommandAsync(PaintKind.Image, previewOnly: true, unpreviewOnly: false);
+                break;
+            case HotkeyImageUnPreview:
+                _ = await RunPaintCommandAsync(PaintKind.Image, previewOnly: false, unpreviewOnly: true);
+                break;
+            case HotkeyImageStop:
                 _ = await session.StopPaintAsync();
                 break;
         }
@@ -1141,7 +1511,11 @@ public sealed class MainForm : Form
             (HotkeyStart, session.Settings.StartHotkey),
             (HotkeyPreview, session.Settings.PreviewHotkey),
             (HotkeyUnPreview, session.Settings.UnPreviewHotkey),
-            (HotkeyStop, session.Settings.StopHotkey)
+            (HotkeyStop, session.Settings.StopHotkey),
+            (HotkeyImageStart, session.Settings.ImageStartHotkey),
+            (HotkeyImagePreview, session.Settings.ImagePreviewHotkey),
+            (HotkeyImageUnPreview, session.Settings.ImageUnPreviewHotkey),
+            (HotkeyImageStop, session.Settings.ImageStopHotkey)
         };
         foreach (var (id, key) in keys)
         {

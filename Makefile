@@ -1,7 +1,21 @@
 NATIVE_APPLY_MODE ?= mesh_first_paint
 DIAGNOSTIC_STROKE_LIMIT ?= 0
 RESEARCH_ARTIFACTS ?= $(MECCHA_RESEARCH_ARTIFACTS)
-VERSION ?= $(shell git describe --tags --exact-match 2>/dev/null || git describe --tags --dirty --always 2>/dev/null || printf dev)
+# A tagged, clean source tree is a release and deliberately keeps its tag.
+# Every development build receives its own identity, however: config, runtime
+# assets, logs, and image designs are all version-scoped.  Reusing the old
+# `...-dirty` string made separate local builds share those directories.
+ifndef VERSION
+VERSION := $(shell \
+	exact="$$(git describe --tags --exact-match 2>/dev/null)"; \
+	dirty="$$(git status --porcelain --untracked-files=normal 2>/dev/null || printf x)"; \
+	if [ -n "$$exact" ] && [ -z "$$dirty" ]; then \
+		printf '%s' "$$exact"; \
+	else \
+		base="$$(git describe --tags --always 2>/dev/null || printf dev)"; \
+		printf '%s-build-%s' "$$base" "$$(date -u +%Y%m%d%H%M%S%N)"; \
+	fi)
+endif
 BUILD_PS := scripts/build.ps1
 RUN_PS := scripts/dev.ps1
 START_PS := scripts/start.ps1

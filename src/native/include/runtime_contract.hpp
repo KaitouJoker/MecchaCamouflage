@@ -159,6 +159,161 @@ namespace runtime_contract
         Skip,
     };
 
+    enum class ImageAtlasRegion
+    {
+        Front,
+        Side,
+        Back,
+    };
+
+    struct ImageAtlasMappingInput
+    {
+        bool cube{false};
+        ImageAtlasRegion region{ImageAtlasRegion::Front};
+        bool depth_is_y{false};
+        double local_x{0.0};
+        double local_y{0.0};
+        double local_z{0.0};
+        double normal_x{0.0};
+        double normal_y{0.0};
+        double normal_z{0.0};
+        double min_x{0.0};
+        double max_x{1.0};
+        double min_y{0.0};
+        double max_y{1.0};
+        double min_z{0.0};
+        double max_z{1.0};
+    };
+
+    struct ImageAtlasMappingResult
+    {
+        double u{0.125};
+        double v{0.5};
+        bool cube_side{false};
+        bool cube_edge{false};
+    };
+
+    inline ImageAtlasMappingResult map_image_atlas_coordinate(const ImageAtlasMappingInput& input)
+    {
+        const auto normalized = [](double value, double minimum, double maximum) {
+            const double range = maximum - minimum;
+            return std::abs(range) <= 0.000001 ? 0.5 : std::clamp((value - minimum) / range, 0.0, 1.0);
+        };
+        const double horizontal = input.depth_is_y
+                                      ? normalized(input.local_x, input.min_x, input.max_x)
+                                      : normalized(input.local_y, input.min_y, input.max_y);
+        const double depth = input.depth_is_y
+                                 ? normalized(input.local_y, input.min_y, input.max_y)
+                                 : normalized(input.local_x, input.min_x, input.max_x);
+        ImageAtlasMappingResult result{};
+        result.v = normalized(input.local_z, input.min_z, input.max_z);
+        const double normal_x = std::abs(input.normal_x);
+        const double normal_y = std::abs(input.normal_y);
+        const double normal_z = std::abs(input.normal_z);
+        if (input.cube && normal_z > normal_x && normal_z > normal_y)
+        {
+            const double centered_x = input.local_x - (input.min_x + input.max_x) * 0.5;
+            const double centered_y = input.local_y - (input.min_y + input.max_y) * 0.5;
+            result.u = std::clamp(std::atan2(centered_y, centered_x) / (2.0 * 3.14159265358979323846) + 0.5, 0.0, 1.0);
+            result.v = input.normal_z >= 0.0 ? 0.0 : 1.0;
+            result.cube_edge = true;
+            return result;
+        }
+        if (input.region == ImageAtlasRegion::Side)
+        {
+            const double side_coordinate = input.depth_is_y ? input.local_x : input.local_y;
+            const double horizontal_midpoint = input.depth_is_y
+                                                   ? (input.min_x + input.max_x) * 0.5
+                                                   : (input.min_y + input.max_y) * 0.5;
+            result.u = side_coordinate > horizontal_midpoint
+                           ? 0.25 + depth * 0.25
+                           : 0.75 + (1.0 - depth) * 0.25;
+            result.cube_side = input.cube;
+        }
+        else if (input.region == ImageAtlasRegion::Back)
+        {
+            result.u = 0.5 + (1.0 - horizontal) * 0.25;
+        }
+        else
+        {
+            result.u = horizontal * 0.25;
+        }
+        return result;
+    }
+
+    // Cube image designs are not UV-like unwraps. They are four orthographic
+    // views of one canonical, natural-standing reference pose. Keep this tiny
+    // projection contract shared by the bridge and its native validation test;
+    // the UI mirrors the same fixed 1024 x 512 canvas geometry.
+    enum class CubeCanonicalImageFace
+    {
+        Front,
+        Right,
+        Back,
+        Left,
+    };
+
+    struct CubeCanonicalImageProjectionInput
+    {
+        double local_x{0.0};
+        double local_y{0.0};
+        double local_z{0.0};
+        double normal_x{0.0};
+        double normal_y{-1.0};
+        double center_x{0.0};
+        double center_y{0.0};
+        double center_z{0.0};
+        double pixels_per_unit{1.0};
+    };
+
+    struct CubeCanonicalImageProjectionResult
+    {
+        CubeCanonicalImageFace face{CubeCanonicalImageFace::Front};
+        double u{0.125};
+        double v{0.5};
+    };
+
+    inline CubeCanonicalImageFace classify_cube_canonical_image_face(double normal_x, double normal_y)
+    {
+        if (std::abs(normal_x) >= std::abs(normal_y))
+        {
+            return normal_x >= 0.0 ? CubeCanonicalImageFace::Right : CubeCanonicalImageFace::Left;
+        }
+        return normal_y >= 0.0 ? CubeCanonicalImageFace::Back : CubeCanonicalImageFace::Front;
+    }
+
+    inline CubeCanonicalImageProjectionResult map_cube_canonical_image_coordinate(const CubeCanonicalImageProjectionInput& input)
+    {
+        CubeCanonicalImageProjectionResult result{};
+        result.face = classify_cube_canonical_image_face(input.normal_x, input.normal_y);
+        const double pixels_per_unit = std::isfinite(input.pixels_per_unit) && input.pixels_per_unit > 0.000001
+                                           ? input.pixels_per_unit
+                                           : 1.0;
+        double horizontal = input.local_x - input.center_x;
+        int tile = 0;
+        switch (result.face)
+        {
+        case CubeCanonicalImageFace::Front:
+            tile = 0;
+            break;
+        case CubeCanonicalImageFace::Right:
+            tile = 1;
+            horizontal = input.local_y - input.center_y;
+            break;
+        case CubeCanonicalImageFace::Back:
+            tile = 2;
+            horizontal = input.center_x - input.local_x;
+            break;
+        case CubeCanonicalImageFace::Left:
+            tile = 3;
+            horizontal = input.center_y - input.local_y;
+            break;
+        }
+        result.u = (static_cast<double>(tile) * 256.0 + 128.0 + horizontal * pixels_per_unit) / 1024.0;
+        result.v = 0.5 + (input.local_z - input.center_z) * pixels_per_unit / 512.0;
+        return result;
+    }
+
     enum class ReplayPass
     {
         Fill,

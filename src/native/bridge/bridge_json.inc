@@ -43,6 +43,49 @@
             return fallback;
         ++pos;
         std::string out{};
+        const auto hex_digit = [](char value) -> int {
+            if (value >= '0' && value <= '9') return value - '0';
+            if (value >= 'a' && value <= 'f') return value - 'a' + 10;
+            if (value >= 'A' && value <= 'F') return value - 'A' + 10;
+            return -1;
+        };
+        const auto read_unicode_escape = [&text, &hex_digit](std::size_t start, std::uint32_t& codepoint) -> bool {
+            if (start + 4 >= text.size())
+                return false;
+            codepoint = 0;
+            for (std::size_t offset = 1; offset <= 4; ++offset)
+            {
+                const int digit = hex_digit(text[start + offset]);
+                if (digit < 0)
+                    return false;
+                codepoint = (codepoint << 4) | static_cast<std::uint32_t>(digit);
+            }
+            return true;
+        };
+        const auto append_utf8 = [](std::string& target, std::uint32_t codepoint) {
+            if (codepoint <= 0x7F)
+            {
+                target.push_back(static_cast<char>(codepoint));
+            }
+            else if (codepoint <= 0x7FF)
+            {
+                target.push_back(static_cast<char>(0xC0 | (codepoint >> 6)));
+                target.push_back(static_cast<char>(0x80 | (codepoint & 0x3F)));
+            }
+            else if (codepoint <= 0xFFFF)
+            {
+                target.push_back(static_cast<char>(0xE0 | (codepoint >> 12)));
+                target.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F)));
+                target.push_back(static_cast<char>(0x80 | (codepoint & 0x3F)));
+            }
+            else
+            {
+                target.push_back(static_cast<char>(0xF0 | (codepoint >> 18)));
+                target.push_back(static_cast<char>(0x80 | ((codepoint >> 12) & 0x3F)));
+                target.push_back(static_cast<char>(0x80 | ((codepoint >> 6) & 0x3F)));
+                target.push_back(static_cast<char>(0x80 | (codepoint & 0x3F)));
+            }
+        };
         bool escaped = false;
         for (; pos < text.size(); ++pos)
         {
@@ -59,6 +102,31 @@
                 case 'n': out.push_back('\n'); break;
                 case 'r': out.push_back('\r'); break;
                 case 't': out.push_back('\t'); break;
+                case 'u':
+                {
+                    std::uint32_t codepoint = 0;
+                    if (!read_unicode_escape(pos, codepoint))
+                        return fallback;
+                    if (codepoint >= 0xD800 && codepoint <= 0xDBFF)
+                    {
+                        std::uint32_t low = 0;
+                        if (pos + 10 >= text.size() || text[pos + 5] != '\\' || text[pos + 6] != 'u' ||
+                            !read_unicode_escape(pos + 6, low) || low < 0xDC00 || low > 0xDFFF)
+                            return fallback;
+                        codepoint = 0x10000 + ((codepoint - 0xD800) << 10) + (low - 0xDC00);
+                        pos += 10;
+                    }
+                    else if (codepoint >= 0xDC00 && codepoint <= 0xDFFF)
+                    {
+                        return fallback;
+                    }
+                    else
+                    {
+                        pos += 4;
+                    }
+                    append_utf8(out, codepoint);
+                    break;
+                }
                 default: out.push_back(ch); break;
                 }
                 escaped = false;

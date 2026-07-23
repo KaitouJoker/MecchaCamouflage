@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Text;
 using MecchaCamouflage.Controller;
 using MecchaCamouflage.Core;
@@ -13,6 +14,7 @@ var tests = new List<(string Name, Action Run)>
     ("single brush settings clamp to supported range", SingleBrushSettingsClampToSupportedRange),
     ("app defaults use 99 percent opacity", AppDefaultsUse99PercentOpacity),
     ("payload sends a single brush and compression tolerance", PayloadSendsSingleBrushPipeline),
+    ("image payload carries a full canonical canvas", ImagePayloadCarriesFullCanonicalCanvas),
     ("custom freecam surface is absent", CustomFreecamSurfaceIsAbsent),
     ("spectator paint resolution requires local controller identity", SpectatorPaintResolutionRequiresLocalControllerIdentity),
     ("diagnostic stroke limit requires explicit option", DiagnosticStrokeLimitRequiresExplicitOption),
@@ -46,11 +48,21 @@ var tests = new List<(string Name, Action Run)>
     ("runtime log write is best effort when file is locked", RuntimeLogWriteIsBestEffortWhenFileLocked),
     ("auto material defaults off", AutoMaterialDefaultsOff),
     ("regions default to side and back paint", RegionsDefaultToSideAndBackPaint),
+    ("image design defaults are safe and persist", ImageDesignDefaultsAreSafeAndPersist),
+    ("legacy image transforms migrate to individual layers", LegacyImageTransformsMigrateToIndividualLayers),
+    ("image preset round-trips an uncompressed container", ImagePresetRoundTripsUncompressedContainer),
+    ("v1 image preset expands global transforms to layers", V1ImagePresetExpandsGlobalTransformsToLayers),
+    ("GUI image save persists the active preset state", GuiImageSavePersistsActivePresetState),
+    ("legacy image config migrates to active image state", LegacyImageConfigMigratesToDiskLibrary),
+    ("legacy image-design active state migrates once", LegacyImageDesignActiveStateMigratesOnce),
+    ("image paint rejects an unsaved image design draft", ImagePaintRejectsUnsavedImageDesignDraft),
+    ("image and normal settings save atomically", ImageAndNormalSettingsSaveAtomically),
     ("bridge messages are user friendly", BridgeMessagesAreUserFriendly),
     ("settings detect supported system language", SettingsDetectSupportedSystemLanguage),
     ("ui snapshot exposes a single brush", UiSnapshotExposesSingleBrush),
     ("web ui exposes one brush slider and compression tolerance", WebUiExposesSingleBrushSliderAndCompressionTolerance),
-    ("web ui image picker previews fit crop and transparency", WebUiImagePickerPreviewsFitCropAndTransparency),
+    ("web ui persists image designs through the tabbed editor", WebUiImagePaintEditorUsesSavedTransaction),
+    ("web ui uses packaged reference guides without a game connection", WebUiUsesPackagedReferenceGuides),
     ("web UI keeps theme color on readonly range and checkbox controls", WebUiKeepsThemeColorOnReadonlyControls),
     ("web ui renders pass progress and total eta", WebUiRendersPassProgressAndTotalEta),
     ("raw hotkeys suppress repeat until key-up", RawHotkeysSuppressRepeatUntilKeyUp),
@@ -94,7 +106,8 @@ var tests = new List<(string Name, Action Run)>
     ("runtime launch stages a local Windows copy", RuntimeLaunchStagesLocalWindowsCopy),
     ("direct bridge names avoid historical loader pattern", DirectBridgeNamesAvoidHistoricalLoaderPattern),
     ("release packaging contains only direct bridge components", ReleasePackagingContainsOnlyDirectBridge),
-    ("release build excludes research runner and devtools", ReleaseBuildExcludesResearchRunnerAndDevTools)
+    ("release build excludes research runner and devtools", ReleaseBuildExcludesResearchRunnerAndDevTools),
+    ("development builds use isolated version scopes", DevelopmentBuildsUseIsolatedVersionScopes)
 };
 
 var failed = 0;
@@ -124,6 +137,301 @@ static void PaintDefaultsExposeSingleBrush()
     Assert(paint.FrontRegionMode == RegionMode.Skip, "front should default to skip");
     Assert(paint.SideRegionMode == RegionMode.Paint, "side should default to paint");
     Assert(paint.BackRegionMode == RegionMode.Paint, "back should default to paint");
+}
+
+static void ImageDesignDefaultsAreSafeAndPersist()
+{
+    using var temp = new TempHome();
+    var paths = new AppPaths("image-design-persistence-test");
+    var settings = new AppSettings();
+
+    Assert(!settings.Image.Enabled, "image paint should be opt-in by default");
+    Assert(settings.Image.BodyType == "round", "round should be the default image body");
+    Assert(Math.Abs(settings.Image.Roughness - 1.0) < 0.000001,
+        "image paint should default to a non-mirrored material");
+    Assert(Math.Abs(settings.Image.BrushSizeTexels - 5.0) < 0.000001,
+        "image paint should have its own default brush size");
+    Assert(Math.Abs(settings.Image.ColorCompressionTolerance) < 0.000001 &&
+           Math.Abs(settings.Image.BackgroundMetallic) < 0.000001 &&
+           Math.Abs(settings.Image.BackgroundRoughness - 1.0) < 0.000001 &&
+           settings.Image.CanvasEncodingVersion == 0,
+        "image paint should preserve full source detail by default and give Background its own safe PBR defaults");
+
+    settings.ActiveImageDesignId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    new SettingsStore(paths).Save(settings);
+    var loaded = new SettingsStore(paths).Load();
+
+    Assert(loaded.ActiveImageDesignId == settings.ActiveImageDesignId,
+        "normal settings should persist only the active design reference");
+    Assert(!File.ReadAllText(paths.ConfigPath).Contains("canvas_rgba_base64", StringComparison.Ordinal),
+        "normal settings must not embed the canonical image canvas");
+
+    var oversizedLayer = new ImagePaintLayer
+    {
+        FileName = "oversized.png",
+        MimeType = "image/png",
+        DataBase64 = Convert.ToBase64String(new byte[ImagePaintLayer.MaximumSourceBytes + 1])
+    };
+    Assert(!oversizedLayer.TryValidate(out _), "image source layers larger than 12 MiB should be rejected");
+}
+
+static void LegacyImageTransformsMigrateToIndividualLayers()
+{
+    var legacy = new ImagePaintSettings
+    {
+        WrapFaces = true,
+        MirrorFrontBack = true,
+        Layers =
+        [
+            new ImagePaintLayer { FileName = "first.png", MimeType = "image/png", DataBase64 = Convert.ToBase64String([1]) },
+            new ImagePaintLayer { FileName = "second.jpg", MimeType = "image/jpeg", DataBase64 = Convert.ToBase64String([2]) }
+        ]
+    };
+
+    legacy.MigrateLegacyLayerTransforms();
+
+    Assert(legacy.Layers.All(layer => layer.WrapAtlasSeam && layer.MirrorFrontBack),
+        "a legacy global Wrap/Mirror state must be expanded to every editable source layer");
+    Assert(!legacy.WrapFaces && !legacy.MirrorFrontBack,
+        "the migrated design must no longer retain global layer transform state");
+}
+
+static void ImagePresetRoundTripsUncompressedContainer()
+{
+    using var temp = new TempHome();
+    var paths = new AppPaths("image-preset-container-test-" + Guid.NewGuid().ToString("N"));
+    var store = new ImagePresetStore(paths);
+    var path = Path.Combine(paths.ImagePresetsDirectory, "example.mcpreset");
+    var design = new ImagePaintSettings
+    {
+        Enabled = true,
+        Revision = 1,
+        CanvasEncodingVersion = ImagePaintSettings.BackgroundPbrCanvasEncodingVersion,
+        CanvasRgbaBase64 = Convert.ToBase64String(new byte[ImagePaintSettings.CanvasByteLength]),
+        Layers = [new ImagePaintLayer
+        {
+            FileName = "source.png",
+            MimeType = "image/png",
+            DataBase64 = Convert.ToBase64String([1, 2, 3]),
+            WrapAtlasSeam = true,
+            MirrorFrontBack = true
+        }]
+    };
+
+    Assert(store.SavePreset(path, design).Success, "a valid Image draft should save as a .mcpreset container");
+    Assert(File.Exists(path) && Path.GetExtension(path) == ImagePresetStore.PresetExtension,
+        "the preset should be one file with the application extension");
+    Assert(store.TryLoadPreset(path, out var loaded, out var message) && loaded.Enabled &&
+           loaded.Layers.Count == 1 && loaded.Layers[0].WrapAtlasSeam && loaded.Layers[0].MirrorFrontBack &&
+           loaded.CanvasRgbaBase64 == design.CanvasRgbaBase64,
+        "the preset should restore editable sources and its canonical canvas: " + message);
+
+    var bytes = File.ReadAllBytes(path);
+    Assert(bytes.Length > 8 && bytes[0] == (byte)'M' && bytes[1] == (byte)'C' &&
+           !(bytes[0] == (byte)'P' && bytes[1] == (byte)'K'),
+        "an Image preset must use the application container rather than ZIP compression");
+    bytes[^1] ^= 0x01;
+    File.WriteAllBytes(path, bytes);
+    Assert(!store.TryLoadPreset(path, out _, out _), "a preset with a changed entry must be rejected by its hash");
+}
+
+static void V1ImagePresetExpandsGlobalTransformsToLayers()
+{
+    using var temp = new TempHome();
+    var paths = new AppPaths("image-preset-v1-migration-test-" + Guid.NewGuid().ToString("N"));
+    var store = new ImagePresetStore(paths);
+    var path = Path.Combine(paths.ImagePresetsDirectory, "legacy.mcpreset");
+    var canvas = new byte[ImagePaintSettings.CanvasByteLength];
+    var source = new byte[] { 1, 2, 3 };
+    var manifest = JsonSerializer.SerializeToUtf8Bytes(new
+    {
+        schema_version = 1,
+        image = new
+        {
+            enabled = true,
+            revision = 1,
+            canvas_encoding_version = 0,
+            body_type = "round",
+            alpha_mode = "skip",
+            background_color = new { r = 188, g = 188, b = 188 },
+            placement = "fit",
+            wrap_faces = true,
+            mirror_front_back = true,
+            brush_size_texels = 5.0,
+            color_compression_tolerance = 0.0,
+            metallic = 0.0,
+            roughness = 1.0,
+            emissive = 0.0,
+            background_metallic = 0.0,
+            background_roughness = 1.0,
+            background_emissive = 0.0,
+            canvas_rgba_base64 = "",
+            layers = new[]
+            {
+                new
+                {
+                    asset_id = "",
+                    file_name = "legacy.png",
+                    mime_type = "image/png",
+                    data_base64 = "",
+                    center_x = 0.5,
+                    center_y = 0.5,
+                    width = 1.0,
+                    height = 1.0,
+                    crop_x = 0.0,
+                    crop_y = 0.0,
+                    crop_width = 1.0,
+                    crop_height = 1.0
+                }
+            }
+        }
+    });
+
+    Directory.CreateDirectory(paths.ImagePresetsDirectory);
+    using (var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+    using (var writer = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: false))
+    {
+        writer.Write("MCIPRST1"u8.ToArray());
+        writer.Write(1);
+        writer.Write(manifest.Length);
+        writer.Write(2);
+        writer.Write(manifest);
+        writer.Write("canvas.rgba");
+        writer.Write((long)canvas.Length);
+        writer.Write(SHA256.HashData(canvas));
+        writer.Write("layers/0.png");
+        writer.Write((long)source.Length);
+        writer.Write(SHA256.HashData(source));
+        writer.Write(canvas);
+        writer.Write(source);
+    }
+
+    Assert(store.TryLoadPreset(path, out var loaded, out var message) &&
+           loaded.Layers.Count == 1 &&
+           loaded.Layers[0].WrapAtlasSeam && loaded.Layers[0].MirrorFrontBack &&
+           !loaded.WrapFaces && !loaded.MirrorFrontBack,
+        "a v1 preset must migrate global Wrap/Mirror to its source layer: " + message);
+}
+
+static void GuiImageSavePersistsActivePresetState()
+{
+    using var temp = new TempHome();
+    var version = "image-preset-active-state-test-" + Guid.NewGuid().ToString("N");
+    var session = new HostSession(version);
+    var design = new ImagePaintSettings
+    {
+        Enabled = true,
+        CanvasEncodingVersion = ImagePaintSettings.BackgroundPbrCanvasEncodingVersion,
+        CanvasRgbaBase64 = Convert.ToBase64String(new byte[ImagePaintSettings.CanvasByteLength]),
+        Layers = [new ImagePaintLayer { FileName = "source.png", MimeType = "image/png", DataBase64 = Convert.ToBase64String([1, 2, 3]) }]
+    };
+
+    var result = session.CommitSettingsWithImage([], design);
+    Assert(result.Success && File.Exists(session.Paths.ActiveImageStatePath) && session.Settings.Image.Enabled,
+        "GUI Save should atomically arm Image Paint and persist an internal active state");
+
+    var restarted = new HostSession(version);
+    Assert(restarted.Settings.Image.Enabled && restarted.Settings.Image.Layers.Count == 1 &&
+           restarted.Settings.Image.CanvasRgbaBase64 == design.CanvasRgbaBase64,
+        "the active Image state should restore after restarting the tool");
+
+    Assert(restarted.CommitSettingsWithImage([], new ImagePaintSettings()).Success,
+        "Save should allow all Image layers to be removed and disable Image Paint");
+    var disabled = new HostSession(version);
+    Assert(!disabled.Settings.Image.Enabled && disabled.Settings.Image.Layers.Count == 0,
+        "a disabled GUI Save must replace the active Image state rather than retain old layers");
+}
+
+static void LegacyImageConfigMigratesToDiskLibrary()
+{
+    using var temp = new TempHome();
+    var version = "image-design-legacy-migration-test-" + Guid.NewGuid().ToString("N");
+    var paths = new AppPaths(version);
+    Directory.CreateDirectory(paths.ConfigDirectory);
+    var legacy = new ImagePaintSettings
+    {
+        Enabled = true,
+        Revision = 2,
+        CanvasEncodingVersion = ImagePaintSettings.BackgroundPbrCanvasEncodingVersion,
+        CanvasRgbaBase64 = Convert.ToBase64String(new byte[ImagePaintSettings.CanvasByteLength]),
+        Layers = [new ImagePaintLayer { FileName = "legacy.png", MimeType = "image/png", DataBase64 = Convert.ToBase64String([1, 2, 3]) }]
+    };
+    var options = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower };
+    File.WriteAllText(paths.ConfigPath, JsonSerializer.Serialize(new { layout_version = 44, image = legacy }, options));
+
+    var session = new HostSession(version);
+
+    Assert(File.Exists(paths.ActiveImageStatePath) && session.Settings.Image.Enabled,
+        "a valid embedded image should receive a private active image state");
+    Assert(!File.ReadAllText(paths.ConfigPath).Contains("canvas_rgba_base64", StringComparison.Ordinal),
+        "the legacy Base64 payload should be removed only after the active state import succeeds");
+}
+
+static void LegacyImageDesignActiveStateMigratesOnce()
+{
+    using var temp = new TempHome();
+    var version = "image-design-library-migration-test-" + Guid.NewGuid().ToString("N");
+    var paths = new AppPaths(version);
+    var legacyLibrary = new ImageDesignLibrary(paths);
+    var legacy = new ImagePaintSettings
+    {
+        Enabled = true,
+        Revision = 3,
+        CanvasEncodingVersion = ImagePaintSettings.BackgroundPbrCanvasEncodingVersion,
+        CanvasRgbaBase64 = Convert.ToBase64String(new byte[ImagePaintSettings.CanvasByteLength]),
+        Layers = [new ImagePaintLayer { FileName = "legacy.png", MimeType = "image/png", DataBase64 = Convert.ToBase64String([1, 2, 3]) }]
+    };
+    var saved = legacyLibrary.Save("", "legacy", legacy);
+    Assert(saved.Success && saved.Design is not null, "the legacy active design fixture should save");
+    new SettingsStore(paths).Save(new AppSettings { ActiveImageDesignId = saved.Design!.Id });
+
+    var session = new HostSession(version);
+
+    Assert(File.Exists(paths.ActiveImageStatePath) && session.Settings.Image.Enabled &&
+           string.IsNullOrEmpty(session.Settings.ActiveImageDesignId),
+        "the same-version legacy active design should migrate to private active state");
+    Assert(File.Exists(Path.Combine(paths.ImageDesignsDirectory, saved.Design.Id, "design.json")),
+        "migration must not delete the legacy image-design library");
+    var restarted = new HostSession(version);
+    Assert(restarted.Settings.Image.Revision == session.Settings.Image.Revision && restarted.Settings.Image.Enabled,
+        "the migration should be one-time; later starts use active state directly");
+}
+
+static void ImagePaintRejectsUnsavedImageDesignDraft()
+{
+    using var temp = new TempHome();
+    var session = new HostSession("image-design-draft-guard-test-" + Guid.NewGuid().ToString("N"));
+
+    session.SetImageDesignDraftDirty(true);
+    var result = session.RunImagePaintAsync(previewOnly: false, unpreviewOnly: false).GetAwaiter().GetResult();
+
+    Assert(!result.Success && result.Message == "Image Paint: save or cancel the image design before starting.",
+        "F5-F8 must not silently run the last saved design while an Image draft is unsaved");
+}
+
+static void ImageAndNormalSettingsSaveAtomically()
+{
+    using var temp = new TempHome();
+    var session = new HostSession("image-transaction-test");
+    var image = new ImagePaintSettings
+    {
+        Enabled = true,
+        CanvasRgbaBase64 = Convert.ToBase64String(new byte[ImagePaintSettings.CanvasByteLength]),
+        Layers =
+        [
+            new ImagePaintLayer
+            {
+                FileName = "front.png",
+                MimeType = "image/png",
+                DataBase64 = Convert.ToBase64String([1, 2, 3, 4])
+            }
+        ]
+    };
+    var result = session.CommitSettingsWithImage(
+        [new SettingChange("app.startHotkey", JsonSerializer.SerializeToElement("F2"))], image);
+
+    Assert(!result.Success, "a normal settings validation error should reject the combined save");
+    Assert(!session.Settings.Image.Enabled, "a failed combined save must not arm the staged image design");
 }
 
 static void SingleBrushPersistsAndMigratesLegacyDetailSettings()
@@ -193,6 +501,57 @@ static void PayloadSendsSingleBrushPipeline()
         "payload should send the compression tolerance");
     Assert(!tuning.TryGetProperty("brush_1_size_texels", out _) && !tuning.TryGetProperty("brush_2_size_texels", out _),
         "payload should not send retired two-brush keys");
+}
+
+static void ImagePayloadCarriesFullCanonicalCanvas()
+{
+    var rgba = new byte[ImagePaintSettings.CanvasByteLength];
+    for (var index = 0; index < rgba.Length; index++)
+        rgba[index] = (byte)(index % 251);
+    var image = new ImagePaintOptions(
+        ImagePaintSettings.CanvasWidth,
+        ImagePaintSettings.CanvasHeight,
+        Convert.ToBase64String(rgba),
+        "skip",
+        new RgbColor(12, 34, 56),
+        "fit",
+        "round",
+        5.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        9);
+
+    var payload = BridgePayloadBuilder.BuildPaintPayload(
+        new AppSettings(), 42, "Game.exe", new PaintRequestOptions(Image: image));
+    using var document = JsonDocument.Parse(payload);
+    var root = document.RootElement;
+    var encoded = root.GetProperty("image_paint_rgba_base64").GetString();
+    Assert(root.GetProperty("image_paint_enabled").GetBoolean() &&
+           root.GetProperty("image_paint_width").GetInt32() == ImagePaintSettings.CanvasWidth &&
+           root.GetProperty("image_paint_height").GetInt32() == ImagePaintSettings.CanvasHeight &&
+           encoded is not null &&
+           Convert.FromBase64String(encoded).AsSpan().SequenceEqual(rgba) &&
+           !root.TryGetProperty("image_paint_wrap_faces", out _) &&
+           !root.TryGetProperty("image_paint_mirror_front_back", out _) &&
+           !payload.Contains("\\u002B", StringComparison.Ordinal) &&
+           Encoding.UTF8.GetByteCount(payload) < 8 * 1024 * 1024,
+        "the full 1024x512 RGBA image payload must reach native unescaped and below the bridge request limit");
+
+    var reply = new BridgeReply(
+        true,
+        false,
+        "image_paint_invalid",
+        "Imported image data is invalid; painting was not started",
+        "{\"success\":false,\"metadata\":{\"image_decode_failure\":\"base64_invalid_length\",\"image_base64_characters\":17,\"image_decoded_bytes\":0}}");
+    var detail = HostSession.PaintFailureDetail(reply);
+    Assert(detail is not null && detail.Contains("image_decode_failure=base64_invalid_length", StringComparison.Ordinal) &&
+           detail.Contains("image_base64_characters=17", StringComparison.Ordinal),
+        "image payload rejections should report the native decode boundary in the runtime log");
 }
 
 static void CustomFreecamSurfaceIsAbsent()
@@ -397,10 +756,28 @@ static void NativeAutoMaterialDetectsEmissiveAndReportsLocalPacing()
            bridge.Contains("first_stroke_emissive", StringComparison.Ordinal),
         "Auto Detect must cover Paint, preserve an explicit Fill material, use the UE5.6 Emissive-aware pattern layout, and expose numeric candidates for runtime verification");
     Assert(bridge.Contains("tuning_auto_material && any_paint_region", StringComparison.Ordinal) &&
-           bridge.Contains("image_paint_enabled ? 0.0 : fill_metallic", StringComparison.Ordinal) &&
-           bridge.Contains("image_paint_enabled ? 1.0 : fill_roughness", StringComparison.Ordinal) &&
-           bridge.Contains("image_paint_enabled ? 0.0 : fill_emissive", StringComparison.Ordinal),
-        "normal Fill must retain manual PBR values while imported-image reset strokes explicitly clear emissive");
+           bridge.Contains("image_paint_background_metallic", StringComparison.Ordinal) &&
+           bridge.Contains("image_paint_background_roughness", StringComparison.Ordinal) &&
+           bridge.Contains("image_paint_background_emissive", StringComparison.Ordinal) &&
+           bridge.Contains("sample.image_background", StringComparison.Ordinal),
+        "normal Fill must retain manual PBR values while image paint distinguishes its committed layer and Background PBR values");
+    Assert(bridge.Contains("image_paint_brush_size_texels", StringComparison.Ordinal) &&
+           bridge.Contains("tuning_brush_size_texels = image_paint_brush_size_texels", StringComparison.Ordinal) &&
+           bridge.Contains("image_paint_color_compression_tolerance", StringComparison.Ordinal) &&
+           bridge.Contains("active_color_compression_tolerance", StringComparison.Ordinal),
+        "image paint must use its own committed Geometry settings instead of the standard Paint brush or compression tolerance");
+    Assert(bridge.Contains("image_guide_on_game_thread", StringComparison.Ordinal) &&
+           bridge.Contains("mesh_first_resolve_runtime_triangle_cache(ctx.component, live_profile)", StringComparison.Ordinal) &&
+           bridge.Contains("guide_cross_profile_pose_transfer", StringComparison.Ordinal) &&
+           bridge.Contains("mesh_first_skin_vertices(guide_profile", StringComparison.Ordinal) &&
+           bridge.Contains("guide_pose_validation_avg_error", StringComparison.Ordinal) &&
+           bridge.Contains("guide_target_profile_id", StringComparison.Ordinal) &&
+           bridge.Contains("component_position_samples", StringComparison.Ordinal) &&
+           bridge.Contains("guide_face_triangles", StringComparison.Ordinal) &&
+           bridge.Contains("guide_body_regions", StringComparison.Ordinal) &&
+           bridge.Contains("guide_component_bounds", StringComparison.Ordinal) &&
+           bridge.Contains("guide_reference_bounds", StringComparison.Ordinal),
+        "the Image guide must use the current RuntimePaintable mesh, refuse a bind-pose substitute, and report numerical face/body-region diagnostics");
     Assert(bridge.Contains("local_cpu_budget_us", StringComparison.Ordinal) &&
            bridge.Contains("local_render_target_write_budget", StringComparison.Ordinal) &&
            bridge.Contains("local_logical_sample_batch_limit", StringComparison.Ordinal),
@@ -792,82 +1169,119 @@ static void WebUiKeepsThemeColorOnReadonlyControls()
         "locking a previously focused themed control must blur it before keyboard input can change its visible value");
 }
 
-static void WebUiImagePickerPreviewsFitCropAndTransparency()
+static void WebUiImagePaintEditorUsesSavedTransaction()
 {
     var repository = FindRepositoryRoot();
     var index = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "index.html"));
     var app = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "app.js"));
     var styles = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "styles.css"));
+    var mainForm = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "MainForm.cs"));
+    var bridge = File.ReadAllText(Path.Combine(repository, "src", "native", "bridge", "bridge.cpp"));
 
-    Assert(index.Contains("id=\"image-picker-input\"", StringComparison.Ordinal) &&
-           index.Contains("accept=\".png,.jpg,.jpeg,image/png,image/jpeg\"", StringComparison.Ordinal),
-        "image picker should accept local PNG and JPEG files");
-    Assert(index.Contains("data-image-placement=\"fit\"", StringComparison.Ordinal) &&
-           index.Contains("data-image-placement=\"crop\"", StringComparison.Ordinal),
-        "image picker should expose Fit and Crop placement");
-    Assert(index.Contains("data-alpha-mode=\"skip\"", StringComparison.Ordinal) &&
-           index.Contains("data-alpha-mode=\"background\"", StringComparison.Ordinal),
-        "image picker should expose unpainted and background transparency choices");
-    Assert(index.IndexOf("id=\"image-picker-section\"", StringComparison.Ordinal) >
-           index.IndexOf("id=\"fill-section\"", StringComparison.Ordinal),
-        "image picker should appear below the Fill controls");
-    Assert(index.Contains(">Leave unpainted<", StringComparison.Ordinal) &&
-           !index.Contains("PNG only", StringComparison.Ordinal) &&
-           !index.Contains("How it works", StringComparison.Ordinal) &&
-           !index.Contains("Nothing leaves your computer", StringComparison.Ordinal) &&
-           index.Contains("transparent areas at the default body color", StringComparison.Ordinal) &&
-           index.IndexOf("image-picker-disclaimer", StringComparison.Ordinal) >
-           index.IndexOf("image-picker-background-row", StringComparison.Ordinal),
-        "image picker should use compact labels and explain repeat whole-body painting");
-    Assert(index.Contains("data-wrap-mode=\"base\"", StringComparison.Ordinal) &&
-           index.Contains("data-wrap-mode=\"meet\"", StringComparison.Ordinal) &&
-           index.Contains("data-wrap-mode=\"full\"", StringComparison.Ordinal) &&
-           index.Contains("data-image-count=\"1\"", StringComparison.Ordinal) &&
-           index.Contains("data-image-count=\"2\"", StringComparison.Ordinal) &&
-           index.Contains("data-mirror-mode=\"none\"", StringComparison.Ordinal) &&
-           index.Contains("data-mirror-mode=\"mirror\"", StringComparison.Ordinal) &&
-           index.Contains(">Multiple images<", StringComparison.Ordinal) &&
-           index.Contains("Choose image", StringComparison.Ordinal) &&
-           index.Contains("id=\"image-picker-reset-placement\"", StringComparison.Ordinal) &&
-           index.Contains("id=\"image-design-save\"", StringComparison.Ordinal) &&
-           index.Contains("id=\"image-design-load\"", StringComparison.Ordinal) &&
+    Assert(index.Contains("Paint settings", StringComparison.Ordinal) &&
+           index.Contains("data-settings-tab=\"image\">Image</button>", StringComparison.Ordinal) &&
+           index.Contains("id=\"image-preset-open\"", StringComparison.Ordinal) &&
+           index.Contains("id=\"image-preset-load\"", StringComparison.Ordinal) &&
+           index.Contains("id=\"image-preset-save\"", StringComparison.Ordinal) &&
+           !index.Contains("image-design-list", StringComparison.Ordinal) &&
+           !index.Contains("image-design-name", StringComparison.Ordinal),
+        "Image uses the Paint/Image tabs and file presets without a named design library");
+    Assert(index.Contains("id=\"image-file-input\"", StringComparison.Ordinal) &&
+           index.Contains("multiple hidden", StringComparison.Ordinal) &&
+           index.Contains("id=\"image-upload\"", StringComparison.Ordinal) &&
            index.Contains("id=\"image-layer-list\"", StringComparison.Ordinal) &&
            index.Contains("id=\"crop-editor-dialog\"", StringComparison.Ordinal) &&
-           index.Contains("id=\"crop-editor-selection\"", StringComparison.Ordinal) &&
-           index.Contains("multiple", StringComparison.Ordinal) &&
-           index.Contains("(or drop)", StringComparison.Ordinal) &&
-           !index.Contains("data-body-type=\"cube\"", StringComparison.Ordinal) &&
-           index.Contains("value=\"#BCBCBC\"", StringComparison.Ordinal),
-        "image picker should expose drag/drop, placement, wrapping, saved designs, and the default body gray");
-    Assert(app.Contains("URL.createObjectURL(file)", StringComparison.Ordinal) &&
-           app.Contains("URL.revokeObjectURL", StringComparison.Ordinal) &&
-           app.Contains("imagePickerMaximumBytes", StringComparison.Ordinal) &&
-           app.Contains("imagePickerMaximumEdge", StringComparison.Ordinal),
-        "image picker should preview locally and validate resource limits");
-    Assert(app.Contains("function armImagePaint()", StringComparison.Ordinal) &&
-           app.Contains("send(\"setImagePaint\"", StringComparison.Ordinal) &&
-           app.Contains("imagePaintMapWidth = 512", StringComparison.Ordinal) &&
-           app.Contains("function drawPlacedImage", StringComparison.Ordinal) &&
-           app.Contains("function buildWrapAtlas", StringComparison.Ordinal) &&
-           app.Contains("function renderWrapEditor", StringComparison.Ordinal) &&
-           app.Contains("function beginImageEditorDrag", StringComparison.Ordinal) &&
-           app.Contains("function bindImageDropTarget", StringComparison.Ordinal) &&
-           app.Contains("function syncMirroredLayer()", StringComparison.Ordinal) &&
-           app.Contains("MecchaCamouflageImageDesigns", StringComparison.Ordinal) &&
-           app.Contains("function saveCurrentImageDesign()", StringComparison.Ordinal) &&
-           app.Contains("function loadSelectedImageDesign()", StringComparison.Ordinal) &&
-           app.Contains("function addImagePickerFiles", StringComparison.Ordinal) &&
-           app.Contains("function openCropEditor", StringComparison.Ordinal) &&
-           app.Contains("function updateCropEditorZoom", StringComparison.Ordinal) &&
-           app.Contains("crop: image.crop ? clone(image.crop) : null", StringComparison.Ordinal) &&
-           app.Contains("generation !== imagePaintArmGeneration", StringComparison.Ordinal),
-        "image picker should arm the bounded four-panel atlas shown by its editor");
-    Assert(styles.Contains(".image-picker-preview canvas", StringComparison.Ordinal) &&
+           index.Contains("Body type", StringComparison.Ordinal) &&
+           index.Contains("id=\"image-paint-background\"", StringComparison.Ordinal) &&
+           !index.Contains("image-fit-canvas", StringComparison.Ordinal) &&
+           !index.Contains("image-crop-layer", StringComparison.Ordinal) &&
+           !index.Contains("image-wrap", StringComparison.Ordinal) &&
+           !index.Contains("image-mirror", StringComparison.Ordinal) &&
+           !index.Contains("image-status", StringComparison.Ordinal),
+        "Image keeps Upload global while per-layer controls own Wrap, Mirror, Fit, Crop, and Delete");
+    Assert(index.IndexOf("Paint background", StringComparison.Ordinal) > index.IndexOf("Background material", StringComparison.Ordinal) &&
+           !index.Contains("Transparent pixels", StringComparison.Ordinal) &&
+           index.Contains("image-brush-size", StringComparison.Ordinal) &&
+           index.Contains("image-color-compression-tolerance", StringComparison.Ordinal) &&
+           index.Contains("image-metallic", StringComparison.Ordinal) &&
+           index.Contains("image-background-metallic", StringComparison.Ordinal),
+        "Background uses an explicit Paint background checkbox while its material controls remain independent");
+    Assert(app.Contains("async function stageImageDesign(design)", StringComparison.Ordinal) &&
+           app.Contains("send(\"commitSettingsWithImage\"", StringComparison.Ordinal) &&
+           app.Contains("send(\"saveImagePreset\"", StringComparison.Ordinal) &&
+           app.Contains("send(\"loadImagePreset\"", StringComparison.Ordinal) &&
+           app.Contains("send(\"openImagePresetsFolder\"", StringComparison.Ordinal) &&
+           app.Contains("getLoadedImagePresetChunk", StringComparison.Ordinal) &&
+           app.Contains("getImageAssetChunk", StringComparison.Ordinal) &&
+           !app.Contains("commitImageDesign", StringComparison.Ordinal) &&
+           !app.Contains("listImageDesigns", StringComparison.Ordinal) &&
+           app.Contains("function imageResizeHandleAt", StringComparison.Ordinal) &&
+           app.Contains("beginImagePointerInteraction", StringComparison.Ordinal) &&
+           app.Contains("wrapAtlasSeam", StringComparison.Ordinal) &&
+           app.Contains("image-layer-tools", StringComparison.Ordinal) &&
+           app.Contains("openImageCropEditor(index)", StringComparison.Ordinal) &&
+           !app.Contains("drawTransparentPixelChecker", StringComparison.Ordinal) &&
+           !app.Contains("Unsaved Image Paint changes", StringComparison.Ordinal) &&
+           !app.Contains("Guide unavailable", StringComparison.Ordinal),
+        "GUI Save is the only active-state transaction; layer transforms, crop, and corner resizing stay draft-only without checkerboard serialization");
+    Assert(mainForm.Contains("case \"commitSettingsWithImage\"", StringComparison.Ordinal) &&
+           mainForm.Contains("case \"loadImagePreset\"", StringComparison.Ordinal) &&
+           mainForm.Contains("case \"saveImagePreset\"", StringComparison.Ordinal) &&
+           mainForm.Contains("OpenFileDialog", StringComparison.Ordinal) &&
+           mainForm.Contains("SaveFileDialog", StringComparison.Ordinal) &&
+           !mainForm.Contains("case \"commitImageDesign\"", StringComparison.Ordinal) &&
+           !mainForm.Contains("case \"listImageDesigns\"", StringComparison.Ordinal),
+        "native file dialogs own preset paths and the old library commands are absent");
+    Assert(styles.Contains(".image-preset-actions", StringComparison.Ordinal) &&
+           styles.Contains(".image-layer-row", StringComparison.Ordinal) &&
+           styles.Contains(".image-layer-tools", StringComparison.Ordinal) &&
+           styles.Contains(".image-layer-action", StringComparison.Ordinal) &&
+           styles.Contains(".image-background-section.disabled", StringComparison.Ordinal) &&
            styles.Contains("touch-action: none", StringComparison.Ordinal) &&
-           styles.Contains(".image-drop-button.drag-over", StringComparison.Ordinal) &&
-           styles.Contains(".crop-editor-selection", StringComparison.Ordinal) &&
-           styles.Contains(".image-picker-preview.checkerboard", StringComparison.Ordinal),
-        "image preview should expose the four-view canvas editor and visible transparency");
+           bridge.Contains("guide_atlas_triangles", StringComparison.Ordinal) &&
+           bridge.Contains("guide_runtime_triangles", StringComparison.Ordinal) &&
+           bridge.Contains("mesh_first_validate_runtime_guide_topology", StringComparison.Ordinal) &&
+           bridge.Contains("guide_seam_rejections", StringComparison.Ordinal) &&
+           bridge.Contains("GuideCubeEdgeBand", StringComparison.Ordinal) &&
+           bridge.Contains("const int check_count = num", StringComparison.Ordinal) &&
+           !bridge.Contains("image_guide_runtime_coordinates_untrusted", StringComparison.Ordinal),
+        "the compact editor keeps per-layer controls and native guide emission rejects unresolved atlas seams");
+}
+
+static void WebUiUsesPackagedReferenceGuides()
+{
+    var repository = FindRepositoryRoot();
+    var app = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "app.js"));
+    var mainForm = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "MainForm.cs"));
+    var bridge = File.ReadAllText(Path.Combine(repository, "src", "native", "bridge", "bridge.cpp"));
+    var contract = File.ReadAllText(Path.Combine(repository, "src", "native", "include", "runtime_contract.hpp"));
+
+    Assert(app.Contains("const IMAGE_GUIDE_PROFILE_FILES", StringComparison.Ordinal) &&
+           app.Contains("fetch(profilePath", StringComparison.Ordinal) &&
+           app.Contains("paintman.mesh-profile-v2.json", StringComparison.Ordinal) &&
+           app.Contains("paintman_cube.mesh-profile-v2.json", StringComparison.Ordinal) &&
+           app.Contains("buildCubeCanonicalImageGuideCanvas", StringComparison.Ordinal) &&
+           app.Contains("cubeCanonicalNaturalStandPositions", StringComparison.Ordinal) &&
+           app.Contains("drawCubeCanonicalSkeleton", StringComparison.Ordinal) &&
+           !app.Contains("send(\"getImageGuide\"", StringComparison.Ordinal) &&
+           !app.Contains("Live pose guide", StringComparison.Ordinal),
+        "the Image editor must render its fixed guides from packaged profiles, and Cube must show its canonical natural-standing pose and skeleton without bridge or game state");
+    Assert(mainForm.Contains("mesh-profiles", StringComparison.Ordinal),
+        "the Web host must continue serving the packaged mesh profiles to the Image editor");
+    Assert(bridge.Contains("mesh_first_build_cube_canonical_image_atlas", StringComparison.Ordinal) &&
+           bridge.Contains("mesh_first_map_cube_canonical_sample", StringComparison.Ordinal) &&
+           bridge.Contains("canonical_natural_stand_v1", StringComparison.Ordinal) &&
+           contract.Contains("map_cube_canonical_image_coordinate", StringComparison.Ordinal),
+        "Cube image paint must sample the same canonical natural-standing projection as its editor guide");
+    Assert(app.Contains("cubeReferenceComponentTransforms", StringComparison.Ordinal) &&
+           app.Contains("cubeReferenceVertices", StringComparison.Ordinal) &&
+           app.Contains("ImageReferencePose", StringComparison.Ordinal) &&
+           bridge.Contains("image_reference_component_transforms", StringComparison.Ordinal) &&
+           bridge.Contains("image_reference_vertices", StringComparison.Ordinal) &&
+           bridge.Contains("capture_reference_pose", StringComparison.Ordinal) &&
+           !app.Contains("CUBE_CANONICAL_ARM_LOWERING_DEGREES", StringComparison.Ordinal) &&
+           !bridge.Contains("CubeCanonicalArmLoweringDegrees", StringComparison.Ordinal),
+        "the cube editor and native mapper must consume one fixed captured profile pose, never an arbitrary arm angle");
 }
 
 static void WebUiRendersPassProgressAndTotalEta()
@@ -946,6 +1360,9 @@ static void HotkeyValidationRejectsDuplicates()
 
     var invalid = new HotkeySet("A", "F2", "F3", "F4");
     Assert(!invalid.TryValidate(out _), "non-function hotkeys should be rejected");
+
+    var imageDuplicate = new HotkeySet("F1", "F2", "F3", "F4", "F1", "F6", "F7", "F8");
+    Assert(!imageDuplicate.TryValidate(out _), "image hotkeys should not collide with the standard F1-F4 commands");
 }
 
 static void HostSessionResetRestoresDefault()
@@ -2434,6 +2851,29 @@ static void ReleaseBuildExcludesResearchRunnerAndDevTools()
         "research command dispatch and DevTools must be unavailable in a normal release build");
     Assert(researchBuild.Contains("/p:MecchaResearchBuild=true", StringComparison.Ordinal),
         "the explicit research build must opt in to the runner");
+}
+
+static void DevelopmentBuildsUseIsolatedVersionScopes()
+{
+    var root = FindRepositoryRoot();
+    var makefile = File.ReadAllText(Path.Combine(root, "Makefile"));
+    var build = File.ReadAllText(Path.Combine(root, "scripts", "build.ps1"));
+
+    Assert(makefile.Contains("VERSION := $(shell", StringComparison.Ordinal) &&
+           makefile.Contains("git status --porcelain --untracked-files=normal", StringComparison.Ordinal) &&
+           makefile.Contains("-build-%s", StringComparison.Ordinal),
+        "make build must allocate one immutable identity for each development invocation");
+    Assert(build.Contains("Only a clean, exact tag is a stable release identity", StringComparison.Ordinal) &&
+           build.Contains("-build-$([DateTime]::UtcNow.ToString", StringComparison.Ordinal),
+        "direct build.ps1 invocations must use the same version-isolation rule");
+
+    using var temp = new TempHome();
+    var first = new AppPaths("dev-build-a");
+    var second = new AppPaths("dev-build-b");
+    Directory.CreateDirectory(first.ImagePresetsDirectory);
+    File.WriteAllText(Path.Combine(first.ImagePresetsDirectory, "marker"), "first build");
+    Assert(!File.Exists(Path.Combine(second.ImagePresetsDirectory, "marker")),
+        "distinct build identities must not share Image preset storage");
 }
 
 static string FindRepositoryRoot()

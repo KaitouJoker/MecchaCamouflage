@@ -1,4 +1,5 @@
 using MecchaCamouflage.Controller;
+using System.Text.Json;
 
 namespace MecchaCamouflage.WebHost;
 
@@ -9,6 +10,11 @@ internal static class Program
     {
         var paths = new MecchaCamouflage.Core.AppPaths(VersionInfo.Current);
         DiagnosticsState.Initialize(paths, VersionInfo.Current);
+        if (args.Any(argument => string.Equals(argument, "--capture-cube-reference-pose", StringComparison.Ordinal)))
+        {
+            Environment.ExitCode = CaptureCubeReferencePoseAsync().GetAwaiter().GetResult();
+            return;
+        }
 #if MECCHA_RESEARCH_BUILD
         if (ResearchRunner.IsRequested(args))
         {
@@ -49,6 +55,33 @@ internal static class Program
                 "Meccha Camouflage",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
+        }
+    }
+
+    private static async Task<int> CaptureCubeReferencePoseAsync()
+    {
+        var session = new HostSession(VersionInfo.Current);
+        try
+        {
+            var snapshot = await session.CaptureCubeReferencePoseAsync();
+            Console.Out.WriteLine(JsonSerializer.Serialize(snapshot));
+            return snapshot.Success ? 0 : 1;
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine("Cube reference pose capture failed: " + exception.Message);
+            return 1;
+        }
+        finally
+        {
+            try
+            {
+                await session.Runtime.ShutdownAsync();
+            }
+            catch
+            {
+                // Capture cleanup must not hide its result.
+            }
         }
     }
 
