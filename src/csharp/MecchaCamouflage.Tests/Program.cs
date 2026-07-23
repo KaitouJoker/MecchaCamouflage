@@ -15,7 +15,8 @@ var tests = new List<(string Name, Action Run)>
     ("app defaults use 99 percent opacity", AppDefaultsUse99PercentOpacity),
     ("payload sends a single brush and compression tolerance", PayloadSendsSingleBrushPipeline),
     ("image payload carries a full canonical canvas", ImagePayloadCarriesFullCanonicalCanvas),
-    ("image transparency skips fill and paint", ImageTransparencySkipsFillAndPaint),
+    ("image transparency fills regions before painting opaque pixels", ImageTransparencyFillsRegionsBeforePaintingOpaquePixels),
+    ("image region skip suppresses only Fill", ImageRegionSkipSuppressesOnlyFill),
     ("native warms an unavailable triangle cache before it blocks paint", NativeWarmsUnavailableTriangleCache),
     ("native accepts verified direct triangle order despite duplicate UV islands", NativeAcceptsVerifiedDirectTriangleOrder),
     ("native image paint resolves its derived reference profile from the raw profile", NativeImagePaintResolvesDerivedReferenceProfile),
@@ -71,6 +72,7 @@ var tests = new List<(string Name, Action Run)>
     ("web ui keeps a running paint editable as a next-run draft", WebUiKeepsRunningPaintEditableAsNextRunDraft),
     ("web ui preserves image actions during paint snapshots", WebUiPreservesImageActionsDuringPaintSnapshots),
     ("web ui keeps mesh guides visible with imported images", WebUiKeepsMeshGuidesVisibleWithImportedImages),
+    ("web ui rebuilds image guides when the language changes", WebUiRebuildsImageGuidesWhenLanguageChanges),
     ("web ui separates setting and log tabs", WebUiSeparatesSettingAndLogTabs),
     ("web ui reports the WebView zoom factor in the footer", WebUiReportsWebViewZoomFactorInFooter),
     ("web ui localizes every settings tab", WebUiLocalizesEverySettingsTab),
@@ -677,22 +679,41 @@ static void ImagePayloadCarriesFullCanonicalCanvas()
         "triangle-cache failures should log the warm-up boundary needed to diagnose a game-layout change");
 }
 
-static void ImageTransparencySkipsFillAndPaint()
+static void ImageTransparencyFillsRegionsBeforePaintingOpaquePixels()
 {
     var repository = FindRepositoryRoot();
     var bridge = File.ReadAllText(Path.Combine(
         repository, "src", "native", "bridge", "bridge.cpp"));
     var app = File.ReadAllText(Path.Combine(
         repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "app.js"));
+    var session = File.ReadAllText(Path.Combine(
+        repository, "src", "csharp", "MecchaCamouflage.Controller", "HostSession.cs"));
 
-    Assert(bridge.Contains("if (mode == MeshFirstRegionMode::Fill && !sample.image_transparent_skip)", StringComparison.Ordinal) &&
-           bridge.Contains("append_candidate(MeshFirstRegionMode::Fill);\n                    append_candidate(MeshFirstRegionMode::Paint);", StringComparison.Ordinal) &&
-           !bridge.Contains("append_candidate(MeshFirstRegionMode::Fill);\n                    if (!sample.image_transparent_skip)", StringComparison.Ordinal),
-        "Image alpha=0 must suppress both the Fill base and the imported-image Paint pass");
-    Assert(app.Contains("if (pixels[index + 3] !== 255)", StringComparison.Ordinal) &&
-           !app.Contains("IMAGE_ALPHA_THRESHOLD", StringComparison.Ordinal) &&
-           bridge.Contains("image_paint_alpha_mode == \"skip\" && alpha == 0", StringComparison.Ordinal),
-        "only fully opaque imported pixels may reach native Image Paint; every semi-transparent pixel must remain skipped");
+    Assert(bridge.Contains("if (mode == MeshFirstRegionMode::Fill)\n                {\n                    append_candidate(MeshFirstRegionMode::Fill);\n                }\n                if (!sample.image_transparent_skip)\n                {\n                    append_candidate(MeshFirstRegionMode::Paint);", StringComparison.Ordinal) &&
+           !bridge.Contains("if (mode == MeshFirstRegionMode::Fill && !sample.image_transparent_skip)", StringComparison.Ordinal),
+        "Image region Fill must cover a face even where its imported image is transparent; only Paint may skip transparent pixels");
+    Assert(app.Contains("const IMAGE_ALPHA_THRESHOLD = 128;", StringComparison.Ordinal) &&
+           app.Contains("if (pixels[index + 3] < IMAGE_ALPHA_THRESHOLD)", StringComparison.Ordinal) &&
+           bridge.Contains("image_paint_alpha_mode == \"skip\" && alpha < 128", StringComparison.Ordinal),
+        "transparent imported pixels must preserve the region Fill base while ordinary antialiased source pixels retain their image color");
+    Assert(session.Contains("image_fill_regions={Field(metadata, \"image_fill_region_count\")}", StringComparison.Ordinal),
+        "the Image Paint log must report its own four-face Fill count, not the unrelated normal Paint setting count");
+}
+
+static void ImageRegionSkipSuppressesOnlyFill()
+{
+    var repository = FindRepositoryRoot();
+    var bridge = File.ReadAllText(Path.Combine(repository, "src", "native", "bridge", "bridge.cpp"));
+    var markup = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "index.html"));
+
+    Assert(bridge.Contains("const bool replay_front_enabled = image_paint_enabled ||", StringComparison.Ordinal) &&
+           !bridge.Contains("if (image_paint_enabled && any_image_fill_region)", StringComparison.Ordinal) &&
+           bridge.Contains("if (mode == MeshFirstRegionMode::Fill)\n                {\n                    append_candidate(MeshFirstRegionMode::Fill);\n                }\n                if (!sample.image_transparent_skip)\n                {\n                    append_candidate(MeshFirstRegionMode::Paint);", StringComparison.Ordinal),
+        "an Image design must Paint its opaque pixels even when every Fill region is skipped; Fill and image Paint are separate passes");
+    var fillSection = markup.IndexOf("id=\"image-fill-section\"", StringComparison.Ordinal);
+    var fillRegion = markup.IndexOf("data-image-region=\"frontRegionMode\"", StringComparison.Ordinal);
+    Assert(fillSection >= 0 && fillRegion > fillSection,
+        "Image Fill regions must appear after the Fill material group because they control only that base pass");
 }
 
 static void NativeWarmsUnavailableTriangleCache()
@@ -1549,6 +1570,17 @@ static void WebUiKeepsMeshGuidesVisibleWithImportedImages()
         "the fixed mesh-and-skeleton guide must remain visible while an image is being placed");
 }
 
+static void WebUiRebuildsImageGuidesWhenLanguageChanges()
+{
+    var app = File.ReadAllText(Path.Combine(
+        FindRepositoryRoot(), "src", "csharp", "MecchaCamouflage.WebHost", "web", "app.js"));
+
+    Assert(app.Contains("let imageGuideCanvasLocale = \"\";", StringComparison.Ordinal) &&
+           app.Contains("imageGuideCanvasCache.clear();", StringComparison.Ordinal) &&
+           app.Contains("loadImageGuideProfile(imageEditor.bodyType).catch", StringComparison.Ordinal),
+        "a language change must rebuild the rasterized canvas guide so its face labels use the selected locale");
+}
+
 static void WebUiSeparatesSettingAndLogTabs()
 {
     var repository = FindRepositoryRoot();
@@ -1604,7 +1636,7 @@ static void WebUiLocalizesEverySettingsTab()
     Assert(markup.Contains("data-i18n=\"settings.paint\"", StringComparison.Ordinal) &&
            markup.Contains("data-i18n=\"settings.image\"", StringComparison.Ordinal) &&
            markup.Contains("data-i18n=\"settings.app\"", StringComparison.Ordinal) &&
-           app.Contains("document.documentElement.lang = activeLocale();", StringComparison.Ordinal),
+           app.Contains("document.documentElement.lang = locale;", StringComparison.Ordinal),
         "the Paint, Image, and Application tabs must update with the selected UI language");
     foreach (var locale in LocalizationCatalog.SupportedLocales)
     {

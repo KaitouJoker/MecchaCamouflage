@@ -47,6 +47,7 @@ const IMAGE_CANVAS_WIDTH = 1024;
 const IMAGE_CANVAS_HEIGHT = 512;
 const IMAGE_SOURCE_MAXIMUM_BYTES = 12 * 1024 * 1024;
 const IMAGE_TOTAL_SOURCE_MAXIMUM_BYTES = 64 * 1024 * 1024;
+const IMAGE_ALPHA_THRESHOLD = 128;
 const IMAGE_TRANSFER_CHUNK_CHARACTERS = 128 * 1024;
 const IMAGE_RESIZE_HANDLE_SIZE = 20;
 const IMAGE_GUIDE_PROFILE_FILES = Object.freeze({
@@ -55,6 +56,7 @@ const IMAGE_GUIDE_PROFILE_FILES = Object.freeze({
 });
 const imageGuideCanvasCache = new Map();
 const imageGuideProfileLoads = new Map();
+let imageGuideCanvasLocale = "";
 let activeSettingsTab = "paint";
 let imageEditor = null;
 let imageCropEditor = null;
@@ -159,7 +161,16 @@ function i18n(key, ...args) {
 }
 
 function applyI18n() {
-  document.documentElement.lang = activeLocale();
+  const locale = activeLocale();
+  document.documentElement.lang = locale;
+  if (imageGuideCanvasLocale !== locale) {
+    imageGuideCanvasLocale = locale;
+    imageGuideCanvasCache.clear();
+    if (imageEditor?.guideRequested) {
+      imageEditor.guideCanvas = null;
+      loadImageGuideProfile(imageEditor.bodyType).catch(error => showError(error.message || String(error)));
+    }
+  }
   for (const element of document.querySelectorAll("[data-i18n]")) {
     element.textContent = i18n(element.dataset.i18n);
   }
@@ -1352,6 +1363,7 @@ function loadReferenceImageGuideProfile(bodyType) {
 async function loadImageGuideProfile(bodyType) {
   const normalized = normalizeImageGuideBodyType(bodyType);
   if (!imageEditor || imageEditor.bodyType !== normalized) return;
+  const requestedGuideLocale = activeLocale();
   const cached = imageGuideCanvasCache.get(normalized);
   imageEditor.guideCanvas = cached?.canvas || null;
   imageEditor.guideRequested = true;
@@ -1363,8 +1375,8 @@ async function loadImageGuideProfile(bodyType) {
     const profile = await loadReferenceImageGuideProfile(normalized);
     const canvas = cached?.canvas || buildReferenceImageGuideCanvas(profile, normalized);
     const profileState = profile?.ProfileId || `${normalized} reference profile`;
+    if (!imageEditor || imageEditor.bodyType !== normalized || activeLocale() !== requestedGuideLocale) return;
     imageGuideCanvasCache.set(normalized, { canvas, profileState });
-    if (!imageEditor || imageEditor.bodyType !== normalized) return;
     imageEditor.guideCanvas = canvas;
     imageEditor.guideProfileState = profileState;
     imageEditor.guideError = "";
@@ -1983,7 +1995,7 @@ function buildImageDesign() {
   drawImageComposition();
   const pixels = imageEditor.compositionContext.getImageData(0, 0, IMAGE_CANVAS_WIDTH, IMAGE_CANVAS_HEIGHT).data;
   for (let index = 0; index < pixels.length; index += 4) {
-    if (pixels[index + 3] !== 255) {
+    if (pixels[index + 3] < IMAGE_ALPHA_THRESHOLD) {
       pixels[index] = 0; pixels[index + 1] = 0; pixels[index + 2] = 0; pixels[index + 3] = 0;
     } else {
       pixels[index + 3] = 255;

@@ -1353,7 +1353,8 @@ public sealed class HostSession
                 "Image Paint native: " +
                 $"active_profile={Field(metadata, "profile_id")} | body_type={Field(metadata, "image_paint_body_type")} | " +
                 $"assignments={Field(metadata, "image_paint_assignments")} | transparent_skips={Field(metadata, "image_paint_transparent_skips")} | " +
-                $"fill_regions={Field(metadata, "fill_region_count")} | cube_edge_assignments={Field(metadata, "image_paint_cube_edge_assignments")} | " +
+                $"image_fill_regions={Field(metadata, "image_fill_region_count")} | normal_fill_regions={Field(metadata, "fill_region_count")} | " +
+                $"cube_edge_assignments={Field(metadata, "image_paint_cube_edge_assignments")} | " +
                 $"cube_side_assignments={Field(metadata, "image_paint_cube_side_assignments")} | revision={Field(metadata, "image_paint_revision")} | " +
                 $"metallic={Field(metadata, "image_paint_metallic")} | roughness={Field(metadata, "image_paint_roughness")} | emissive={Field(metadata, "image_paint_emissive")} | " +
                 $"fill_metallic={Field(metadata, "image_paint_fill_metallic")} | fill_roughness={Field(metadata, "image_paint_fill_roughness")} | " +

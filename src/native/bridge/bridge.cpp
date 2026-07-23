@@ -26,7 +26,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
-#include <tuple>
+#include <tuple>l
 #include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
@@ -11524,22 +11524,19 @@ namespace
         const bool enable_front = front_region_mode == MeshFirstRegionMode::Paint;
         const bool enable_side = side_region_mode == MeshFirstRegionMode::Paint;
         const bool enable_back = back_region_mode == MeshFirstRegionMode::Paint;
-        const bool image_front_enabled = image_front_region_mode != MeshFirstRegionMode::Skip;
-        const bool image_right_enabled = image_right_region_mode != MeshFirstRegionMode::Skip;
-        const bool image_back_enabled = image_back_region_mode != MeshFirstRegionMode::Skip;
-        const bool image_left_enabled = image_left_region_mode != MeshFirstRegionMode::Skip;
-        const bool replay_front_enabled = image_paint_enabled
-                                              ? image_front_enabled
-                                              : front_region_mode != MeshFirstRegionMode::Skip;
-        const bool replay_side_enabled = image_paint_enabled
-                                             ? image_right_enabled || image_left_enabled
-                                             : side_region_mode != MeshFirstRegionMode::Skip;
-        const bool replay_back_enabled = image_paint_enabled
-                                             ? image_back_enabled
-                                             : back_region_mode != MeshFirstRegionMode::Skip;
+        const bool image_front_fill = image_front_region_mode == MeshFirstRegionMode::Fill;
+        const bool image_right_fill = image_right_region_mode == MeshFirstRegionMode::Fill;
+        const bool image_back_fill = image_back_region_mode == MeshFirstRegionMode::Fill;
+        const bool image_left_fill = image_left_region_mode == MeshFirstRegionMode::Fill;
+        // Image Regions select whether the base Fill material is applied. They
+        // never suppress opaque imported image pixels, so an all-Skip design
+        // still paints the atlas without a Fill pass.
+        const bool replay_front_enabled = image_paint_enabled || front_region_mode != MeshFirstRegionMode::Skip;
+        const bool replay_side_enabled = image_paint_enabled || side_region_mode != MeshFirstRegionMode::Skip;
+        const bool replay_back_enabled = image_paint_enabled || back_region_mode != MeshFirstRegionMode::Skip;
         const bool any_paint_region = enable_front || enable_side || enable_back;
-        const bool any_image_fill_region = image_front_enabled || image_right_enabled ||
-                                           image_back_enabled || image_left_enabled;
+        const bool any_image_fill_region = image_front_fill || image_right_fill ||
+                                           image_back_fill || image_left_fill;
         const bool preview_only = json_bool_field(request, "preview_only", false);
         const bool unpreview_only = json_bool_field(request, "unpreview_only", false);
         const bool research_artifacts = json_bool_field(request, "research_artifacts", false);
@@ -11702,10 +11699,10 @@ namespace
         metadata += ",\"skip_region_count\":" + std::to_string((front_region_mode == MeshFirstRegionMode::Skip ? 1 : 0) +
                                                                (side_region_mode == MeshFirstRegionMode::Skip ? 1 : 0) +
                                                                (back_region_mode == MeshFirstRegionMode::Skip ? 1 : 0));
-        metadata += ",\"image_fill_region_count\":" + std::to_string((image_front_enabled ? 1 : 0) +
-                                                                      (image_right_enabled ? 1 : 0) +
-                                                                      (image_back_enabled ? 1 : 0) +
-                                                                      (image_left_enabled ? 1 : 0));
+        metadata += ",\"image_fill_region_count\":" + std::to_string((image_front_fill ? 1 : 0) +
+                                                                      (image_right_fill ? 1 : 0) +
+                                                                      (image_back_fill ? 1 : 0) +
+                                                                      (image_left_fill ? 1 : 0));
         metadata += ",\"brush_pipeline\":\"fill_single_brush\"";
         metadata += ",\"brush_size_texels\":" + std::to_string(tuning_brush_size_texels);
         metadata += ",\"coverage_step_texels\":" + std::to_string(tuning_brush_size_texels);
@@ -12483,7 +12480,7 @@ namespace
         int research_constant_paint_color_assignments = 0;
         const bool mesh_capture_required = any_paint_region && !research_force_paint_color && !image_paint_enabled;
         metadata += ",\"mesh_capture_required\":" + std::string(json_bool(mesh_capture_required));
-        if (image_paint_enabled && any_image_fill_region)
+        if (image_paint_enabled)
         {
             capture.failure = "skipped_imported_image";
             metadata += ",\"mesh_capture_skipped\":true";
@@ -12613,7 +12610,7 @@ namespace
                 const auto pixel = (static_cast<std::size_t>(y) * static_cast<std::size_t>(image_paint_width) + static_cast<std::size_t>(x)) * 4;
                 const auto alpha = image_paint_rgba[pixel + 3];
                 sample.unsafe = false;
-                if ((image_paint_alpha_mode == "skip" && alpha == 0) ||
+                if ((image_paint_alpha_mode == "skip" && alpha < 128) ||
                     (image_paint_alpha_mode == "background" && alpha == 254))
                 {
                     sample.image_transparent_skip = true;
@@ -12908,12 +12905,16 @@ namespace
             };
             if (image_paint_enabled)
             {
-                // An Image design never paints transparent texels. Fill supplies
-                // the material for opaque imported pixels only; both passes skip
-                // alpha=0 so a PNG's transparent background remains untouched.
-                if (mode == MeshFirstRegionMode::Fill && !sample.image_transparent_skip)
+                // Region Fill establishes the base material for its complete
+                // atlas face. The imported Image Paint pass then overlays only
+                // fully opaque pixels, leaving transparent image pixels on the
+                // configured Fill base instead of leaving old mesh paint behind.
+                if (mode == MeshFirstRegionMode::Fill)
                 {
                     append_candidate(MeshFirstRegionMode::Fill);
+                }
+                if (!sample.image_transparent_skip)
+                {
                     append_candidate(MeshFirstRegionMode::Paint);
                 }
             }
