@@ -191,7 +191,6 @@ a:hover {
   flex-direction: column;
 }
 
-.sub-panel,
 .action-bar,
 .log-tabs {
   border-color: var(--hairline);
@@ -204,7 +203,7 @@ a:hover {
   top: 0;
   z-index: 3;
   height: 36px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   border-bottom: 1px solid var(--hairline);
   background: var(--surface-low);
 }
@@ -415,13 +414,6 @@ body.editing #fill-section.disabled .field > span,
 body.editing #image-fill-section.disabled .group-title,
 body.editing #image-fill-section.disabled .field > span {
   color: var(--muted);
-}
-
-.sub-panel {
-  flex: 0 0 auto;
-  margin-top: auto;
-  border-top: 1px solid var(--hairline);
-  padding: 12px;
 }
 
 .image-settings-stack {
@@ -700,11 +692,11 @@ body.editing .image-choice-list > strong {
 }
 
 .log-tabs {
-  display: flex;
+  display: grid;
+  grid-template-columns: 2fr 1fr;
   height: 34px;
   flex: 0 0 auto;
   align-items: stretch;
-  justify-content: space-between;
   border-bottom: 1px solid var(--hairline);
 }
 
@@ -737,15 +729,25 @@ body.editing .image-choice-list > strong {
 }
 
 .log-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding-right: 8px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-width: 0;
 }
 
 .log-actions button {
-  height: 26px;
+  width: 100%;
+  min-width: 0;
+  height: 33px;
+  border-width: 0 0 2px;
+  border-radius: 0;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
   font: 700 11px/13px var(--font-mono);
+}
+
+.log-actions button + button {
+  border-left: 1px solid var(--hairline);
 }
 
 .logs {

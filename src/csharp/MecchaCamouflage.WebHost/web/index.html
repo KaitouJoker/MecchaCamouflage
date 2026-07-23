@@ -14,6 +14,7 @@
         <div class="settings-tabs" role="tablist" aria-label="Settings sections">
           <button class="settings-tab active" type="button" data-settings-tab="paint">Paint settings</button>
           <button class="settings-tab" type="button" data-settings-tab="image">Image settings</button>
+          <button class="settings-tab" type="button" data-settings-tab="application">Application Settings</button>
         </div>
 
         <div class="panel-scroll">
@@ -180,10 +181,11 @@
                 </div>
               </div>
             </section>
-          </div>
 
-          <div class="sub-panel">
-            <div class="setting-grid app-grid">
+            <section class="settings-tab-panel" data-settings-panel="application" hidden>
+              <div class="group">
+                <div class="group-title">Application</div>
+                <div class="setting-grid app-grid">
               <label class="field app-wide">
                 <span data-i18n="language">Language</span>
                 <div class="select-wrap">
@@ -210,7 +212,11 @@
                   <input id="opacity-number" class="setting-control range-number" disabled type="number" min="35" max="100" step="1">
                 </div>
               </label>
-              <div class="hotkey-list app-wide">
+                </div>
+              </div>
+              <div class="group">
+                <div class="group-title">Hotkeys</div>
+                <div class="hotkey-list">
                 <div class="hotkey-row">
                   <span data-i18n="start.hotkey">Start hotkey</span>
                   <input id="start-hotkey" class="setting-control mono-input" disabled type="text" readonly>
@@ -252,7 +258,8 @@
                   <button class="record-hotkey" type="button" disabled data-hotkey-key="app.imageStopHotkey" data-hotkey-input="image-stop-hotkey" data-i18n="button.record">Record</button>
                 </div>
               </div>
-            </div>
+              </div>
+            </section>
           </div>
         </div>
 
@@ -292,7 +299,7 @@
       <span><span data-i18n="footer.bridge">BRIDGE</span>: <b id="footer-bridge" class="status-token">-</b></span>
     </div>
     <div>
-      <a href="https://github.com/acentrist/MecchaCamouflage/blob/main/LICENSE.txt" data-i18n="link.license">License</a>
+      <span id="footer-zoom">100%</span>
       <span>|</span>
       <a href="https://github.com/acentrist/MecchaCamouflage" data-i18n="link.github">GitHub</a>
       <span>|</span>

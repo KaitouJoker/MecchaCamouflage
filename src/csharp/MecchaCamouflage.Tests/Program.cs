@@ -72,6 +72,7 @@ var tests = new List<(string Name, Action Run)>
     ("web ui preserves image actions during paint snapshots", WebUiPreservesImageActionsDuringPaintSnapshots),
     ("web ui keeps mesh guides visible with imported images", WebUiKeepsMeshGuidesVisibleWithImportedImages),
     ("web ui separates setting and log tabs", WebUiSeparatesSettingAndLogTabs),
+    ("web ui reports the WebView zoom factor in the footer", WebUiReportsWebViewZoomFactorInFooter),
     ("web ui uses packaged reference guides without a game connection", WebUiUsesPackagedReferenceGuides),
     ("web UI keeps theme color on readonly range and checkbox controls", WebUiKeepsThemeColorOnReadonlyControls),
     ("web ui renders pass progress and total eta", WebUiRendersPassProgressAndTotalEta),
@@ -1370,6 +1371,8 @@ static void WebUiImagePaintEditorUsesSavedTransaction()
 
     Assert(index.Contains("Paint settings", StringComparison.Ordinal) &&
            index.Contains("data-settings-tab=\"image\">Image settings</button>", StringComparison.Ordinal) &&
+           index.Contains("data-settings-tab=\"application\">Application Settings</button>", StringComparison.Ordinal) &&
+           index.Contains("data-settings-panel=\"application\" hidden", StringComparison.Ordinal) &&
            index.Contains("class=\"image-design-action-grid\"", StringComparison.Ordinal) &&
            !index.Contains("id=\"image-preset-open\"", StringComparison.Ordinal) &&
            index.Contains("id=\"image-preset-load\"", StringComparison.Ordinal) &&
@@ -1380,6 +1383,17 @@ static void WebUiImagePaintEditorUsesSavedTransaction()
            !index.Contains("image-design-list", StringComparison.Ordinal) &&
            !index.Contains("image-design-name", StringComparison.Ordinal),
         "Image uses the Paint/Image tabs and file presets without a named design library");
+    var applicationPanelStart = index.IndexOf("data-settings-panel=\"application\"", StringComparison.Ordinal);
+    var applicationPanelEnd = index.IndexOf("</section>", applicationPanelStart, StringComparison.Ordinal);
+    Assert(applicationPanelStart >= 0 &&
+           applicationPanelEnd > applicationPanelStart &&
+           index.IndexOf("id=\"language\"", applicationPanelStart, StringComparison.Ordinal) < applicationPanelEnd &&
+           index.IndexOf("id=\"theme-color\"", applicationPanelStart, StringComparison.Ordinal) < applicationPanelEnd &&
+           index.IndexOf("id=\"always-on-top\"", applicationPanelStart, StringComparison.Ordinal) < applicationPanelEnd &&
+           index.IndexOf("id=\"opacity\"", applicationPanelStart, StringComparison.Ordinal) < applicationPanelEnd &&
+           index.IndexOf("class=\"hotkey-list", applicationPanelStart, StringComparison.Ordinal) < applicationPanelEnd &&
+           !index.Contains("class=\"sub-panel\"", StringComparison.Ordinal),
+        "application controls must be grouped in the Application Settings tab instead of a separate scrolling sub-panel");
     Assert(index.Contains("id=\"image-file-input\"", StringComparison.Ordinal) &&
            index.Contains("multiple hidden", StringComparison.Ordinal) &&
            index.Contains("id=\"image-upload\"", StringComparison.Ordinal) &&
@@ -1540,13 +1554,38 @@ static void WebUiSeparatesSettingAndLogTabs()
         "the Upload, Load preset, and Save preset controls must use the Image Design group title");
     Assert(styles.Contains(".settings-tab + .settings-tab", StringComparison.Ordinal) &&
            styles.Contains(".tab + .tab", StringComparison.Ordinal) &&
+           styles.Contains("grid-template-columns: repeat(3, minmax(0, 1fr));", StringComparison.Ordinal) &&
            styles.Contains("border-left: 1px solid var(--hairline);", StringComparison.Ordinal),
-        "settings tabs and log filters must have a visible divider between adjacent controls");
+        "the three settings tabs and log filters must have a visible divider between adjacent controls");
     Assert(styles.Contains(".tabs {\n  display: grid;", StringComparison.Ordinal) &&
            styles.Contains("grid-template-columns: repeat(4, minmax(0, 1fr));", StringComparison.Ordinal) &&
            styles.Contains("border-right: 1px solid var(--hairline);", StringComparison.Ordinal) &&
            styles.Contains(".tab {\n  width: 100%;", StringComparison.Ordinal),
         "the four log filters must share the available width equally and the Error filter must have a right divider");
+    Assert(styles.Contains(".log-tabs {\n  display: grid;", StringComparison.Ordinal) &&
+           styles.Contains("grid-template-columns: 2fr 1fr;", StringComparison.Ordinal) &&
+           styles.Contains(".log-actions {\n  display: grid;", StringComparison.Ordinal) &&
+           styles.Contains(".log-actions button + button", StringComparison.Ordinal),
+        "log actions must occupy two more equal tab-sized cells with their own divider");
+}
+
+static void WebUiReportsWebViewZoomFactorInFooter()
+{
+    var repository = FindRepositoryRoot();
+    var markup = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "index.html"));
+    var app = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "app.js"));
+    var mainForm = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "MainForm.cs"));
+
+    Assert(markup.Contains("id=\"footer-zoom\">100%</span>", StringComparison.Ordinal) &&
+           !markup.Contains("blob/main/LICENSE.txt", StringComparison.Ordinal) &&
+           markup.Contains("https://github.com/acentrist/MecchaCamouflage", StringComparison.Ordinal),
+        "the footer must replace the redundant License link with the current WebView zoom percentage");
+    Assert(app.Contains("message.name === \"zoomChanged\"", StringComparison.Ordinal) &&
+           app.Contains("renderFooterZoom(message.data?.percent);", StringComparison.Ordinal),
+        "the page must render zoom updates received from the host");
+    Assert(mainForm.Contains("ZoomFactorChanged +=", StringComparison.Ordinal) &&
+           mainForm.Contains("PostEvent(\"zoomChanged\", new { percent", StringComparison.Ordinal),
+        "the host must send its actual WebView2 ZoomFactor to the footer");
 }
 
 static void WebUiUsesPackagedReferenceGuides()

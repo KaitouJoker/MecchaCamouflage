@@ -78,6 +78,10 @@ webview.addEventListener("message", event => {
   }
   if (message.type === "event" && message.name === "toast") {
     toast(message.data.message, message.data.level || "success");
+    return;
+  }
+  if (message.type === "event" && message.name === "zoomChanged") {
+    renderFooterZoom(message.data?.percent);
   }
 });
 
@@ -179,6 +183,11 @@ function render({ runtimeOnly = false } = {}) {
   renderImageEditor();
   applyI18n();
   renderEditState();
+}
+
+function renderFooterZoom(percent) {
+  const parsed = Number(percent);
+  text("footer-zoom", `${Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : 100}%`);
 }
 
 function renderRuntime(snapshot) {

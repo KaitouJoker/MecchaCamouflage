@@ -219,6 +219,11 @@ public sealed class MainForm : Form
         core.DOMContentLoaded += (sender, args) => HandleDomContentLoaded(generation, sender, args);
         core.NewWindowRequested += (_, args) => HandleNewWindowRequested(args);
         core.ProcessFailed += HandleWebViewProcessFailed;
+        view.ZoomFactorChanged += (sender, _) =>
+        {
+            if (ReferenceEquals(sender, webView) && webReady && !webViewRecoveryInProgress)
+                PostWebViewZoomFactor();
+        };
         core.SetVirtualHostNameToFolderMapping(
             WebUiHostName,
             runtime.WebRoot,
@@ -511,8 +516,16 @@ public sealed class MainForm : Form
         DiagnosticsState.WriteLine("webview2", $"ui_ready generation={generation}");
         if (webViewStartup.MarkUiReady(generation))
             QueueWindowSettingsStabilization(generation);
+        PostWebViewZoomFactor();
         StartBridgeWarmup();
         await PushSnapshotAsync();
+    }
+
+    private void PostWebViewZoomFactor()
+    {
+        var zoomFactor = webView?.ZoomFactor ?? 1.0;
+        var percent = (int)Math.Round(zoomFactor * 100, MidpointRounding.AwayFromZero);
+        PostEvent("zoomChanged", new { percent });
     }
 
     private void QueueWindowSettingsStabilization(long generation)
