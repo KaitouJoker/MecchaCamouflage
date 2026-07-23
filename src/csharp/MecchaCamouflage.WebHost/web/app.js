@@ -2079,7 +2079,7 @@ function initializeImageCropEditor() {
   byId("crop-editor-zoom").addEventListener("input", event => updateImageCropZoom(event.target.value));
   byId("crop-editor-reset").addEventListener("click", () => {
     if (!imageCropEditor) return;
-    imageCropEditor.draft = { x: 0, y: 0, width: 1, height: 1 };
+    imageCropEditor.draft = clone(imageCropEditor.base);
     byId("crop-editor-zoom").value = "100";
     renderImageCropSelection();
   });
@@ -2087,19 +2087,62 @@ function initializeImageCropEditor() {
   byId("crop-editor-apply").addEventListener("click", applyImageCrop);
 }
 
+function defaultImageCropForLayer(layer) {
+  const image = layer?.image;
+  if (!image?.naturalWidth || !image?.naturalHeight || !Number.isFinite(layer.width) || !Number.isFinite(layer.height) ||
+      layer.width <= 0 || layer.height <= 0) {
+    return { x: 0, y: 0, width: 1, height: 1 };
+  }
+  const sourceAspect = image.naturalWidth / image.naturalHeight;
+  const targetAspect = layer.width / layer.height;
+  if (sourceAspect > targetAspect) {
+    const width = targetAspect / sourceAspect;
+    return { x: (1 - width) / 2, y: 0, width, height: 1 };
+  }
+  const height = sourceAspect / targetAspect;
+  return { x: 0, y: (1 - height) / 2, width: 1, height };
+}
+
+function cropAtImageZoom(base, factor, centerX, centerY) {
+  const width = base.width / factor;
+  const height = base.height / factor;
+  return {
+    x: clamp(centerX - width / 2, 0, 1 - width),
+    y: clamp(centerY - height / 2, 0, 1 - height),
+    width,
+    height
+  };
+}
+
+function normalizeImageCropForLayer(layer, base) {
+  const crop = {
+    x: Number(layer.cropX ?? 0), y: Number(layer.cropY ?? 0),
+    width: Number(layer.cropWidth ?? 1), height: Number(layer.cropHeight ?? 1)
+  };
+  const centerX = Number.isFinite(crop.x) && Number.isFinite(crop.width) ? crop.x + crop.width / 2 : 0.5;
+  const centerY = Number.isFinite(crop.y) && Number.isFinite(crop.height) ? crop.y + crop.height / 2 : 0.5;
+  const factor = Number.isFinite(crop.width) && Number.isFinite(crop.height) && crop.width > 0 && crop.height > 0
+    ? clamp(Math.min(base.width / crop.width, base.height / crop.height), 1, 4)
+    : 1;
+  return cropAtImageZoom(base, factor, centerX, centerY);
+}
+
 async function openImageCropEditor(index = imageEditor?.selected ?? -1) {
   if (!canEditImage()) return;
   const layer = imageEditor.layers[index];
   if (!layer?.image) return;
   imageEditor.selected = index;
+  const base = defaultImageCropForLayer(layer);
+  const draft = normalizeImageCropForLayer(layer, base);
   imageCropEditor = {
     layerIndex: index,
-    draft: { x: layer.cropX, y: layer.cropY, width: layer.cropWidth, height: layer.cropHeight },
+    base,
+    draft,
     drag: null
   };
   const cropImage = byId("crop-editor-image");
   cropImage.src = layer.image.src;
-  byId("crop-editor-zoom").value = "100";
+  byId("crop-editor-zoom").value = String(Math.round(Math.min(base.width / draft.width, base.height / draft.height) * 100));
   byId("crop-editor-dialog").hidden = false;
   try {
     await cropImage.decode();
@@ -2148,11 +2191,9 @@ function updateImageCropZoom(value) {
   if (!imageCropEditor) return;
   const crop = imageCropEditor.draft;
   const factor = clamp(Number(value) / 100, 1, 4);
-  const width = 1 / factor;
-  const height = 1 / factor;
   const centerX = crop.x + crop.width / 2;
   const centerY = crop.y + crop.height / 2;
-  imageCropEditor.draft = { x: clamp(centerX - width / 2, 0, 1 - width), y: clamp(centerY - height / 2, 0, 1 - height), width, height };
+  imageCropEditor.draft = cropAtImageZoom(imageCropEditor.base, factor, centerX, centerY);
   renderImageCropSelection();
 }
 

@@ -119,6 +119,12 @@ public sealed class ImagePaintLayer
             message = "Image layer placement is invalid.";
             return false;
         }
+        if (CropX < 0.0 || CropY < 0.0 || CropWidth > 1.0 || CropHeight > 1.0 ||
+            CropX + CropWidth > 1.000001 || CropY + CropHeight > 1.000001)
+        {
+            message = "Image layer crop must stay inside the source image.";
+            return false;
+        }
         return true;
     }
 }

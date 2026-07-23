@@ -589,60 +589,67 @@ body.editing .image-choice-list > strong {
   z-index: 30;
   inset: 0;
   display: grid;
+  padding: 20px;
   place-items: center;
-  background: rgb(0 0 0 / 70%);
+  background: rgb(0 0 0 / 78%);
 }
 
 .crop-editor-card {
   display: grid;
-  width: min(680px, calc(100vw - 32px));
-  gap: 12px;
+  width: min(560px, 100%);
+  max-height: calc(100vh - 40px);
+  gap: 9px;
   border: 1px solid var(--hairline);
-  padding: 16px;
-  background: var(--surface-low);
+  padding: 14px;
+  overflow: auto;
+  background: var(--surface-high);
 }
 
 .crop-editor-card > strong,
 .crop-editor-help,
 .crop-editor-zoom {
   color: var(--text);
-  font: 700 12px/16px var(--font-mono);
+  font: 700 11px/16px var(--font-mono);
 }
 
 .crop-editor-help { color: var(--muted); }
 
 .crop-editor-stage-wrap {
-  max-height: min(58vh, 520px);
-  overflow: auto;
-  background: #111;
+  display: grid;
+  min-height: 180px;
+  place-items: center;
+  overflow: hidden;
+  background: #090909;
 }
 
 .crop-editor-stage {
   position: relative;
   display: inline-block;
-  min-width: 100%;
+  max-width: 100%;
   line-height: 0;
 }
 
 .crop-editor-stage img {
   display: block;
-  width: 100%;
-  height: auto;
+  max-width: 100%;
+  max-height: 55vh;
+  object-fit: contain;
   user-select: none;
 }
 
 .crop-editor-selection {
   position: absolute;
   box-sizing: border-box;
-  border: 2px solid var(--primary);
-  background: rgb(255 255 255 / 10%);
+  border: 2px solid #fff;
+  background: rgb(255 255 255 / 12%);
+  box-shadow: 0 0 0 9999px rgb(0 0 0 / 52%);
   cursor: move;
   touch-action: none;
 }
 
 .crop-editor-zoom {
   display: grid;
-  grid-template-columns: 48px minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   gap: 10px;
 }

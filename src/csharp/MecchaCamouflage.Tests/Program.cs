@@ -49,6 +49,7 @@ var tests = new List<(string Name, Action Run)>
     ("auto material defaults off", AutoMaterialDefaultsOff),
     ("regions default to side and back paint", RegionsDefaultToSideAndBackPaint),
     ("image design defaults are safe and persist", ImageDesignDefaultsAreSafeAndPersist),
+    ("image layer crop validates normalized bounds", ImageLayerCropValidatesNormalizedBounds),
     ("legacy image transforms migrate to individual layers", LegacyImageTransformsMigrateToIndividualLayers),
     ("image preset round-trips an uncompressed container", ImagePresetRoundTripsUncompressedContainer),
     ("v1 image preset expands global transforms to layers", V1ImagePresetExpandsGlobalTransformsToLayers),
@@ -173,6 +174,26 @@ static void ImageDesignDefaultsAreSafeAndPersist()
         DataBase64 = Convert.ToBase64String(new byte[ImagePaintLayer.MaximumSourceBytes + 1])
     };
     Assert(!oversizedLayer.TryValidate(out _), "image source layers larger than 12 MiB should be rejected");
+}
+
+static void ImageLayerCropValidatesNormalizedBounds()
+{
+    var layer = new ImagePaintLayer
+    {
+        FileName = "crop.png",
+        MimeType = "image/png",
+        DataBase64 = Convert.ToBase64String([1]),
+        CropX = 0.25,
+        CropY = 0.25,
+        CropWidth = 0.5,
+        CropHeight = 0.5
+    };
+    Assert(layer.TryValidate(out _), "a crop fully inside the source image should be accepted");
+
+    layer.CropX = -0.01;
+    Assert(!layer.TryValidate(out _), "a crop cannot begin outside the source image");
+    layer.CropX = 0.75;
+    Assert(!layer.TryValidate(out _), "a crop cannot extend past the source image edge");
 }
 
 static void LegacyImageTransformsMigrateToIndividualLayers()
@@ -1206,6 +1227,11 @@ static void WebUiImagePaintEditorUsesSavedTransaction()
            index.Contains("image-metallic", StringComparison.Ordinal) &&
            index.Contains("image-background-metallic", StringComparison.Ordinal),
         "Background uses an explicit Paint background checkbox while its material controls remain independent");
+    Assert(app.Contains("function defaultImageCropForLayer(layer)", StringComparison.Ordinal) &&
+           app.Contains("const targetAspect = layer.width / layer.height;", StringComparison.Ordinal) &&
+           app.Contains("const width = base.width / factor;", StringComparison.Ordinal) &&
+           app.Contains("const height = base.height / factor;", StringComparison.Ordinal),
+        "Crop must preserve each selected layer's aspect ratio when it opens and when its zoom changes");
     Assert(app.Contains("async function stageImageDesign(design)", StringComparison.Ordinal) &&
            app.Contains("send(\"commitSettingsWithImage\"", StringComparison.Ordinal) &&
            app.Contains("send(\"saveImagePreset\"", StringComparison.Ordinal) &&
