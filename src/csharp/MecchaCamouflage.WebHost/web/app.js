@@ -71,8 +71,10 @@ webview.addEventListener("message", event => {
     return;
   }
   if (message.type === "event" && message.name === "snapshotChanged") {
+    const previousPaintRunning = Boolean(liveSnapshot?.runtime?.paintRunning);
     liveSnapshot = message.data;
-    render();
+    const paintStillRunning = previousPaintRunning && Boolean(liveSnapshot.runtime?.paintRunning);
+    render({ runtimeOnly: editing || paintStillRunning });
     return;
   }
   if (message.type === "event" && message.name === "toast") {
@@ -167,12 +169,13 @@ function currentSnapshot() {
   return editing && draftSnapshot ? draftSnapshot : liveSnapshot;
 }
 
-function render() {
+function render({ runtimeOnly = false } = {}) {
   if (!liveSnapshot) {
     return;
   }
-  applyI18n();
+  if (!runtimeOnly) applyI18n();
   renderRuntime(liveSnapshot);
+  if (runtimeOnly) return;
   renderSettings(currentSnapshot());
   renderImageEditor();
   applyI18n();

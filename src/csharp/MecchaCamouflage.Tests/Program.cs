@@ -68,6 +68,7 @@ var tests = new List<(string Name, Action Run)>
     ("web ui exposes one brush slider and compression tolerance", WebUiExposesSingleBrushSliderAndCompressionTolerance),
     ("web ui persists image designs through the tabbed editor", WebUiImagePaintEditorUsesSavedTransaction),
     ("web ui keeps a running paint editable as a next-run draft", WebUiKeepsRunningPaintEditableAsNextRunDraft),
+    ("web ui preserves image actions during paint snapshots", WebUiPreservesImageActionsDuringPaintSnapshots),
     ("web ui uses packaged reference guides without a game connection", WebUiUsesPackagedReferenceGuides),
     ("web UI keeps theme color on readonly range and checkbox controls", WebUiKeepsThemeColorOnReadonlyControls),
     ("web ui renders pass progress and total eta", WebUiRendersPassProgressAndTotalEta),
@@ -1479,6 +1480,21 @@ static void WebUiKeepsRunningPaintEditableAsNextRunDraft()
     Assert(mainForm.Contains("if (settingsEditing && !IsStopHotkey(hotkeyId))", StringComparison.Ordinal) &&
            mainForm.Contains("private static bool IsStopHotkey", StringComparison.Ordinal),
         "opening a next-run draft must never prevent stopping the currently running Paint");
+}
+
+static void WebUiPreservesImageActionsDuringPaintSnapshots()
+{
+    var app = File.ReadAllText(Path.Combine(
+        FindRepositoryRoot(), "src", "csharp", "MecchaCamouflage.WebHost", "web", "app.js"));
+
+    Assert(app.Contains("const previousPaintRunning = Boolean(liveSnapshot?.runtime?.paintRunning);", StringComparison.Ordinal) &&
+           app.Contains("const paintStillRunning = previousPaintRunning && Boolean(liveSnapshot.runtime?.paintRunning);", StringComparison.Ordinal) &&
+           app.Contains("render({ runtimeOnly: editing || paintStillRunning });", StringComparison.Ordinal),
+        "periodic snapshots must distinguish a running Paint refresh from a UI-state refresh");
+    Assert(app.Contains("function render({ runtimeOnly = false } = {})", StringComparison.Ordinal) &&
+           app.Contains("if (runtimeOnly) return;", StringComparison.Ordinal) &&
+           app.Contains("list.replaceChildren();", StringComparison.Ordinal),
+        "a running Paint snapshot must update progress without replacing Image action buttons between pointer-down and pointer-up");
 }
 
 static void WebUiUsesPackagedReferenceGuides()
