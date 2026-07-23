@@ -314,6 +314,69 @@ namespace runtime_contract
         return result;
     }
 
+    // Round uses the same four orthographic canvas tiles as Cube. Unlike the
+    // legacy normalized atlas, every tile shares one pixels-per-unit value:
+    // the narrow side silhouette must not be stretched to the front width.
+    struct RoundCanonicalImageProjectionInput
+    {
+        ImageAtlasRegion region{ImageAtlasRegion::Front};
+        bool depth_is_y{true};
+        double local_x{0.0};
+        double local_y{0.0};
+        double local_z{0.0};
+        double center_x{0.0};
+        double center_y{0.0};
+        double center_z{0.0};
+        double pixels_per_unit{1.0};
+    };
+
+    struct RoundCanonicalImageProjectionResult
+    {
+        int tile{0};
+        double u{0.125};
+        double v{0.5};
+    };
+
+    inline RoundCanonicalImageProjectionResult map_round_canonical_image_coordinate(
+        const RoundCanonicalImageProjectionInput& input)
+    {
+        RoundCanonicalImageProjectionResult result{};
+        const double pixels_per_unit =
+            std::isfinite(input.pixels_per_unit) && input.pixels_per_unit > 0.000001
+                ? input.pixels_per_unit
+                : 1.0;
+        const double front_horizontal = input.depth_is_y
+                                            ? input.local_x - input.center_x
+                                            : input.local_y - input.center_y;
+        double horizontal = front_horizontal;
+        switch (input.region)
+        {
+        case ImageAtlasRegion::Front:
+            result.tile = 0;
+            break;
+        case ImageAtlasRegion::Back:
+            result.tile = 2;
+            horizontal = -front_horizontal;
+            break;
+        case ImageAtlasRegion::Side:
+        {
+            const double side_coordinate = input.depth_is_y
+                                               ? input.local_x - input.center_x
+                                               : input.local_y - input.center_y;
+            const double side_horizontal = input.depth_is_y
+                                               ? input.local_y - input.center_y
+                                               : input.local_x - input.center_x;
+            result.tile = side_coordinate > 0.0 ? 1 : 3;
+            horizontal = result.tile == 1 ? side_horizontal : -side_horizontal;
+            break;
+        }
+        }
+        result.u = (static_cast<double>(result.tile) * 256.0 + 128.0 +
+                    horizontal * pixels_per_unit) / 1024.0;
+        result.v = 0.5 + (input.local_z - input.center_z) * pixels_per_unit / 512.0;
+        return result;
+    }
+
     enum class ReplayPass
     {
         Fill,

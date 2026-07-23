@@ -1519,7 +1519,27 @@ function roundCanonicalNaturalStandPositions(profile) {
   const positions = roundReferenceVertices(profile, lod.Vertices.length);
   const bounds = referenceGuideBounds(positions);
   const depthIsY = bounds.maxY - bounds.minY > 0.001 && bounds.maxY - bounds.minY < bounds.maxX - bounds.minX;
-  return { positions, bounds, depthIsY, skeleton: { bones, transforms: naturalTransforms } };
+  const horizontalSpan = Math.max(bounds.maxX - bounds.minX, bounds.maxY - bounds.minY);
+  const verticalSpan = bounds.maxZ - bounds.minZ;
+  if (!Number.isFinite(horizontalSpan) || !Number.isFinite(verticalSpan) || horizontalSpan <= 0.000001 || verticalSpan <= 0.000001) {
+    throw new Error("Round reference pose has invalid projection bounds.");
+  }
+  return {
+    positions,
+    bounds,
+    depthIsY,
+    projection: {
+      depthIsY,
+      centerX: (bounds.minX + bounds.maxX) / 2,
+      centerY: (bounds.minY + bounds.maxY) / 2,
+      centerZ: (bounds.minZ + bounds.maxZ) / 2,
+      // One scale for all four faces preserves the real 60.67cm x 24.58cm
+      // round body proportions. The old per-axis normalization stretched
+      // side detail by 2.47x and made its seams look jagged.
+      pixelsPerUnit: Math.min((IMAGE_CANVAS_WIDTH / 4 - 32) / horizontalSpan, (IMAGE_CANVAS_HEIGHT - 64) / verticalSpan)
+    },
+    skeleton: { bones, transforms: naturalTransforms }
+  };
 }
 
 function cubeCanonicalFace(normal) {
@@ -1578,22 +1598,24 @@ function drawCubeCanonicalSkeleton(context, skeleton, projection) {
   drawReferenceCanonicalSkeleton(context, skeleton, (position, face) => cubeCanonicalImageCoordinate(position, face, projection));
 }
 
-function roundCanonicalImageCoordinate(position, face, bounds, depthIsY) {
-  const horizontal = depthIsY
-    ? referenceGuideNormalize(position.x, bounds.minX, bounds.maxX)
-    : referenceGuideNormalize(position.y, bounds.minY, bounds.maxY);
-  const depth = depthIsY
-    ? referenceGuideNormalize(position.y, bounds.minY, bounds.maxY)
-    : referenceGuideNormalize(position.x, bounds.minX, bounds.maxX);
-  const u = face === "front" ? horizontal * 0.25
-    : face === "right" ? 0.25 + depth * 0.25
-      : face === "back" ? 0.5 + (1 - horizontal) * 0.25
-        : 0.75 + (1 - depth) * 0.25;
-  return { u, v: referenceGuideNormalize(position.z, bounds.minZ, bounds.maxZ) };
+function roundCanonicalImageCoordinate(position, face, projection) {
+  let horizontal = projection.depthIsY ? position.x - projection.centerX : position.y - projection.centerY;
+  const tile = { front: 0, right: 1, back: 2, left: 3 }[face];
+  if (face === "right") {
+    horizontal = projection.depthIsY ? position.y - projection.centerY : position.x - projection.centerX;
+  } else if (face === "back") {
+    horizontal = -horizontal;
+  } else if (face === "left") {
+    horizontal = projection.depthIsY ? projection.centerY - position.y : projection.centerX - position.x;
+  }
+  return {
+    u: (tile * (IMAGE_CANVAS_WIDTH / 4) + IMAGE_CANVAS_WIDTH / 8 + horizontal * projection.pixelsPerUnit) / IMAGE_CANVAS_WIDTH,
+    v: 0.5 + (position.z - projection.centerZ) * projection.pixelsPerUnit / IMAGE_CANVAS_HEIGHT
+  };
 }
 
-function drawRoundCanonicalSkeleton(context, skeleton, bounds, depthIsY) {
-  drawReferenceCanonicalSkeleton(context, skeleton, (position, face) => roundCanonicalImageCoordinate(position, face, bounds, depthIsY));
+function drawRoundCanonicalSkeleton(context, skeleton, projection) {
+  drawReferenceCanonicalSkeleton(context, skeleton, (position, face) => roundCanonicalImageCoordinate(position, face, projection));
 }
 
 function buildCubeCanonicalImageGuideCanvas(profile) {
@@ -1641,91 +1663,6 @@ function normalizeReferenceGuideVector(vector) {
   return { x: vector.x / length, y: vector.y / length, z: vector.z / length };
 }
 
-function referenceGuideNormal(metadata, first, second, third) {
-  const normal = normalizeReferenceGuideVector({
-    x: finiteGuideNumber(metadata?.LocalNormalX),
-    y: finiteGuideNumber(metadata?.LocalNormalY),
-    z: finiteGuideNumber(metadata?.LocalNormalZ)
-  });
-  if (normal) return normal;
-  const edgeA = { x: second.x - first.x, y: second.y - first.y, z: second.z - first.z };
-  const edgeB = { x: third.x - first.x, y: third.y - first.y, z: third.z - first.z };
-  return normalizeReferenceGuideVector({
-    x: edgeA.y * edgeB.z - edgeA.z * edgeB.y,
-    y: edgeA.z * edgeB.x - edgeA.x * edgeB.z,
-    z: edgeA.x * edgeB.y - edgeA.y * edgeB.x
-  });
-}
-
-function referenceGuideRegion(normal, depthIsY) {
-  const depthNormal = depthIsY ? normal.y : normal.x;
-  if (depthNormal <= -0.35) return "front";
-  if (depthNormal >= 0.35) return "back";
-  return "side";
-}
-
-function referenceGuideNormalize(value, minimum, maximum) {
-  const range = maximum - minimum;
-  return Math.abs(range) <= 0.000001 ? 0.5 : clamp((value - minimum) / range, 0, 1);
-}
-
-function mapReferenceGuideAtlasCoordinate(position, normal, region, depthIsY, bounds, cube, forceSideRight = false) {
-  const mapped = { ...position };
-  const sideValue = depthIsY ? mapped.x : mapped.y;
-  const sideSeam = depthIsY ? (bounds.minX + bounds.maxX) / 2 : (bounds.minY + bounds.maxY) / 2;
-  if (region === "side" && Math.abs(sideValue - sideSeam) <= 0.0000001) {
-    if (depthIsY) mapped.x = sideSeam + (forceSideRight ? 0.0000001 : -0.0000001);
-    else mapped.y = sideSeam + (forceSideRight ? 0.0000001 : -0.0000001);
-  }
-  const horizontal = depthIsY
-    ? referenceGuideNormalize(mapped.x, bounds.minX, bounds.maxX)
-    : referenceGuideNormalize(mapped.y, bounds.minY, bounds.maxY);
-  const depth = depthIsY
-    ? referenceGuideNormalize(mapped.y, bounds.minY, bounds.maxY)
-    : referenceGuideNormalize(mapped.x, bounds.minX, bounds.maxX);
-  const coordinate = { u: 0.125, v: referenceGuideNormalize(mapped.z, bounds.minZ, bounds.maxZ), cubeEdge: false };
-  if (cube && Math.abs(normal.z) > Math.abs(normal.x) && Math.abs(normal.z) > Math.abs(normal.y)) {
-    coordinate.u = clamp(Math.atan2(mapped.y - (bounds.minY + bounds.maxY) / 2, mapped.x - (bounds.minX + bounds.maxX) / 2) / (2 * Math.PI) + 0.5, 0, 1);
-    coordinate.v = normal.z >= 0 ? 0 : 1;
-    coordinate.cubeEdge = true;
-    return coordinate;
-  }
-  if (region === "side") {
-    const sideCoordinate = depthIsY ? mapped.x : mapped.y;
-    coordinate.u = sideCoordinate > sideSeam ? 0.25 + depth * 0.25 : 0.75 + (1 - depth) * 0.25;
-  } else if (region === "back") {
-    coordinate.u = 0.5 + (1 - horizontal) * 0.25;
-  } else {
-    coordinate.u = horizontal * 0.25;
-  }
-  return coordinate;
-}
-
-function clipReferenceGuideSide(vertices, depthIsY, sideSeam, keepRight) {
-  const clipped = [];
-  const coordinate = position => depthIsY ? position.x : position.y;
-  for (let index = 0; index < vertices.length; ++index) {
-    const current = vertices[index];
-    const next = vertices[(index + 1) % vertices.length];
-    const currentValue = coordinate(current);
-    const nextValue = coordinate(next);
-    const currentInside = keepRight ? currentValue >= sideSeam - 0.0000001 : currentValue <= sideSeam + 0.0000001;
-    const nextInside = keepRight ? nextValue >= sideSeam - 0.0000001 : nextValue <= sideSeam + 0.0000001;
-    if (currentInside) clipped.push(current);
-    if (currentInside !== nextInside) {
-      const denominator = nextValue - currentValue;
-      if (Math.abs(denominator) <= 0.0000001) continue;
-      const amount = clamp((sideSeam - currentValue) / denominator, 0, 1);
-      clipped.push({
-        x: current.x + (next.x - current.x) * amount,
-        y: current.y + (next.y - current.y) * amount,
-        z: current.z + (next.z - current.z) * amount
-      });
-    }
-  }
-  return clipped;
-}
-
 function referenceGuideTile(value) {
   return clamp(Math.floor(clamp(value, 0, 1) * 4 - 0.0000001), 0, 3);
 }
@@ -1738,31 +1675,6 @@ function appendReferenceGuideTriangle(output, points, edge = false) {
   output.push({ u0: points[0].u, v0: points[0].v, u1: points[1].u, v1: points[1].v, u2: points[2].u, v2: points[2].v, edge });
 }
 
-function appendReferenceCubeEdgeBands(output, points, normal) {
-  if (!points.every(point => point.cubeEdge)) return false;
-  const unwrapped = points.map(point => point.u);
-  if (Math.max(...unwrapped) - Math.min(...unwrapped) > 0.5) {
-    for (let index = 0; index < unwrapped.length; ++index) if (unwrapped[index] < 0.5) unwrapped[index] += 1;
-  }
-  const minimum = Math.min(...unwrapped);
-  const maximum = Math.max(...unwrapped);
-  if (!Number.isFinite(minimum) || !Number.isFinite(maximum) || maximum - minimum > 0.500001) return false;
-  const outerV = normal.z >= 0 ? 0 : 1;
-  const innerV = normal.z >= 0 ? 0.018 : 0.982;
-  for (let start = minimum; start < maximum - 0.0000001;) {
-    const boundary = (Math.floor(start / 0.25) + 1) * 0.25;
-    const end = Math.min(maximum, boundary);
-    if (end - start <= 0.0000001) { start = boundary; continue; }
-    const startU = start - Math.floor(start);
-    let endU = end - Math.floor(end);
-    if (endU <= startU + 0.0000001) endU = 1;
-    appendReferenceGuideTriangle(output, [{ u: startU, v: outerV }, { u: endU, v: outerV }, { u: endU, v: innerV }], true);
-    appendReferenceGuideTriangle(output, [{ u: startU, v: outerV }, { u: endU, v: innerV }, { u: startU, v: innerV }], true);
-    start = end;
-  }
-  return true;
-}
-
 function buildReferenceImageGuideCanvas(profile, bodyType) {
   if (normalizeImageGuideBodyType(bodyType) === "cube") return buildCubeCanonicalImageGuideCanvas(profile);
   const lod = profile?.Lod0;
@@ -1770,35 +1682,26 @@ function buildReferenceImageGuideCanvas(profile, bodyType) {
   if (!Array.isArray(lod?.Vertices) || !Array.isArray(indices) || indices.length < 3 || indices.length % 3 !== 0) {
     throw new Error("Reference mesh profile has no valid LOD0 geometry.");
   }
-  const { positions, bounds, depthIsY, skeleton } = roundCanonicalNaturalStandPositions(profile);
-  const sideSeam = depthIsY ? (bounds.minX + bounds.maxX) / 2 : (bounds.minY + bounds.maxY) / 2;
-  const cube = false;
+  const { positions, projection, skeleton } = roundCanonicalNaturalStandPositions(profile);
   const guideTriangles = [];
   for (let index = 0; index < indices.length; index += 3) {
     const first = positions[Number(indices[index])];
     const second = positions[Number(indices[index + 1])];
     const third = positions[Number(indices[index + 2])];
     if (!first || !second || !third) continue;
-    const normal = referenceGuideNormal(null, first, second, third);
-    if (!normal) continue;
-    const region = referenceGuideRegion(normal, depthIsY);
-    const polygons = region === "side"
-      ? [[clipReferenceGuideSide([first, second, third], depthIsY, sideSeam, false), false], [clipReferenceGuideSide([first, second, third], depthIsY, sideSeam, true), true]]
-      : [[[first, second, third], false]];
-    for (const [polygon, forceSideRight] of polygons) {
-      for (let fan = 1; fan + 1 < polygon.length; ++fan) {
-        const source = [polygon[0], polygon[fan], polygon[fan + 1]];
-        const mapped = source.map(position => mapReferenceGuideAtlasCoordinate(position, normal, region, depthIsY, bounds, cube, forceSideRight));
-        if (mapped.some(point => point.cubeEdge)) {
-          appendReferenceCubeEdgeBands(guideTriangles, mapped, normal);
-        } else {
-          appendReferenceGuideTriangle(guideTriangles, mapped);
-        }
-      }
+    // The canvas is a four-view reference, not a partition of material
+    // triangles by normal. Project the complete fixed mesh into every view so
+    // each tile is recognisably the same natural-standing body.
+    for (const face of ["front", "right", "back", "left"]) {
+      appendReferenceGuideTriangle(guideTriangles, [
+        roundCanonicalImageCoordinate(first, face, projection),
+        roundCanonicalImageCoordinate(second, face, projection),
+        roundCanonicalImageCoordinate(third, face, projection)
+      ]);
     }
   }
   if (guideTriangles.length === 0) throw new Error("Reference mesh profile produced no atlas guide.");
-  return buildReferenceImageGuideCanvasFromTriangles(guideTriangles, { roundSkeleton: skeleton, roundBounds: bounds, roundDepthIsY: depthIsY });
+  return buildReferenceImageGuideCanvasFromTriangles(guideTriangles, { roundSkeleton: skeleton, roundProjection: projection });
 }
 
 function buildReferenceImageGuideCanvasFromTriangles(triangles, options = {}) {
@@ -1840,7 +1743,7 @@ function buildReferenceImageGuideCanvasFromTriangles(triangles, options = {}) {
     }
   }
   if (options.cubeSkeleton) drawCubeCanonicalSkeleton(context, options.cubeSkeleton, options.projection);
-  if (options.roundSkeleton) drawRoundCanonicalSkeleton(context, options.roundSkeleton, options.roundBounds, options.roundDepthIsY);
+  if (options.roundSkeleton) drawRoundCanonicalSkeleton(context, options.roundSkeleton, options.roundProjection);
   for (let face = 0; face < 4; ++face) {
     const xOffset = face * IMAGE_CANVAS_WIDTH / 4;
     context.strokeStyle = "rgba(255,255,255,0.36)";

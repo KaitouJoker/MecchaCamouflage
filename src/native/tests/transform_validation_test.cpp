@@ -141,6 +141,36 @@ int main()
         return 29;
     }
 
+    const runtime_contract::RoundCanonicalImageProjectionInput round_canonical_front{
+        runtime_contract::ImageAtlasRegion::Front, true,
+        10.0, -3.0, 20.0, 0.0, 0.0, 0.0, 2.0};
+    const runtime_contract::RoundCanonicalImageProjectionInput round_canonical_right{
+        runtime_contract::ImageAtlasRegion::Side, true,
+        10.0, 3.0, 20.0, 0.0, 0.0, 0.0, 2.0};
+    const runtime_contract::RoundCanonicalImageProjectionInput round_canonical_back{
+        runtime_contract::ImageAtlasRegion::Back, true,
+        10.0, -3.0, 20.0, 0.0, 0.0, 0.0, 2.0};
+    const runtime_contract::RoundCanonicalImageProjectionInput round_canonical_left{
+        runtime_contract::ImageAtlasRegion::Side, true,
+        -10.0, 3.0, 20.0, 0.0, 0.0, 0.0, 2.0};
+    const auto round_canonical_front_coordinate = runtime_contract::map_round_canonical_image_coordinate(round_canonical_front);
+    const auto round_canonical_right_coordinate = runtime_contract::map_round_canonical_image_coordinate(round_canonical_right);
+    const auto round_canonical_back_coordinate = runtime_contract::map_round_canonical_image_coordinate(round_canonical_back);
+    const auto round_canonical_left_coordinate = runtime_contract::map_round_canonical_image_coordinate(round_canonical_left);
+    if (round_canonical_front_coordinate.tile != 0 ||
+        round_canonical_right_coordinate.tile != 1 ||
+        round_canonical_back_coordinate.tile != 2 ||
+        round_canonical_left_coordinate.tile != 3 ||
+        std::abs(round_canonical_front_coordinate.u - (148.0 / 1024.0)) > 0.000001 ||
+        std::abs(round_canonical_right_coordinate.u - (390.0 / 1024.0)) > 0.000001 ||
+        std::abs(round_canonical_back_coordinate.u - (620.0 / 1024.0)) > 0.000001 ||
+        std::abs(round_canonical_left_coordinate.u - (890.0 / 1024.0)) > 0.000001 ||
+        std::abs(round_canonical_front_coordinate.v - (296.0 / 512.0)) > 0.000001 ||
+        std::abs(round_canonical_right_coordinate.v - round_canonical_front_coordinate.v) > 0.000001)
+    {
+        return 30;
+    }
+
     if (runtime_contract::paint_channel_write_cost(4) != 4 ||
         runtime_contract::paint_channel_write_cost(5) != 3 ||
         runtime_contract::paint_channel_write_cost(7) != 1 ||

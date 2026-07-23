@@ -6374,6 +6374,10 @@ namespace
         double min_z{0.0};
         double max_z{0.0};
         bool depth_is_y{false};
+        double center_x{0.0};
+        double center_y{0.0};
+        double center_z{0.0};
+        double pixels_per_unit{1.0};
     };
 
     auto mesh_first_build_round_canonical_image_atlas(const MeshFirstProfile& profile,
@@ -6419,6 +6423,17 @@ namespace
             return false;
         }
         out.depth_is_y = range_y > 0.001 && range_y < range_x;
+        const double horizontal_span = std::max(range_x, range_y);
+        out.center_x = (out.min_x + out.max_x) * 0.5;
+        out.center_y = (out.min_y + out.max_y) * 0.5;
+        out.center_z = (out.min_z + out.max_z) * 0.5;
+        out.pixels_per_unit = std::min((256.0 - 32.0) / horizontal_span,
+                                       (512.0 - 64.0) / range_z);
+        if (!std::isfinite(out.pixels_per_unit) || out.pixels_per_unit <= 0.000001)
+        {
+            failure = "round_canonical_projection_scale_invalid";
+            return false;
+        }
         failure.clear();
         return true;
     }
@@ -6429,7 +6444,7 @@ namespace
                                                double barycentric_a,
                                                double barycentric_b,
                                                double barycentric_c,
-                                               runtime_contract::ImageAtlasMappingResult& out) -> bool
+                                               runtime_contract::RoundCanonicalImageProjectionResult& out) -> bool
     {
         if (triangle_index < 0 || static_cast<std::size_t>(triangle_index) * 3 + 2 >= profile.indices.size())
         {
@@ -6463,22 +6478,16 @@ namespace
                                 : (depth_normal >= 0.35
                                        ? runtime_contract::ImageAtlasRegion::Back
                                        : runtime_contract::ImageAtlasRegion::Side);
-        out = runtime_contract::map_image_atlas_coordinate({
-            false,
+        out = runtime_contract::map_round_canonical_image_coordinate({
             region,
             atlas.depth_is_y,
             position.X,
             position.Y,
             position.Z,
-            normal.X,
-            normal.Y,
-            normal.Z,
-            atlas.min_x,
-            atlas.max_x,
-            atlas.min_y,
-            atlas.max_y,
-            atlas.min_z,
-            atlas.max_z,
+            atlas.center_x,
+            atlas.center_y,
+            atlas.center_z,
+            atlas.pixels_per_unit,
         });
         return std::isfinite(out.u) && std::isfinite(out.v);
     }
@@ -12128,6 +12137,7 @@ namespace
                                              json_escape(round_canonical_failure.empty() ? "profile_not_round" : round_canonical_failure) + "\"");
                 }
                 metadata += ",\"image_paint_round_atlas\":\"canonical_natural_stand_v1\"";
+                metadata += ",\"image_paint_round_pixels_per_unit\":" + std::to_string(round_canonical_atlas.pixels_per_unit);
             }
             plan_stats.enabled_samples = 0;
             plan_stats.unsafe_candidates = 0;
@@ -12163,7 +12173,7 @@ namespace
                 }
                 else
                 {
-                    runtime_contract::ImageAtlasMappingResult image_coordinate{};
+                    runtime_contract::RoundCanonicalImageProjectionResult image_coordinate{};
                     if (!mesh_first_map_round_canonical_sample(profile,
                                                                round_canonical_atlas,
                                                                sample.triangle_index,

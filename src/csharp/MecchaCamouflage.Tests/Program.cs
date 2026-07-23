@@ -1281,6 +1281,10 @@ static void WebUiUsesPackagedReferenceGuides()
            roundTransforms.GetArrayLength() == 28 &&
            roundVertices.GetArrayLength() == 1660,
         "the round profile must ship one complete captured natural-standing reference pose");
+    Assert(app.Contains("for (const face of [\"front\", \"right\", \"back\", \"left\"])", StringComparison.Ordinal) &&
+           !app.Contains("const region = referenceGuideRegion(normal, depthIsY);", StringComparison.Ordinal) &&
+           app.Contains("projection: {\n      depthIsY,", StringComparison.Ordinal),
+        "the round guide must orthographically project the full fixed mesh into every view with its recorded depth axis, rather than splitting fragments by surface normal or swapping the front and side views");
     Assert(bridge.Contains("mesh_first_build_cube_canonical_image_atlas", StringComparison.Ordinal) &&
            bridge.Contains("mesh_first_map_cube_canonical_sample", StringComparison.Ordinal) &&
            bridge.Contains("canonical_natural_stand_v1", StringComparison.Ordinal) &&
