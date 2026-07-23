@@ -162,7 +162,12 @@ public sealed record ProgressSnapshot(
     string ReplayProgressSource = "",
     int ReplayCurrentPassCompleted = -1,
     int ReplayCurrentPassTotal = -1,
-    double ReplayCurrentPassEtaMs = -1.0);
+    double ReplayCurrentPassEtaMs = -1.0,
+    double PreprocessingMs = 0.0,
+    double PoseMs = 0.0,
+    double CaptureMs = 0.0,
+    double SampleMs = 0.0,
+    double AdaptivePlanMs = 0.0);
 
 public sealed record HotkeySet(
     string Start,

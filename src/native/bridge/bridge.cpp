@@ -9898,6 +9898,11 @@ namespace
         int progress_updates_written{0};
         int progress_updates_suppressed{0};
         int initial_stroke_count{0};
+        double preprocessing_ms{0.0};
+        double pose_ms{0.0};
+        double capture_ms{0.0};
+        double sample_ms{0.0};
+        double adaptive_plan_ms{0.0};
         std::atomic<bool> completed{false};
     };
 
@@ -10355,6 +10360,11 @@ namespace
         out += ",\"paint_observed_ms_per_stroke\":" +
                std::to_string(observed_ms_per_stroke);
         out += ",\"paint_elapsed_ms\":" + std::to_string(mesh_first_elapsed_ms(job));
+        out += ",\"preprocessing_ms\":" + std::to_string(job ? job->preprocessing_ms : 0.0);
+        out += ",\"pose_ms\":" + std::to_string(job ? job->pose_ms : 0.0);
+        out += ",\"capture_ms\":" + std::to_string(job ? job->capture_ms : 0.0);
+        out += ",\"sample_ms\":" + std::to_string(job ? job->sample_ms : 0.0);
+        out += ",\"adaptive_plan_ms\":" + std::to_string(job ? job->adaptive_plan_ms : 0.0);
         out += ",\"paint_eta_ms\":" + std::to_string(eta_ms);
         out += mesh_first_replay_pass_metadata(job);
         out += mesh_first_local_dispatch_metadata(job);
@@ -11726,6 +11736,8 @@ namespace
         metadata += ",\"fill_emissive\":" + std::to_string(fill_emissive);
         metadata += ",\"bridge_events\":[\"mesh_profile_load\",\"pose_resolve\",\"planner_build\",\"bridge.paint_batch.request\",\"bridge.paint_batch.response\"]";
 
+        const auto total_preprocess_start = std::chrono::high_resolution_clock::now();
+
 
         if (queued_job)
         {
@@ -11770,6 +11782,9 @@ namespace
                                  metadata);
         }
 
+        double pose_ms = 0.0;
+        double capture_ms = 0.0;
+        double sample_ms = 0.0;
         Reflection ref{};
         std::string failure{};
         if (!ref.init(failure))
@@ -12000,6 +12015,7 @@ namespace
                         json_escape(image_reference_profile.profile_hash) + "\"";
         }
 
+        const auto pose_start = std::chrono::high_resolution_clock::now();
         write_bridge_progress("pose_resolve",
                               "Resolving current skinned pose",
                               2,
@@ -12388,12 +12404,14 @@ namespace
                                  metadata + ",\"replay_blocked\":true");
         }
 
+        pose_ms = std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - pose_start).count();
         MeshFirstPlanStats plan_stats{};
         std::vector<MeshFirstPlanSample> plan_samples{};
         std::string planner_failure{};
         metadata += ",\"mesh_region_threshold\":0.350000";
         metadata += ",\"mesh_region_threshold_source\":\"fixed_mesh_local_normal\"";
-        if (!mesh_first_generate_plan_samples_from_runtime_cache(profile_available ? &profile : nullptr,
+        const auto sample_start = std::chrono::high_resolution_clock::now();
+        const bool sample_gen_ok = mesh_first_generate_plan_samples_from_runtime_cache(profile_available ? &profile : nullptr,
                                                                  runtime_triangle_cache.triangles,
                                                                  active_texture_size,
                                                                  center_ray.location,
@@ -12402,7 +12420,9 @@ namespace
                                                                  tuning_brush_size_texels,
                                                                  plan_samples,
                                                                  plan_stats,
-                                                                 planner_failure))
+                                                                 planner_failure);
+        sample_ms = std::chrono::duration<double, std::milli>(std::chrono::high_resolution_clock::now() - sample_start).count();
+        if (!sample_gen_ok)
         {
             metadata += ",";
             metadata += mesh_first_plan_stats_metadata(plan_stats);
@@ -12705,6 +12725,7 @@ namespace
             const auto capture_started = std::chrono::steady_clock::now();
             capture = sdk_capture_front_colors(ref, ctx, native_front, capture_request_width, capture_request_height);
             const auto capture_elapsed_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - capture_started).count();
+            capture_ms = capture_elapsed_ms;
             if (queued_paint_cancel_reason(queued_job) != PaintCancelReason::None)
             {
                 return queued_paint_cancel_response(queued_job, "mesh_paint_cancelled");
@@ -13173,12 +13194,16 @@ namespace
                                         !sample.unsafe,
                                         1});
         }
+        const auto plan_start = std::chrono::high_resolution_clock::now();
         const auto adaptive_replay_plan = runtime_contract::build_adaptive_paint_plan(
             replay_plan.entries,
             adaptive_samples,
             brush_radius_uv,
             compression_enabled ? active_color_compression_tolerance : 0.0,
             0.8 / static_cast<double>(std::max(1, active_texture_size)));
+        const auto plan_end = std::chrono::high_resolution_clock::now();
+        const double adaptive_plan_ms = std::chrono::duration<double, std::milli>(plan_end - plan_start).count();
+        metadata += ",\"adaptive_plan_ms\":" + std::to_string(adaptive_plan_ms);
         metadata += ",\"color_compression_requested\":" +
                     std::string(json_bool(compression_requested));
         metadata += ",\"color_compression_enabled\":" +
@@ -13631,8 +13656,19 @@ namespace
         }
         metadata += ",\"paint_target_channel\":\"albedo_metallic_roughness_emissive\"";
         {
+            const auto total_preprocess_end = std::chrono::high_resolution_clock::now();
+            const double total_preprocess_ms = std::chrono::duration<double, std::milli>(total_preprocess_end - total_preprocess_start).count();
             auto async_job = std::make_shared<MeshFirstServerBatchAsyncJob>();
             async_job->queued = queued_job;
+            async_job->preprocessing_ms = total_preprocess_ms;
+            async_job->pose_ms = pose_ms;
+            async_job->capture_ms = capture_ms;
+            async_job->sample_ms = sample_ms;
+            async_job->adaptive_plan_ms = adaptive_plan_ms;
+            metadata += ",\"preprocessing_ms\":" + std::to_string(total_preprocess_ms);
+            metadata += ",\"pose_ms\":" + std::to_string(pose_ms);
+            metadata += ",\"capture_ms\":" + std::to_string(capture_ms);
+            metadata += ",\"sample_ms\":" + std::to_string(sample_ms);
             async_job->controller = ctx.controller;
             async_job->pawn = ctx.pawn;
             async_job->component = ctx.component;

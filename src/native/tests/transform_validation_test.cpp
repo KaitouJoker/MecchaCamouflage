@@ -376,7 +376,7 @@ int main()
     if (compressed.entries.size() != 3 ||
         compressed.compressed_paint_entries != 1 ||
         compressed.entries[0].replay.sample_index != 0 ||
-        compressed.entries[0].radius_multiplier != 4.0 ||
+        compressed.entries[0].radius_multiplier != 8.0 ||
         compressed.entries[1].replay.sample_index != 2 ||
         compressed.entries[2].replay.sample_index != 3)
     {
