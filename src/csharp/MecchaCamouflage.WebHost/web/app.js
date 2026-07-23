@@ -1119,8 +1119,8 @@ async function loadImageLayers(files) {
   if (!canEditImage()) return;
   let total = imageEditor.layers.reduce((sum, layer) => sum + base64ByteLength(layer.dataBase64), 0);
   for (const file of files) {
-    if (!file || !["image/png", "image/jpeg"].includes(String(file.type).toLowerCase()))
-      throw new Error("Image Paint accepts PNG or JPEG files only.");
+    if (!file || !["image/png", "image/jpeg", "image/webp"].includes(String(file.type).toLowerCase()))
+      throw new Error("Image Paint accepts PNG, JPEG, or WebP files only.");
     if (file.size < 1 || file.size > IMAGE_SOURCE_MAXIMUM_BYTES)
       throw new Error("Each image file must be at most 12 MiB.");
     total += file.size;
@@ -1128,7 +1128,7 @@ async function loadImageLayers(files) {
       throw new Error("All image layers together must be at most 64 MiB.");
     const dataUrl = await readFileAsDataUrl(file);
     const image = await loadImageSource(dataUrl);
-    const [, mimeType, dataBase64] = /^data:(image\/(?:png|jpeg));base64,(.+)$/i.exec(dataUrl) || [];
+    const [, mimeType, dataBase64] = /^data:(image\/(?:png|jpeg|webp));base64,(.+)$/i.exec(dataUrl) || [];
     if (!mimeType || !dataBase64) throw new Error("Image data could not be prepared.");
     const layer = makeImageLayer(imageEditor.layers.length);
     layer.fileName = file.name || `image-${imageEditor.layers.length + 1}`;

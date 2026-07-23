@@ -201,6 +201,14 @@ static void ImageDesignDefaultsAreSafeAndPersist()
         DataBase64 = Convert.ToBase64String(new byte[ImagePaintLayer.MaximumSourceBytes + 1])
     };
     Assert(!oversizedLayer.TryValidate(out _), "image source layers larger than 12 MiB should be rejected");
+
+    var webpLayer = new ImagePaintLayer
+    {
+        FileName = "sample.webp",
+        MimeType = "image/webp",
+        DataBase64 = Convert.ToBase64String([1, 2, 3])
+    };
+    Assert(webpLayer.TryValidate(out _), "image source layers with WebP format should be accepted");
 }
 
 static void WebImageFillPayloadUsesRgbObject()

@@ -72,7 +72,7 @@ public sealed class ImageDesignLibrary
             File.WriteAllBytes(Path.Combine(staging, "canvas.rgba"), canvasBytes);
             foreach (var layer in writable.Layers)
             {
-                var extension = layer.MimeType == "image/jpeg" ? ".jpg" : ".png";
+                var extension = layer.MimeType switch { "image/jpeg" => ".jpg", "image/webp" => ".webp", _ => ".png" };
                 File.WriteAllBytes(Path.Combine(staging, "assets", layer.AssetId + extension), Convert.FromBase64String(layer.DataBase64));
                 layer.DataBase64 = "";
             }
@@ -301,7 +301,7 @@ public sealed class ImageDesignLibrary
             long sourceBytes = 0;
             foreach (var layer in manifest.Design.Layers)
             {
-                if (layer.MimeType is not ("image/png" or "image/jpeg") ||
+                if (layer.MimeType is not ("image/png" or "image/jpeg" or "image/webp") ||
                     string.IsNullOrWhiteSpace(layer.FileName) ||
                     layer.FileName.Length > 260 ||
                     !double.IsFinite(layer.CenterX) || !double.IsFinite(layer.CenterY) ||
@@ -367,7 +367,7 @@ public sealed class ImageDesignLibrary
 
     private string AssetPath(string id, ImagePaintLayer layer)
     {
-        var extension = layer.MimeType == "image/jpeg" ? ".jpg" : ".png";
+        var extension = layer.MimeType switch { "image/jpeg" => ".jpg", "image/webp" => ".webp", _ => ".png" };
         return Path.Combine(paths.ImageDesignsDirectory, id, "assets", layer.AssetId + extension);
     }
 
