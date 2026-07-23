@@ -765,6 +765,46 @@ namespace runtime_contract
         return plan;
     }
 
+    // A mesh can reuse UV islands.  When the game preserves triangle order,
+    // every runtime triangle can still be verified against its profile index
+    // without guessing which duplicate island owns the geometry.
+    template <typename Triangle, typename MatchRuntimeTriangle, typename ReorderRuntimeTriangle>
+    inline bool order_runtime_triangles_by_direct_profile_index(
+        const std::vector<Triangle>& runtime,
+        int expected_triangle_count,
+        MatchRuntimeTriangle match_runtime_triangle,
+        ReorderRuntimeTriangle reorder_runtime_triangle,
+        std::vector<Triangle>& ordered,
+        double& average_error)
+    {
+        ordered.clear();
+        average_error = 0.0;
+        if (expected_triangle_count <= 0 ||
+            static_cast<int>(runtime.size()) != expected_triangle_count)
+        {
+            return false;
+        }
+
+        ordered.reserve(static_cast<std::size_t>(expected_triangle_count));
+        double error_sum = 0.0;
+        for (int profile_triangle = 0;
+             profile_triangle < expected_triangle_count;
+             ++profile_triangle)
+        {
+            const auto& runtime_triangle = runtime[static_cast<std::size_t>(profile_triangle)];
+            const auto match = match_runtime_triangle(profile_triangle, runtime_triangle);
+            if (!match.ok || !std::isfinite(match.error))
+            {
+                ordered.clear();
+                return false;
+            }
+            ordered.push_back(reorder_runtime_triangle(runtime_triangle, match));
+            error_sum += match.error;
+        }
+        average_error = error_sum / static_cast<double>(expected_triangle_count);
+        return true;
+    }
+
     constexpr bool event_watch_generation_active(bool enabled,
                                                  std::uint64_t current_generation,
                                                  std::uint64_t captured_generation)

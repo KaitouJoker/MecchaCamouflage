@@ -16,6 +16,8 @@ var tests = new List<(string Name, Action Run)>
     ("payload sends a single brush and compression tolerance", PayloadSendsSingleBrushPipeline),
     ("image payload carries a full canonical canvas", ImagePayloadCarriesFullCanonicalCanvas),
     ("native warms an unavailable triangle cache before it blocks paint", NativeWarmsUnavailableTriangleCache),
+    ("native accepts verified direct triangle order despite duplicate UV islands", NativeAcceptsVerifiedDirectTriangleOrder),
+    ("native image paint resolves its derived reference profile from the raw profile", NativeImagePaintResolvesDerivedReferenceProfile),
     ("custom freecam surface is absent", CustomFreecamSurfaceIsAbsent),
     ("spectator paint resolution requires local controller identity", SpectatorPaintResolutionRequiresLocalControllerIdentity),
     ("diagnostic stroke limit requires explicit option", DiagnosticStrokeLimitRequiresExplicitOption),
@@ -50,6 +52,7 @@ var tests = new List<(string Name, Action Run)>
     ("auto material defaults off", AutoMaterialDefaultsOff),
     ("regions default to side and back paint", RegionsDefaultToSideAndBackPaint),
     ("image design defaults are safe and persist", ImageDesignDefaultsAreSafeAndPersist),
+    ("web Image Fill payload uses an RGB object", WebImageFillPayloadUsesRgbObject),
     ("image layer crop validates normalized bounds", ImageLayerCropValidatesNormalizedBounds),
     ("legacy image transforms migrate to individual layers", LegacyImageTransformsMigrateToIndividualLayers),
     ("image preset round-trips an uncompressed container", ImagePresetRoundTripsUncompressedContainer),
@@ -64,6 +67,7 @@ var tests = new List<(string Name, Action Run)>
     ("ui snapshot exposes a single brush", UiSnapshotExposesSingleBrush),
     ("web ui exposes one brush slider and compression tolerance", WebUiExposesSingleBrushSliderAndCompressionTolerance),
     ("web ui persists image designs through the tabbed editor", WebUiImagePaintEditorUsesSavedTransaction),
+    ("web ui keeps a running paint editable as a next-run draft", WebUiKeepsRunningPaintEditableAsNextRunDraft),
     ("web ui uses packaged reference guides without a game connection", WebUiUsesPackagedReferenceGuides),
     ("web UI keeps theme color on readonly range and checkbox controls", WebUiKeepsThemeColorOnReadonlyControls),
     ("web ui renders pass progress and total eta", WebUiRendersPassProgressAndTotalEta),
@@ -154,14 +158,16 @@ static void ImageDesignDefaultsAreSafeAndPersist()
     Assert(Math.Abs(settings.Image.BrushSizeTexels - 5.0) < 0.000001,
         "image paint should have its own default brush size");
     Assert(Math.Abs(settings.Image.ColorCompressionTolerance) < 0.000001 &&
-           Math.Abs(settings.Image.BackgroundMetallic) < 0.000001 &&
-           Math.Abs(settings.Image.BackgroundRoughness - 1.0) < 0.000001 &&
+           settings.Image.FillColor == RgbColor.White &&
+           Math.Abs(settings.Image.FillMetallic - 1.0) < 0.000001 &&
+           Math.Abs(settings.Image.FillRoughness) < 0.000001 &&
+           Math.Abs(settings.Image.FillEmissive) < 0.000001 &&
            settings.Image.CanvasEncodingVersion == 0 &&
            settings.Image.FrontRegionMode == "fill" &&
            settings.Image.RightRegionMode == "fill" &&
            settings.Image.BackRegionMode == "fill" &&
            settings.Image.LeftRegionMode == "fill",
-        "image paint should preserve full source detail, use safe Fill PBR defaults, and Fill all four atlas faces by default");
+        "image paint should preserve full source detail, own safe Fill defaults, and Fill all four atlas faces by default");
 
     settings.ActiveImageDesignId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     new SettingsStore(paths).Save(settings);
@@ -179,6 +185,17 @@ static void ImageDesignDefaultsAreSafeAndPersist()
         DataBase64 = Convert.ToBase64String(new byte[ImagePaintLayer.MaximumSourceBytes + 1])
     };
     Assert(!oversizedLayer.TryValidate(out _), "image source layers larger than 12 MiB should be rejected");
+}
+
+static void WebImageFillPayloadUsesRgbObject()
+{
+    var app = File.ReadAllText(Path.Combine(
+        FindRepositoryRoot(), "src", "csharp", "MecchaCamouflage.WebHost", "web", "app.js"));
+
+    Assert(app.Contains("function imageFillColorPayload(color)", StringComparison.Ordinal) &&
+           app.Contains("fillColor: imageFillColorPayload(imageEditor.fillColor)", StringComparison.Ordinal) &&
+           app.Contains("function normalizeImageFillColor(value)", StringComparison.Ordinal),
+        "the web Image design must serialize Fill color as the RGB object expected by ImagePaintSettings and accept the same object when it is loaded");
 }
 
 static void ImageLayerCropValidatesNormalizedBounds()
@@ -233,6 +250,21 @@ static void ImagePresetRoundTripsUncompressedContainer()
         Enabled = true,
         Revision = 1,
         CanvasEncodingVersion = ImagePaintSettings.BackgroundPbrCanvasEncodingVersion,
+        BodyType = "cube",
+        AlphaMode = "skip",
+        FrontRegionMode = "skip",
+        RightRegionMode = "fill",
+        BackRegionMode = "skip",
+        LeftRegionMode = "fill",
+        FillColor = new RgbColor(12, 34, 56),
+        FillMetallic = 0.25,
+        FillRoughness = 0.75,
+        FillEmissive = 0.5,
+        BrushSizeTexels = 7.5,
+        ColorCompressionTolerance = 2.5,
+        Metallic = 0.3,
+        Roughness = 0.4,
+        Emissive = 0.6,
         CanvasRgbaBase64 = Convert.ToBase64String(new byte[ImagePaintSettings.CanvasByteLength]),
         Layers = [new ImagePaintLayer
         {
@@ -249,8 +281,20 @@ static void ImagePresetRoundTripsUncompressedContainer()
         "the preset should be one file with the application extension");
     Assert(store.TryLoadPreset(path, out var loaded, out var message) && loaded.Enabled &&
            loaded.Layers.Count == 1 && loaded.Layers[0].WrapAtlasSeam && loaded.Layers[0].MirrorFrontBack &&
-           loaded.CanvasRgbaBase64 == design.CanvasRgbaBase64,
-        "the preset should restore editable sources and its canonical canvas: " + message);
+           loaded.CanvasRgbaBase64 == design.CanvasRgbaBase64 &&
+           loaded.BodyType == design.BodyType && loaded.AlphaMode == design.AlphaMode &&
+           loaded.FrontRegionMode == design.FrontRegionMode && loaded.RightRegionMode == design.RightRegionMode &&
+           loaded.BackRegionMode == design.BackRegionMode && loaded.LeftRegionMode == design.LeftRegionMode &&
+           loaded.FillColor == design.FillColor &&
+           Math.Abs(loaded.FillMetallic - design.FillMetallic) < 0.000001 &&
+           Math.Abs(loaded.FillRoughness - design.FillRoughness) < 0.000001 &&
+           Math.Abs(loaded.FillEmissive - design.FillEmissive) < 0.000001 &&
+           Math.Abs(loaded.BrushSizeTexels - design.BrushSizeTexels) < 0.000001 &&
+           Math.Abs(loaded.ColorCompressionTolerance - design.ColorCompressionTolerance) < 0.000001 &&
+           Math.Abs(loaded.Metallic - design.Metallic) < 0.000001 &&
+           Math.Abs(loaded.Roughness - design.Roughness) < 0.000001 &&
+           Math.Abs(loaded.Emissive - design.Emissive) < 0.000001,
+        "the preset should restore editable sources, the canonical canvas, and every Image setting: " + message);
 
     var bytes = File.ReadAllBytes(path);
     Assert(bytes.Length > 8 && bytes[0] == (byte)'M' && bytes[1] == (byte)'C' &&
@@ -546,6 +590,10 @@ static void ImagePayloadCarriesFullCanonicalCanvas()
         "fill",
         "fill",
         "fill",
+        RgbColor.White,
+        1.0,
+        0.0,
+        0.0,
         5.0,
         0.0,
         0.0,
@@ -564,6 +612,12 @@ static void ImagePayloadCarriesFullCanonicalCanvas()
     Assert(root.GetProperty("image_paint_enabled").GetBoolean() &&
            root.GetProperty("image_paint_width").GetInt32() == ImagePaintSettings.CanvasWidth &&
            root.GetProperty("image_paint_height").GetInt32() == ImagePaintSettings.CanvasHeight &&
+           Math.Abs(root.GetProperty("image_paint_fill_color_r").GetDouble() - 1.0) < 0.000001 &&
+           Math.Abs(root.GetProperty("image_paint_fill_color_g").GetDouble() - 1.0) < 0.000001 &&
+           Math.Abs(root.GetProperty("image_paint_fill_color_b").GetDouble() - 1.0) < 0.000001 &&
+           Math.Abs(root.GetProperty("image_paint_fill_metallic").GetDouble() - 1.0) < 0.000001 &&
+           Math.Abs(root.GetProperty("image_paint_fill_roughness").GetDouble()) < 0.000001 &&
+           Math.Abs(root.GetProperty("image_paint_fill_emissive").GetDouble()) < 0.000001 &&
            root.GetProperty("image_paint_front_region_mode").GetString() == "fill" &&
            root.GetProperty("image_paint_right_region_mode").GetString() == "fill" &&
            root.GetProperty("image_paint_back_region_mode").GetString() == "fill" &&
@@ -574,7 +628,7 @@ static void ImagePayloadCarriesFullCanonicalCanvas()
            !root.TryGetProperty("image_paint_mirror_front_back", out _) &&
            !payload.Contains("\\u002B", StringComparison.Ordinal) &&
            Encoding.UTF8.GetByteCount(payload) < 8 * 1024 * 1024,
-        "the full 1024x512 RGBA image payload must reach native unescaped and below the bridge request limit");
+        "the full 1024x512 RGBA image payload and Image-owned Fill must reach native unescaped and below the bridge request limit");
 
     var reply = new BridgeReply(
         true,
@@ -586,6 +640,18 @@ static void ImagePayloadCarriesFullCanonicalCanvas()
     Assert(detail is not null && detail.Contains("image_decode_failure=base64_invalid_length", StringComparison.Ordinal) &&
            detail.Contains("image_base64_characters=17", StringComparison.Ordinal),
         "image payload rejections should report the native decode boundary in the runtime log");
+
+    var referenceReply = new BridgeReply(
+        true,
+        false,
+        "image_paint_reference_profile_unavailable",
+        "The fixed image reference pose is unavailable for the verified mesh profile.",
+        "{\"success\":false,\"metadata\":{\"image_paint_reference_profile_catalog_count\":2,\"image_paint_reference_profile_failure\":\"no complete derived Image reference profile matches the verified raw mesh\"}}");
+    var referenceDetail = HostSession.PaintFailureDetail(referenceReply);
+    Assert(referenceDetail is not null &&
+           referenceDetail.Contains("image_paint_reference_profile_catalog_count=2", StringComparison.Ordinal) &&
+           referenceDetail.Contains("image_paint_reference_profile_failure=no complete derived Image reference profile", StringComparison.Ordinal),
+        "derived Image reference-profile failures should identify the catalog and rejected identity in the runtime log");
 
     var cacheReply = new BridgeReply(
         true,
@@ -602,13 +668,57 @@ static void ImagePayloadCarriesFullCanonicalCanvas()
 
 static void NativeWarmsUnavailableTriangleCache()
 {
-    var bridge = File.ReadAllText(Path.Combine(
-        FindRepositoryRoot(), "src", "native", "bridge", "bridge.cpp"));
+    var root = FindRepositoryRoot();
+    var bridge = File.ReadAllText(Path.Combine(root, "src", "native", "bridge", "bridge.cpp"));
+    var bridgeJson = File.ReadAllText(Path.Combine(root, "src", "native", "bridge", "bridge_json.inc"));
 
     Assert(bridge.Contains("const bool runtime_cache_missing_before_warmup = !runtime_triangle_cache.ok;", StringComparison.Ordinal) &&
            bridge.Contains("if (runtime_cache_missing_before_warmup || runtime_cache_unstable_before_warmup)", StringComparison.Ordinal) &&
-           bridge.Contains("\"runtime_triangle_cache_unavailable\"", StringComparison.Ordinal),
-        "a missing RuntimePaintable triangle cache must take the existing non-destructive warm-up path before the planner rejects it");
+           bridge.Contains("const auto initialized = sdk_call_no_params_detail(ref, ctx.component, \"InitializePaint\");", StringComparison.Ordinal) &&
+           bridge.Contains("else if (!out.is_initialized_before_ok)", StringComparison.Ordinal) &&
+           bridge.Contains("\"runtime_triangle_cache_unavailable\"", StringComparison.Ordinal) &&
+           bridgeJson.Contains("\"runtime_triangle_cache_warmup_initialize_called\"", StringComparison.Ordinal) &&
+           bridgeJson.Contains("\"runtime_triangle_cache_failure\"", StringComparison.Ordinal) &&
+           bridgeJson.Contains("\"runtime_triangle_cache_uv_rejections\"", StringComparison.Ordinal) &&
+           bridge.Contains("runtime_triangle_cache_matching_count_arrays_seen", StringComparison.Ordinal) &&
+           bridge.Contains("mesh_first_order_runtime_triangles_by_profile_uv", StringComparison.Ordinal),
+        "a missing RuntimePaintable triangle cache must initialize only an explicitly uninitialized component, then return the cache diagnostics needed to investigate a game-layout change");
+}
+
+static void NativeAcceptsVerifiedDirectTriangleOrder()
+{
+    var root = FindRepositoryRoot();
+    var bridge = File.ReadAllText(Path.Combine(root, "src", "native", "bridge", "bridge.cpp"));
+    var contract = File.ReadAllText(Path.Combine(root, "src", "native", "include", "runtime_contract.hpp"));
+
+    var mappingStart = bridge.IndexOf("auto mesh_first_order_runtime_triangles_by_profile_uv", StringComparison.Ordinal);
+    var ambiguityGuard = bridge.IndexOf("A duplicated UV island cannot safely identify geometry", StringComparison.Ordinal);
+    var directIndexCall = bridge.IndexOf("order_runtime_triangles_by_direct_profile_index", StringComparison.Ordinal);
+    Assert(mappingStart >= 0 && directIndexCall > mappingStart && ambiguityGuard > directIndexCall &&
+           contract.Contains("every runtime triangle can still be verified against its profile index", StringComparison.Ordinal) &&
+           contract.Contains("order_runtime_triangles_by_direct_profile_index", StringComparison.Ordinal),
+        "a fully verified runtime/profile index mapping must be accepted before duplicate UV ambiguity is considered");
+}
+
+static void NativeImagePaintResolvesDerivedReferenceProfile()
+{
+    var root = FindRepositoryRoot();
+    var bridge = File.ReadAllText(Path.Combine(root, "src", "native", "bridge", "bridge.cpp"));
+    using var raw = JsonDocument.Parse(File.ReadAllText(Path.Combine(
+        root, "resources", "mesh-profiles", "paintman_cube.mesh-profile-v2.json")));
+    using var image = JsonDocument.Parse(File.ReadAllText(Path.Combine(
+        root, "resources", "mesh-profiles", "paintman_cube.image-profile-v2.json")));
+
+    Assert(!raw.RootElement.TryGetProperty("ImageReferencePose", out _) &&
+           image.RootElement.TryGetProperty("BaseProfileId", out var baseProfileId) &&
+           baseProfileId.GetString() == raw.RootElement.GetProperty("ProfileId").GetString() &&
+           image.RootElement.TryGetProperty("BaseProfileHash", out var baseProfileHash) &&
+           baseProfileHash.GetString() == raw.RootElement.GetProperty("ProfileHash").GetString() &&
+           bridge.Contains("load_mesh_first_image_reference_profile_catalog", StringComparison.Ordinal) &&
+           bridge.Contains("*.image-profile-v2.json", StringComparison.Ordinal) &&
+           bridge.Contains("select_mesh_first_image_reference_profile", StringComparison.Ordinal) &&
+           bridge.Contains("image_paint_reference_profile_id", StringComparison.Ordinal),
+        "Image Paint must retain the raw profile for live-mesh identity and select its matching derived profile for the fixed natural-standing reference pose");
 }
 
 static void CustomFreecamSurfaceIsAbsent()
@@ -813,11 +923,12 @@ static void NativeAutoMaterialDetectsEmissiveAndReportsLocalPacing()
            bridge.Contains("first_stroke_emissive", StringComparison.Ordinal),
         "Auto Detect must cover Paint, preserve an explicit Fill material, use the UE5.6 Emissive-aware pattern layout, and expose numeric candidates for runtime verification");
     Assert(bridge.Contains("tuning_auto_material && any_paint_region", StringComparison.Ordinal) &&
-           bridge.Contains("const double reset_r = fill_color_r", StringComparison.Ordinal) &&
-           bridge.Contains("const double stroke_metallic = fill_metallic", StringComparison.Ordinal) &&
+           bridge.Contains("image_paint_fill_color_r", StringComparison.Ordinal) &&
+           bridge.Contains("image_paint_enabled ? image_paint_fill_color_r : fill_color_r", StringComparison.Ordinal) &&
+           bridge.Contains("image_paint_enabled ? image_paint_fill_metallic : fill_metallic", StringComparison.Ordinal) &&
            !bridge.Contains("image_paint_background_metallic", StringComparison.Ordinal) &&
            !bridge.Contains("sample.image_background", StringComparison.Ordinal),
-        "normal and Image Fill must share the same manual Fill PBR values rather than retaining a separate image background material");
+        "normal and Image Fill must use the same Fill controls while Image keeps its committed Fill values with the preset");
     Assert(bridge.Contains("image_paint_brush_size_texels", StringComparison.Ordinal) &&
            bridge.Contains("tuning_brush_size_texels = image_paint_brush_size_texels", StringComparison.Ordinal) &&
            bridge.Contains("image_paint_color_compression_tolerance", StringComparison.Ordinal) &&
@@ -1279,8 +1390,10 @@ static void WebUiImagePaintEditorUsesSavedTransaction()
            index.Contains("image-brush-size", StringComparison.Ordinal) &&
            index.Contains("image-color-compression-tolerance", StringComparison.Ordinal) &&
            index.Contains("image-metallic", StringComparison.Ordinal) &&
-           index.Contains("image-fill-metallic", StringComparison.Ordinal),
-        "Image uses the shared Fill material controls rather than a second background material");
+           index.Contains("image-fill-metallic", StringComparison.Ordinal) &&
+           index.IndexOf("class=\"group image-design-actions\"", StringComparison.Ordinal) <
+               index.IndexOf("id=\"image-paint-section\"", StringComparison.Ordinal),
+        "Image owns its Fill material without a background-material UI, and Images appears before Geometry");
     Assert(app.Contains("function defaultImageCropForLayer(layer)", StringComparison.Ordinal) &&
            app.Contains("const targetAspect = layer.width / layer.height;", StringComparison.Ordinal) &&
            app.Contains("const width = base.width / factor;", StringComparison.Ordinal) &&
@@ -1303,10 +1416,15 @@ static void WebUiImagePaintEditorUsesSavedTransaction()
            app.Contains("wrapAtlasSeam", StringComparison.Ordinal) &&
            app.Contains("image-layer-tools", StringComparison.Ordinal) &&
            app.Contains("openImageCropEditor(index)", StringComparison.Ordinal) &&
+           app.Contains("bindImageColorPair(\"image-fill-color-picker\", \"image-fill-color\", \"fillColor\")", StringComparison.Ordinal) &&
+           app.Contains("fillColor: imageFillColorPayload(imageEditor.fillColor)", StringComparison.Ordinal) &&
+           app.Contains("next.fillColor = normalizeImageFillColor(design?.fillColor)", StringComparison.Ordinal) &&
+           app.Contains("const silhouette = document.createElement(\"canvas\")", StringComparison.Ordinal) &&
+           !app.Contains("rgba(255,255,255,0.32)", StringComparison.Ordinal) &&
            !app.Contains("drawTransparentPixelChecker", StringComparison.Ordinal) &&
            !app.Contains("Unsaved Image Paint changes", StringComparison.Ordinal) &&
            !app.Contains("Guide unavailable", StringComparison.Ordinal),
-        "GUI Save is the only active-state transaction; layer transforms, crop, and corner resizing stay draft-only without checkerboard serialization");
+        "GUI Save persists all Image settings; guide triangles form one neutral silhouette rather than a checkerboard-like overlay");
     Assert(app.Contains("function renderImageRegionButtons", StringComparison.Ordinal) &&
            app.Contains("for (const mode of [\"fill\", \"skip\"])", StringComparison.Ordinal) &&
            bridge.Contains("mesh_first_parse_image_region_mode", StringComparison.Ordinal) &&
@@ -1338,9 +1456,29 @@ static void WebUiImagePaintEditorUsesSavedTransaction()
            bridge.Contains("mesh_first_validate_runtime_guide_topology", StringComparison.Ordinal) &&
            bridge.Contains("guide_seam_rejections", StringComparison.Ordinal) &&
            bridge.Contains("GuideCubeEdgeBand", StringComparison.Ordinal) &&
-           bridge.Contains("const int check_count = num", StringComparison.Ordinal) &&
+           bridge.Contains("mesh_first_order_runtime_triangles_by_profile_uv", StringComparison.Ordinal) &&
            !bridge.Contains("image_guide_runtime_coordinates_untrusted", StringComparison.Ordinal),
         "the compact editor keeps per-layer controls and native guide emission rejects unresolved atlas seams");
+}
+
+static void WebUiKeepsRunningPaintEditableAsNextRunDraft()
+{
+    var repository = FindRepositoryRoot();
+    var app = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "app.js"));
+    var mainForm = File.ReadAllText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "MainForm.cs"));
+
+    Assert(app.Contains("function canStartLiveDraftEdit()", StringComparison.Ordinal) &&
+           app.Contains("liveSnapshot?.runtime?.paintRunning", StringComparison.Ordinal) &&
+           app.Contains("function ensureLiveDraftEdit()", StringComparison.Ordinal),
+        "a running Paint or Preview must explicitly allow a local next-run draft to begin");
+    Assert(app.Contains("const editable = canStartLiveDraftEdit();", StringComparison.Ordinal) &&
+           app.Contains("const editable = canStartLiveDraftEdit() && !imageEditor.restoring;", StringComparison.Ordinal) &&
+           app.Contains("function canEditImage()", StringComparison.Ordinal) &&
+           app.Contains("ensureLiveDraftEdit() && imageEditor", StringComparison.Ordinal),
+        "both Paint settings and the Image canvas must remain operable while a job is running");
+    Assert(mainForm.Contains("if (settingsEditing && !IsStopHotkey(hotkeyId))", StringComparison.Ordinal) &&
+           mainForm.Contains("private static bool IsStopHotkey", StringComparison.Ordinal),
+        "opening a next-run draft must never prevent stopping the currently running Paint");
 }
 
 static void WebUiUsesPackagedReferenceGuides()
@@ -1351,13 +1489,16 @@ static void WebUiUsesPackagedReferenceGuides()
     var bridge = File.ReadAllText(Path.Combine(repository, "src", "native", "bridge", "bridge.cpp"));
     var contract = File.ReadAllText(Path.Combine(repository, "src", "native", "include", "runtime_contract.hpp"));
     var refreshScript = File.ReadAllText(Path.Combine(repository, "scripts", "refresh-image-reference-profile.ps1"));
-    using var roundProfile = JsonDocument.Parse(File.ReadAllText(Path.Combine(
+    var migrationScript = File.ReadAllText(Path.Combine(repository, "scripts", "migrate-image-reference-profiles.ps1"));
+    using var roundRawProfile = JsonDocument.Parse(File.ReadAllText(Path.Combine(
         repository, "resources", "mesh-profiles", "paintman.mesh-profile-v2.json")));
+    using var roundImageProfile = JsonDocument.Parse(File.ReadAllText(Path.Combine(
+        repository, "resources", "mesh-profiles", "paintman.image-profile-v2.json")));
 
     Assert(app.Contains("const IMAGE_GUIDE_PROFILE_FILES", StringComparison.Ordinal) &&
            app.Contains("fetch(profilePath", StringComparison.Ordinal) &&
-           app.Contains("paintman.mesh-profile-v2.json", StringComparison.Ordinal) &&
-           app.Contains("paintman_cube.mesh-profile-v2.json", StringComparison.Ordinal) &&
+           app.Contains("paintman.image-profile-v2.json", StringComparison.Ordinal) &&
+           app.Contains("paintman_cube.image-profile-v2.json", StringComparison.Ordinal) &&
            app.Contains("buildCubeCanonicalImageGuideCanvas", StringComparison.Ordinal) &&
            app.Contains("cubeCanonicalNaturalStandPositions", StringComparison.Ordinal) &&
            app.Contains("drawCubeCanonicalSkeleton", StringComparison.Ordinal) &&
@@ -1368,14 +1509,19 @@ static void WebUiUsesPackagedReferenceGuides()
         "the Image editor must render both fixed guides from packaged profiles, with their canonical natural-standing poses and skeletons independent of bridge or game state");
     Assert(mainForm.Contains("mesh-profiles", StringComparison.Ordinal),
         "the Web host must continue serving the packaged mesh profiles to the Image editor");
-    Assert(roundProfile.RootElement.TryGetProperty("ImageReferencePose", out var roundReferencePose) &&
+    Assert(!roundRawProfile.RootElement.TryGetProperty("ImageReferencePose", out _) &&
+           roundImageProfile.RootElement.TryGetProperty("ProfileRole", out var roundProfileRole) &&
+           roundProfileRole.GetString() == "image_reference" &&
+           roundImageProfile.RootElement.TryGetProperty("BaseProfileId", out var roundBaseProfileId) &&
+           roundBaseProfileId.GetString() == roundRawProfile.RootElement.GetProperty("ProfileId").GetString() &&
+           roundImageProfile.RootElement.TryGetProperty("ImageReferencePose", out var roundReferencePose) &&
            roundReferencePose.TryGetProperty("ComponentTransforms", out var roundTransforms) &&
            roundReferencePose.TryGetProperty("Vertices", out var roundVertices) &&
            roundTransforms.ValueKind == JsonValueKind.Array &&
            roundVertices.ValueKind == JsonValueKind.Array &&
            roundTransforms.GetArrayLength() == 28 &&
            roundVertices.GetArrayLength() == 1660,
-        "the round profile must ship one complete captured natural-standing reference pose");
+        "the raw round dump must remain free of editor data while its derived Image profile ships one complete captured natural-standing reference pose");
     Assert(app.Contains("for (const face of [\"front\", \"right\", \"back\", \"left\"])", StringComparison.Ordinal) &&
            !app.Contains("const region = referenceGuideRegion(normal, depthIsY);", StringComparison.Ordinal) &&
            app.Contains("projection: {\n      depthIsY,", StringComparison.Ordinal),
@@ -1403,14 +1549,20 @@ static void WebUiUsesPackagedReferenceGuides()
     Assert(refreshScript.Contains("CaptureNeutralPose", StringComparison.Ordinal) &&
            refreshScript.Contains("scripts\\mesh.ps1", StringComparison.Ordinal) &&
            refreshScript.Contains("--capture-$BodyType-reference-pose", StringComparison.Ordinal) &&
+           refreshScript.Contains("ImageProfileFile", StringComparison.Ordinal) &&
+           refreshScript.Contains("ProfileRole", StringComparison.Ordinal) &&
            refreshScript.Contains("ImageReferencePose", StringComparison.Ordinal) &&
-           refreshScript.Contains("Restored the previous profile", StringComparison.Ordinal),
-        "the update workflow must safely restore a profile on failure while baking one explicitly confirmed neutral-pose capture");
+           refreshScript.Contains("Restored the previous derived Image profile", StringComparison.Ordinal),
+        "the update workflow must keep raw dumps immutable while safely restoring a derived Image profile on failure and baking one explicitly confirmed neutral-pose capture");
     Assert(refreshScript.Contains("$meshArguments = @{", StringComparison.Ordinal) &&
            !refreshScript.Contains("$meshArguments = @(\n", StringComparison.Ordinal) &&
-           refreshScript.Contains("[System.IO.File]::ReadAllBytes($profilePath)", StringComparison.Ordinal) &&
-           refreshScript.Contains("[System.IO.File]::WriteAllBytes($profilePath, $previousProfile)", StringComparison.Ordinal),
-        "the profile refresh must pass mesh options by name and restore the exact previous bytes when a refresh fails");
+           refreshScript.Contains("[System.IO.File]::ReadAllBytes($imageProfilePath)", StringComparison.Ordinal) &&
+           refreshScript.Contains("[System.IO.File]::WriteAllBytes($imageProfilePath, $previousImageProfile)", StringComparison.Ordinal),
+        "the profile refresh must pass mesh options by name and restore the exact derived Image bytes when a refresh fails");
+    Assert(migrationScript.Contains("$legacyProfile.PSObject.Properties.Remove(\"ImageReferencePose\")", StringComparison.Ordinal) &&
+           migrationScript.Contains("ProfileRole", StringComparison.Ordinal) &&
+           migrationScript.Contains("paintman_cube.image-profile-v2.json", StringComparison.Ordinal),
+        "one-time migration must split legacy embedded reference poses into raw dump and derived Image profile files without manual JSON editing");
 }
 
 static void WebUiRendersPassProgressAndTotalEta()

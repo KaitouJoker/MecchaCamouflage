@@ -155,6 +155,15 @@ public sealed class ImagePaintSettings
     public string RightRegionMode { get; set; } = "fill";
     public string BackRegionMode { get; set; } = "fill";
     public string LeftRegionMode { get; set; } = "fill";
+    // Image Fill belongs to the saved Image design. It intentionally mirrors
+    // the normal Paint Fill controls, but does not inherit mutable Paint-tab
+    // state when a preset is loaded later.
+    public RgbColor FillColor { get; set; } = RgbColor.White;
+    public double FillMetallic { get; set; } = 1.0;
+    public double FillRoughness { get; set; } = 0.0;
+    public double FillEmissive { get; set; } = 0.0;
+    // Retained only to deserialize pre-Image-Fill manifests. New designs do
+    // not use a separate background material or color.
     public RgbColor BackgroundColor { get; set; } = new(188, 188, 188);
     public string Placement { get; set; } = "fit";
     // Read only during migration of v1 image states. New designs store these
@@ -240,8 +249,10 @@ public sealed class ImagePaintSettings
         if (!double.IsFinite(BrushSizeTexels) || BrushSizeTexels is < 1.0 or > 10.0 ||
             !double.IsFinite(ColorCompressionTolerance) || ColorCompressionTolerance is < 0.0 or > 10.0 ||
             !double.IsFinite(Metallic) || !double.IsFinite(Roughness) || !double.IsFinite(Emissive) ||
+            !double.IsFinite(FillMetallic) || !double.IsFinite(FillRoughness) || !double.IsFinite(FillEmissive) ||
             !double.IsFinite(BackgroundMetallic) || !double.IsFinite(BackgroundRoughness) || !double.IsFinite(BackgroundEmissive) ||
             Metallic is < 0.0 or > 1.0 || Roughness is < 0.0 or > 1.0 || Emissive is < 0.0 or > 1.0 ||
+            FillMetallic is < 0.0 or > 1.0 || FillRoughness is < 0.0 or > 1.0 || FillEmissive is < 0.0 or > 1.0 ||
             BackgroundMetallic is < 0.0 or > 1.0 || BackgroundRoughness is < 0.0 or > 1.0 || BackgroundEmissive is < 0.0 or > 1.0)
         {
             message = "Image brush size or material values are invalid.";
@@ -267,6 +278,9 @@ public sealed class ImagePaintSettings
         Metallic = Math.Clamp(Metallic, 0.0, 1.0);
         Roughness = Math.Clamp(Roughness, 0.0, 1.0);
         Emissive = Math.Clamp(Emissive, 0.0, 1.0);
+        FillMetallic = Math.Clamp(FillMetallic, 0.0, 1.0);
+        FillRoughness = Math.Clamp(FillRoughness, 0.0, 1.0);
+        FillEmissive = Math.Clamp(FillEmissive, 0.0, 1.0);
         BackgroundMetallic = Math.Clamp(BackgroundMetallic, 0.0, 1.0);
         BackgroundRoughness = Math.Clamp(BackgroundRoughness, 0.0, 1.0);
         BackgroundEmissive = Math.Clamp(BackgroundEmissive, 0.0, 1.0);

@@ -19,6 +19,46 @@ namespace
 
 int main()
 {
+    struct DuplicateUvTriangle
+    {
+        int geometry_id{0};
+        double u{0.0};
+        double v{0.0};
+    };
+    struct DuplicateUvMatch
+    {
+        bool ok{false};
+        double error{1000000.0};
+    };
+    const std::vector<DuplicateUvTriangle> duplicated_uv_runtime{{
+        {101, 0.25, 0.75},
+        {202, 0.25, 0.75},
+    }};
+    std::vector<DuplicateUvTriangle> duplicated_uv_ordered{};
+    double duplicated_uv_average_error = 0.0;
+    const auto duplicated_uv_direct_index_ok =
+        runtime_contract::order_runtime_triangles_by_direct_profile_index(
+            duplicated_uv_runtime,
+            2,
+            [](int profile_triangle, const DuplicateUvTriangle& runtime) {
+                static constexpr std::array<double, 2> expected_u{{0.25, 0.25}};
+                static constexpr std::array<double, 2> expected_v{{0.75, 0.75}};
+                return DuplicateUvMatch{
+                    std::abs(runtime.u - expected_u[static_cast<std::size_t>(profile_triangle)]) <= 0.000001 &&
+                        std::abs(runtime.v - expected_v[static_cast<std::size_t>(profile_triangle)]) <= 0.000001,
+                    0.0};
+            },
+            [](const DuplicateUvTriangle& runtime, const DuplicateUvMatch&) { return runtime; },
+            duplicated_uv_ordered,
+            duplicated_uv_average_error);
+    if (!duplicated_uv_direct_index_ok || duplicated_uv_ordered.size() != 2 ||
+        duplicated_uv_ordered[0].geometry_id != 101 ||
+        duplicated_uv_ordered[1].geometry_id != 202 ||
+        duplicated_uv_average_error != 0.0)
+    {
+        return 31;
+    }
+
     if (json_string_field(R"({"image_paint_rgba_base64":"AA\u002BAA=="})", "image_paint_rgba_base64") != "AA+AA==" ||
         json_string_field(R"({"label":"\u3042\uD83D\uDE00"})", "label") !=
             std::string("\xE3\x81\x82\xF0\x9F\x98\x80"))

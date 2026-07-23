@@ -1117,13 +1117,30 @@ public sealed class HostSession
                 "image_height",
                 "image_alpha_mode",
                 "image_body_type",
+                "image_paint_reference_profile_catalog_count",
+                "image_paint_reference_profile_failure",
+                "image_paint_reference_profile_id",
+                "image_paint_reference_profile_hash",
                 "runtime_triangle_cache_mode",
                 "runtime_triangle_cache_failure",
                 "runtime_triangle_profile_cache_failure",
+                "runtime_triangle_cache_expected_triangles",
+                "runtime_triangle_cache_array_headers_seen",
+                "runtime_triangle_cache_matching_count_arrays_seen",
+                "runtime_triangle_cache_capacity_rejections",
+                "runtime_triangle_cache_read_rejections",
+                "runtime_triangle_cache_uv_rejections",
+                "runtime_triangle_cache_closest_triangle_count",
+                "runtime_triangle_cache_closest_rejected_uv_error",
+                "runtime_triangle_cache_profile_uv_mapping_mode",
                 "runtime_triangle_cache_warmup_reason",
                 "runtime_triangle_cache_warmup_failure",
                 "runtime_triangle_cache_warmup_is_initialized_before",
                 "runtime_triangle_cache_warmup_is_initialized_after",
+                "runtime_triangle_cache_warmup_initialize_available",
+                "runtime_triangle_cache_warmup_initialize_called",
+                "runtime_triangle_cache_warmup_initialize_ok",
+                "runtime_triangle_cache_warmup_initialize_skip_reason",
                 "runtime_triangle_cache_warmup_hit_test_uncached_called",
                 "runtime_triangle_cache_warmup_hit_test_uncached_ok",
                 "runtime_triangle_cache_warmup_hit_test_cached_called",
@@ -1258,6 +1275,10 @@ public sealed class HostSession
             image.RightRegionMode,
             image.BackRegionMode,
             image.LeftRegionMode,
+            image.FillColor,
+            image.FillMetallic,
+            image.FillRoughness,
+            image.FillEmissive,
             image.BrushSizeTexels,
             image.ColorCompressionTolerance,
             image.Metallic,
@@ -1307,8 +1328,8 @@ public sealed class HostSession
             $"alpha_mode={image.AlphaMode} | brush_size_texels={image.BrushSizeTexels:F3} | " +
             $"compression_tolerance={image.ColorCompressionTolerance:F3} | metallic={image.Metallic:F3} | " +
             $"roughness={image.Roughness:F3} | emissive={image.Emissive:F3} | " +
-            $"background_metallic={image.BackgroundMetallic:F3} | background_roughness={image.BackgroundRoughness:F3} | " +
-            $"background_emissive={image.BackgroundEmissive:F3}");
+            $"fill_color={image.FillColor.ToHex()} | fill_metallic={image.FillMetallic:F3} | " +
+            $"fill_roughness={image.FillRoughness:F3} | fill_emissive={image.FillEmissive:F3}");
     }
 
     private void LogImagePaintNativeSummary(BridgeReply response)
@@ -1332,9 +1353,11 @@ public sealed class HostSession
                 "Image Paint native: " +
                 $"active_profile={Field(metadata, "profile_id")} | body_type={Field(metadata, "image_paint_body_type")} | " +
                 $"assignments={Field(metadata, "image_paint_assignments")} | transparent_skips={Field(metadata, "image_paint_transparent_skips")} | " +
-                $"background_assignments={Field(metadata, "image_paint_background_assignments")} | cube_edge_assignments={Field(metadata, "image_paint_cube_edge_assignments")} | " +
+                $"fill_regions={Field(metadata, "fill_region_count")} | cube_edge_assignments={Field(metadata, "image_paint_cube_edge_assignments")} | " +
                 $"cube_side_assignments={Field(metadata, "image_paint_cube_side_assignments")} | revision={Field(metadata, "image_paint_revision")} | " +
-                $"metallic={Field(metadata, "image_paint_metallic")} | roughness={Field(metadata, "image_paint_roughness")} | emissive={Field(metadata, "image_paint_emissive")}");
+                $"metallic={Field(metadata, "image_paint_metallic")} | roughness={Field(metadata, "image_paint_roughness")} | emissive={Field(metadata, "image_paint_emissive")} | " +
+                $"fill_metallic={Field(metadata, "image_paint_fill_metallic")} | fill_roughness={Field(metadata, "image_paint_fill_roughness")} | " +
+                $"fill_emissive={Field(metadata, "image_paint_fill_emissive")}");
         }
         catch (JsonException)
         {
@@ -1498,16 +1521,16 @@ public sealed class HostSession
                 settings.Image.Revision,
                 settings.Image.BodyType,
                 settings.Image.AlphaMode,
-                settings.Image.BackgroundColor.ToHex(),
                 settings.Image.Placement,
                 settings.Image.BrushSizeTexels,
                 settings.Image.ColorCompressionTolerance,
                 settings.Image.Metallic,
                 settings.Image.Roughness,
                 settings.Image.Emissive,
-                settings.Image.BackgroundMetallic,
-                settings.Image.BackgroundRoughness,
-                settings.Image.BackgroundEmissive,
+                settings.Image.FillColor.ToHex(),
+                settings.Image.FillMetallic,
+                settings.Image.FillRoughness,
+                settings.Image.FillEmissive,
                 settings.Image.Layers.Count,
                 !string.IsNullOrWhiteSpace(settings.Image.CanvasRgbaBase64)));
     }

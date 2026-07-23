@@ -244,8 +244,8 @@ public sealed class MainForm : Form
                      "index.html",
                      "app.js",
                      "styles.css",
-                     Path.Combine("mesh-profiles", "paintman.mesh-profile-v2.json"),
-                     Path.Combine("mesh-profiles", "paintman_cube.mesh-profile-v2.json")
+                     Path.Combine("mesh-profiles", "paintman.image-profile-v2.json"),
+                     Path.Combine("mesh-profiles", "paintman_cube.image-profile-v2.json")
                  })
         {
             var path = Path.Combine(webRoot, fileName);
@@ -1492,7 +1492,7 @@ public sealed class MainForm : Form
         var hotkeyId = ResolveHotkeyId(virtualKey);
         if (hotkeyId == 0)
             return;
-        if (settingsEditing)
+        if (settingsEditing && !IsStopHotkey(hotkeyId))
         {
             if (!hotkeyRecording)
                 SendToast(session.Localization.Text(session.Settings.Language, "toast.editing.hotkey.blocked"), "warn");
@@ -1500,6 +1500,9 @@ public sealed class MainForm : Form
         }
         _ = HandleHotkeyAsync(hotkeyId);
     }
+
+    private static bool IsStopHotkey(int hotkeyId) =>
+        hotkeyId is HotkeyStop or HotkeyImageStop;
 
     private int ResolveHotkeyId(uint virtualKey)
     {

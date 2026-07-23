@@ -123,6 +123,24 @@
             <section class="settings-tab-panel" data-settings-panel="image" hidden>
               <input id="image-file-input" type="file" accept="image/png,image/jpeg" multiple hidden>
               <div class="image-settings-stack">
+                <div class="group image-design-actions">
+                  <div class="group-title">Images</div>
+                  <div class="image-design-action-grid">
+                    <button id="image-upload" class="image-edit-control" type="button">Upload</button>
+                    <button id="image-preset-load" class="image-edit-control" type="button">Load preset</button>
+                    <button id="image-preset-save" class="image-edit-control" type="button">Save preset</button>
+                  </div>
+                  <div class="image-choice-list">
+                    <strong title="Changes the game surface mapping; it does not move the image in the atlas.">Body type</strong><div class="region-choice image-choice" role="group" aria-label="Body type">
+                      <button id="image-guide-round" class="image-edit-control active" type="button">Round</button>
+                      <button id="image-guide-cube" class="image-edit-control" type="button">Cube</button>
+                    </div>
+                  </div>
+                  <div id="image-layer-list" class="image-layer-list" aria-live="polite"></div>
+                  <div class="image-canvas-wrap" id="image-drop-zone">
+                    <canvas id="image-placement-canvas" width="1024" height="512" aria-label="Four-face image placement canvas"></canvas>
+                  </div>
+                </div>
                 <div class="group" id="image-paint-section">
                   <div class="group-title">Geometry</div>
                   <div class="setting-grid">
@@ -155,27 +173,9 @@
                   <div class="group-title" data-i18n="mode.fill">Fill</div>
                   <div class="setting-grid">
                     <label class="field app-wide"><span data-i18n="fill.color">Color</span><div class="color-row"><input id="image-fill-color-picker" class="image-edit-control color-picker" type="color" value="#FFFFFF"><input id="image-fill-color" class="image-edit-control mono-input" type="text" spellcheck="false" placeholder="#FFFFFF"></div></label>
-                    <label class="field"><span data-i18n="metallic">Metallic</span><div class="range-row"><input id="image-fill-metallic" class="image-edit-control" type="range" min="0" max="1" step="0.01" value="0"><input id="image-fill-metallic-number" class="image-edit-control range-number" type="number" min="0" max="1" step="0.01" value="0"></div></label>
-                    <label class="field"><span data-i18n="roughness">Roughness</span><div class="range-row"><input id="image-fill-roughness" class="image-edit-control" type="range" min="0" max="1" step="0.01" value="1"><input id="image-fill-roughness-number" class="image-edit-control range-number" type="number" min="0" max="1" step="0.01" value="1"></div></label>
+                    <label class="field"><span data-i18n="metallic">Metallic</span><div class="range-row"><input id="image-fill-metallic" class="image-edit-control" type="range" min="0" max="1" step="0.01" value="1"><input id="image-fill-metallic-number" class="image-edit-control range-number" type="number" min="0" max="1" step="0.01" value="1"></div></label>
+                    <label class="field"><span data-i18n="roughness">Roughness</span><div class="range-row"><input id="image-fill-roughness" class="image-edit-control" type="range" min="0" max="1" step="0.01" value="0"><input id="image-fill-roughness-number" class="image-edit-control range-number" type="number" min="0" max="1" step="0.01" value="0"></div></label>
                     <label class="field"><span data-i18n="emissive">Emissive</span><div class="range-row"><input id="image-fill-emissive" class="image-edit-control" type="range" min="0" max="1" step="0.01" value="0"><input id="image-fill-emissive-number" class="image-edit-control range-number" type="number" min="0" max="1" step="0.01" value="0"></div></label>
-                  </div>
-                </div>
-                <div class="group image-design-actions">
-                  <div class="group-title">Images</div>
-                  <div class="image-design-action-grid">
-                    <button id="image-upload" class="image-edit-control" type="button">Upload</button>
-                    <button id="image-preset-load" class="image-edit-control" type="button">Load preset</button>
-                    <button id="image-preset-save" class="image-edit-control" type="button">Save preset</button>
-                  </div>
-                  <div class="image-choice-list">
-                    <strong title="Changes the game surface mapping; it does not move the image in the atlas.">Body type</strong><div class="region-choice image-choice" role="group" aria-label="Body type">
-                      <button id="image-guide-round" class="image-edit-control active" type="button">Round</button>
-                      <button id="image-guide-cube" class="image-edit-control" type="button">Cube</button>
-                    </div>
-                  </div>
-                  <div id="image-layer-list" class="image-layer-list" aria-live="polite"></div>
-                  <div class="image-canvas-wrap" id="image-drop-zone">
-                    <canvas id="image-placement-canvas" width="1024" height="512" aria-label="Four-face image placement canvas"></canvas>
                   </div>
                 </div>
               </div>

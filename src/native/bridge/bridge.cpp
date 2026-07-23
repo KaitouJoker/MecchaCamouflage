@@ -5136,6 +5136,9 @@ namespace
         int schema_version{0};
         std::string profile_id{};
         std::string profile_hash{};
+        std::string profile_role{};
+        std::string base_profile_id{};
+        std::string base_profile_hash{};
         std::string source_path{};
         std::string export_name{};
         int texture_size{1024};
@@ -5500,6 +5503,9 @@ namespace
         profile.schema_version = json_int_field(text, "ProfileSchemaVersion", json_int_field(text, "SchemaVersion", 0, 0, 100), 0, 100);
         profile.profile_id = json_string_field(text, "ProfileId", source_label);
         profile.profile_hash = json_string_field(text, "ProfileHash", "");
+        profile.profile_role = lower_copy(json_string_field(text, "ProfileRole", ""));
+        profile.base_profile_id = json_string_field(text, "BaseProfileId", "");
+        profile.base_profile_hash = json_string_field(text, "BaseProfileHash", "");
         profile.source_path = json_string_field(text, "SourcePath", "");
         profile.export_name = json_string_field(text, "Export", "");
         profile.texture_size = json_int_field(text, "TextureSize", 1024, 1, 65536);
@@ -5575,6 +5581,20 @@ namespace
             }
         }
 
+        if (!profile.profile_role.empty() && profile.profile_role != "image_reference")
+        {
+            profile.stage = "mesh_profile_role_invalid";
+            profile.message = "mesh profile has an unsupported ProfileRole";
+            return profile;
+        }
+        if (profile.profile_role == "image_reference" &&
+            (profile.base_profile_id.empty() || profile.base_profile_hash.empty()))
+        {
+            profile.stage = "mesh_profile_reference_identity_missing";
+            profile.message = "Image reference profile is missing its raw-profile identity";
+            return profile;
+        }
+
         profile.ok = true;
         profile.stage = "mesh_profile_loaded";
         profile.message = "mesh profile loaded";
@@ -5587,7 +5607,10 @@ namespace
         const auto base_dir = bridge_directory_path();
         if (!base_dir.empty())
         {
-            const auto pattern = base_dir + L"\\mesh-profiles\\*.json";
+            // Raw dump profiles are the runtime paint contract. Image reference
+            // profiles are derived editor assets and must never compete with the
+            // raw profile when identifying a live mesh.
+            const auto pattern = base_dir + L"\\mesh-profiles\\*.mesh-profile-v2.json";
             WIN32_FIND_DATAW find_data{};
             HANDLE find = FindFirstFileW(pattern.c_str(), &find_data);
             if (find != INVALID_HANDLE_VALUE)
@@ -5609,6 +5632,39 @@ namespace
             }
         }
 
+        return profiles;
+    }
+
+    auto load_mesh_first_image_reference_profile_catalog() -> std::vector<MeshFirstProfile>
+    {
+        std::vector<MeshFirstProfile> profiles{};
+        const auto base_dir = bridge_directory_path();
+        if (!base_dir.empty())
+        {
+            // Derived profiles cannot participate in live identity matching.
+            // They are loaded separately, only after a raw profile has already
+            // verified the live mesh, to supply its fixed Image reference pose.
+            const auto pattern = base_dir + L"\\mesh-profiles\\*.image-profile-v2.json";
+            WIN32_FIND_DATAW find_data{};
+            HANDLE find = FindFirstFileW(pattern.c_str(), &find_data);
+            if (find != INVALID_HANDLE_VALUE)
+            {
+                do
+                {
+                    if ((find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0)
+                    {
+                        continue;
+                    }
+                    const auto path = base_dir + L"\\mesh-profiles\\" + find_data.cFileName;
+                    std::string text{};
+                    if (read_text_file_w(path, text))
+                    {
+                        profiles.push_back(parse_mesh_first_profile_text(text, "image-reference-profiles"));
+                    }
+                } while (FindNextFileW(find, &find_data));
+                FindClose(find);
+            }
+        }
         return profiles;
     }
 
@@ -5707,6 +5763,52 @@ namespace
             }
         }
         return false;
+    }
+
+    auto select_mesh_first_image_reference_profile(const MeshFirstProfile& raw_profile,
+                                                    const std::vector<MeshFirstProfile>& image_profiles,
+                                                    MeshFirstProfile& out,
+                                                    std::string& failure) -> bool
+    {
+        const MeshFirstProfile* selected = nullptr;
+        int invalid_count = 0;
+        for (const auto& candidate : image_profiles)
+        {
+            if (!candidate.ok || candidate.profile_role != "image_reference" ||
+                candidate.base_profile_id != raw_profile.profile_id ||
+                candidate.base_profile_hash != raw_profile.profile_hash ||
+                candidate.profile_id != raw_profile.profile_id ||
+                candidate.profile_hash != raw_profile.profile_hash ||
+                candidate.vertex_count != raw_profile.vertex_count ||
+                candidate.index_count != raw_profile.index_count ||
+                candidate.bone_count != raw_profile.bone_count ||
+                static_cast<int>(candidate.image_reference_vertices.size()) != candidate.vertex_count ||
+                static_cast<int>(candidate.image_reference_component_transforms.size()) != candidate.bone_count)
+            {
+                ++invalid_count;
+                continue;
+            }
+            if (selected)
+            {
+                failure = "multiple derived Image reference profiles match the verified raw mesh";
+                return false;
+            }
+            selected = &candidate;
+        }
+        if (!selected)
+        {
+            failure = image_profiles.empty()
+                          ? "derived Image reference profile catalog is empty"
+                          : "no complete derived Image reference profile matches the verified raw mesh";
+            if (invalid_count > 0)
+            {
+                failure += " (" + std::to_string(invalid_count) + " candidate(s) rejected)";
+            }
+            return false;
+        }
+        out = *selected;
+        failure.clear();
+        return true;
     }
 
     auto mesh_first_profile_metadata(const MeshFirstProfile& profile) -> std::string
@@ -7832,7 +7934,16 @@ namespace
         int owner_offset{-1};
         int stride{0};
         int triangle_count{0};
+        int expected_triangle_count{0};
+        int array_headers_seen{0};
+        int matching_count_arrays_seen{0};
+        int capacity_rejections{0};
+        int read_rejections{0};
+        int uv_rejections{0};
+        int closest_triangle_count{0};
+        double closest_rejected_uv_error{0.0};
         double profile_uv_avg_error{0.0};
+        std::string profile_uv_mapping_mode{"not_run"};
         std::string failure{"not_run"};
         std::vector<MeshFirstRuntimeTriangle> triangles{};
     };
@@ -8128,11 +8239,164 @@ namespace
         return sum / 6.0;
     }
 
+    struct MeshFirstRuntimeTriangleProfileUvMatch
+    {
+        bool ok{false};
+        double error{1000000.0};
+        std::array<int, 3> runtime_corner_for_profile{{0, 1, 2}};
+    };
+
+    auto mesh_first_match_runtime_triangle_to_profile_uv(const MeshFirstProfile& profile,
+                                                         int profile_triangle_index,
+                                                         const MeshFirstRuntimeTriangle& runtime) -> MeshFirstRuntimeTriangleProfileUvMatch
+    {
+        MeshFirstRuntimeTriangleProfileUvMatch best{};
+        const std::size_t tri = static_cast<std::size_t>(profile_triangle_index) * 3;
+        if (tri + 2 >= profile.indices.size())
+        {
+            return best;
+        }
+        static constexpr std::array<std::array<int, 3>, 6> permutations{{
+            {{0, 1, 2}}, {{0, 2, 1}}, {{1, 0, 2}}, {{1, 2, 0}}, {{2, 0, 1}}, {{2, 1, 0}}
+        }};
+        for (const auto& permutation : permutations)
+        {
+            double sum = 0.0;
+            bool valid = true;
+            for (int profile_corner = 0; profile_corner < 3; ++profile_corner)
+            {
+                const int vertex_index = profile.indices[tri + static_cast<std::size_t>(profile_corner)];
+                if (vertex_index < 0 || vertex_index >= profile.vertex_count)
+                {
+                    valid = false;
+                    break;
+                }
+                const auto& vertex = profile.vertices[static_cast<std::size_t>(vertex_index)];
+                const auto& uv = runtime.uv[permutation[static_cast<std::size_t>(profile_corner)]];
+                sum += std::abs(vertex.u - uv.X) + std::abs(vertex.v - uv.Y);
+            }
+            if (!valid)
+            {
+                continue;
+            }
+            const double error = sum / 6.0;
+            if (std::isfinite(error) && error < best.error)
+            {
+                best.error = error;
+                best.runtime_corner_for_profile = permutation;
+            }
+        }
+        best.ok = best.error <= 0.02;
+        return best;
+    }
+
+    auto mesh_first_reorder_runtime_triangle_for_profile(const MeshFirstRuntimeTriangle& runtime,
+                                                         const std::array<int, 3>& runtime_corner_for_profile) -> MeshFirstRuntimeTriangle
+    {
+        MeshFirstRuntimeTriangle out{};
+        for (int profile_corner = 0; profile_corner < 3; ++profile_corner)
+        {
+            const int runtime_corner = runtime_corner_for_profile[static_cast<std::size_t>(profile_corner)];
+            out.world[profile_corner] = runtime.world[runtime_corner];
+            out.local[profile_corner] = runtime.local[runtime_corner];
+            out.uv[profile_corner] = runtime.uv[runtime_corner];
+        }
+        return out;
+    }
+
+    auto mesh_first_order_runtime_triangles_by_profile_uv(const MeshFirstProfile& profile,
+                                                           const std::vector<MeshFirstRuntimeTriangle>& runtime,
+                                                           std::vector<MeshFirstRuntimeTriangle>& ordered,
+                                                           double& average_error,
+                                                           std::string& mapping_mode) -> bool
+    {
+        const int expected = static_cast<int>(profile.indices.size() / 3);
+        if (expected <= 0 || static_cast<int>(runtime.size()) != expected)
+        {
+            return false;
+        }
+
+        // Prefer a fully verified direct index mapping.  This is safe even
+        // when UV islands are duplicated: each runtime triangle at index i
+        // must independently match profile triangle i before it is accepted.
+        if (runtime_contract::order_runtime_triangles_by_direct_profile_index(
+                runtime,
+                expected,
+                [&profile](int profile_triangle, const MeshFirstRuntimeTriangle& runtime_triangle) {
+                    return mesh_first_match_runtime_triangle_to_profile_uv(
+                        profile, profile_triangle, runtime_triangle);
+                },
+                [](const MeshFirstRuntimeTriangle& runtime_triangle,
+                   const MeshFirstRuntimeTriangleProfileUvMatch& match) {
+                    return mesh_first_reorder_runtime_triangle_for_profile(
+                        runtime_triangle, match.runtime_corner_for_profile);
+                },
+                ordered,
+                average_error))
+        {
+            mapping_mode = "profile_uv_direct_index";
+            return true;
+        }
+
+        std::vector<int> runtime_for_profile(static_cast<std::size_t>(expected), -1);
+        std::vector<MeshFirstRuntimeTriangleProfileUvMatch> match_for_profile(static_cast<std::size_t>(expected));
+        std::vector<bool> runtime_used(static_cast<std::size_t>(expected), false);
+        bool identity_order = true;
+        double error_sum = 0.0;
+        for (int profile_triangle = 0; profile_triangle < expected; ++profile_triangle)
+        {
+            int matched_runtime = -1;
+            MeshFirstRuntimeTriangleProfileUvMatch matched{};
+            for (int runtime_triangle = 0; runtime_triangle < expected; ++runtime_triangle)
+            {
+                const auto candidate = mesh_first_match_runtime_triangle_to_profile_uv(
+                    profile, profile_triangle, runtime[static_cast<std::size_t>(runtime_triangle)]);
+                if (!candidate.ok)
+                {
+                    continue;
+                }
+                // A duplicated UV island cannot safely identify geometry, so
+                // do not guess which mesh triangle owns it.
+                if (matched_runtime >= 0)
+                {
+                    return false;
+                }
+                matched_runtime = runtime_triangle;
+                matched = candidate;
+            }
+            if (matched_runtime < 0 || runtime_used[static_cast<std::size_t>(matched_runtime)])
+            {
+                return false;
+            }
+            runtime_used[static_cast<std::size_t>(matched_runtime)] = true;
+            runtime_for_profile[static_cast<std::size_t>(profile_triangle)] = matched_runtime;
+            match_for_profile[static_cast<std::size_t>(profile_triangle)] = matched;
+            identity_order &= matched_runtime == profile_triangle &&
+                              matched.runtime_corner_for_profile == std::array<int, 3>{{0, 1, 2}};
+            error_sum += matched.error;
+        }
+        if (std::any_of(runtime_used.begin(), runtime_used.end(), [](bool used) { return !used; }))
+        {
+            return false;
+        }
+        ordered.resize(static_cast<std::size_t>(expected));
+        for (int profile_triangle = 0; profile_triangle < expected; ++profile_triangle)
+        {
+            ordered[static_cast<std::size_t>(profile_triangle)] = mesh_first_reorder_runtime_triangle_for_profile(
+                runtime[static_cast<std::size_t>(runtime_for_profile[static_cast<std::size_t>(profile_triangle)])],
+                match_for_profile[static_cast<std::size_t>(profile_triangle)].runtime_corner_for_profile);
+        }
+        average_error = error_sum / static_cast<double>(expected);
+        mapping_mode = identity_order ? "profile_uv_direct" : "profile_uv_reordered";
+        return true;
+    }
+
     auto mesh_first_resolve_runtime_triangle_cache(std::uintptr_t component,
                                                    const MeshFirstProfile& profile) -> MeshFirstRuntimeTriangleCache
     {
         MeshFirstRuntimeTriangleCache out{};
         const int expected_triangles = static_cast<int>(profile.indices.size() / 3);
+        out.expected_triangle_count = expected_triangles;
         if (!component || expected_triangles <= 0)
         {
             out.failure = "runtime_triangle_cache_invalid_profile";
@@ -8150,65 +8414,77 @@ namespace
             const auto data = safe_read<std::uintptr_t>(component + static_cast<std::uintptr_t>(offset), 0);
             const auto num = safe_read<int>(component + static_cast<std::uintptr_t>(offset + 8), 0);
             const auto max = safe_read<int>(component + static_cast<std::uintptr_t>(offset + 12), 0);
-            if (!data || num != expected_triangles || max < num || max > num + std::max(32, num / 2))
+            if (!data || num <= 0 || num > 10'000'000 || max < num || max > 10'000'000)
             {
+                continue;
+            }
+            ++out.array_headers_seen;
+            if (out.closest_triangle_count <= 0 ||
+                std::abs(num - expected_triangles) < std::abs(out.closest_triangle_count - expected_triangles))
+            {
+                out.closest_triangle_count = num;
+            }
+            if (num != expected_triangles)
+            {
+                continue;
+            }
+            ++out.matching_count_arrays_seen;
+            if (max > num + std::max(32, num / 2))
+            {
+                ++out.capacity_rejections;
+                continue;
+            }
+
+            std::vector<MeshFirstRuntimeTriangle> runtime_triangles{};
+            runtime_triangles.resize(static_cast<std::size_t>(num));
+            bool valid = true;
+            for (int i = 0; i < num; ++i)
+            {
+                MeshFirstRuntimeTriangle triangle{};
+                if (!mesh_first_read_runtime_triangle(data + static_cast<std::uintptr_t>(i) * kStride, triangle))
+                {
+                    valid = false;
+                    break;
+                }
+                runtime_triangles[static_cast<std::size_t>(i)] = triangle;
+            }
+            if (!valid)
+            {
+                ++out.read_rejections;
                 continue;
             }
 
             std::vector<MeshFirstRuntimeTriangle> triangles{};
-            triangles.resize(static_cast<std::size_t>(num));
-            double uv_error_sum = 0.0;
-            int checked = 0;
-            bool valid = true;
-            // A partial UV check can match a neighbouring cache member whose
-            // first triangles happen to look right while later topology does
-            // not. Image guide and paint must agree on the complete cache.
-            const int check_count = num;
-            for (int i = 0; i < check_count; ++i)
+            double avg_error = 0.0;
+            std::string mapping_mode{};
+            if (!mesh_first_order_runtime_triangles_by_profile_uv(profile,
+                                                                   runtime_triangles,
+                                                                   triangles,
+                                                                   avg_error,
+                                                                   mapping_mode))
             {
-                MeshFirstRuntimeTriangle triangle{};
-                if (!mesh_first_read_runtime_triangle(data + static_cast<std::uintptr_t>(i) * kStride, triangle))
+                ++out.uv_rejections;
+                for (int i = 0; i < num; ++i)
                 {
-                    valid = false;
+                    const double direct_error = mesh_first_runtime_triangle_profile_uv_error(
+                        profile, i, runtime_triangles[static_cast<std::size_t>(i)]);
+                    if (std::isfinite(direct_error) && direct_error > 0.02 &&
+                        (out.closest_rejected_uv_error <= 0.0 || direct_error < out.closest_rejected_uv_error))
+                    {
+                        out.closest_rejected_uv_error = direct_error;
+                    }
                     break;
                 }
-                const double uv_error = mesh_first_runtime_triangle_profile_uv_error(profile, i, triangle);
-                if (!std::isfinite(uv_error) || uv_error > 0.02)
-                {
-                    valid = false;
-                    break;
-                }
-                uv_error_sum += uv_error;
-                triangles[static_cast<std::size_t>(i)] = triangle;
-                ++checked;
-            }
-            if (!valid || checked <= 0)
-            {
                 continue;
             }
 
-            for (int i = checked; i < num; ++i)
-            {
-                MeshFirstRuntimeTriangle triangle{};
-                if (!mesh_first_read_runtime_triangle(data + static_cast<std::uintptr_t>(i) * kStride, triangle))
-                {
-                    valid = false;
-                    break;
-                }
-                triangles[static_cast<std::size_t>(i)] = triangle;
-            }
-            if (!valid)
-            {
-                continue;
-            }
-
-            const double avg_error = uv_error_sum / static_cast<double>(checked);
             if (avg_error < best_error)
             {
                 best_error = avg_error;
                 best_offset = offset;
                 best_data = data;
                 best_triangles = std::move(triangles);
+                out.profile_uv_mapping_mode = mapping_mode;
             }
         }
 
@@ -8541,9 +8817,37 @@ namespace
         out.initialize_available = ref.find_function(ctx.component, "InitializePaint") != 0;
         out.initialize_called = false;
         out.initialize_ok = false;
-        out.initialize_skip_reason = out.initialize_available
-            ? "skipped_non_destructive_hittest_warmup"
-            : "initialize_paint_unavailable";
+        if (!out.initialize_available)
+        {
+            out.initialize_skip_reason = "initialize_paint_unavailable";
+        }
+        else if (!out.is_initialized_before_ok)
+        {
+            // Do not guess when the game cannot report initialization state.
+            out.initialize_skip_reason = "is_initialized_unverified";
+        }
+        else if (out.is_initialized_before)
+        {
+            out.initialize_skip_reason = "already_initialized";
+        }
+        else
+        {
+            // A cache miss with an explicitly uninitialized RuntimePaintable is
+            // not recoverable through hit tests alone. Initialize the game's
+            // own component before resolving its cache again.
+            const auto initialized = sdk_call_no_params_detail(ref, ctx.component, "InitializePaint");
+            out.initialize_called = initialized.wrote_params;
+            out.initialize_ok = initialized.process_ok;
+            out.initialize_skip_reason = initialized.process_ok ? "" : initialized.failure;
+            if (!initialized.process_ok && !initialized.failure.empty())
+            {
+                if (!out.failure.empty())
+                {
+                    out.failure += ";";
+                }
+                out.failure += "initialize_paint:" + initialized.failure;
+            }
+        }
 
         const auto hit_test_function = ref.find_function(ctx.component, "HitTestAtScreenPosition");
         out.hit_test_available = hit_test_function != 0;
@@ -11291,6 +11595,18 @@ namespace
         const double image_paint_metallic = clamp_range(json_number_field(request, "image_paint_metallic", 0.0), 0.0, 1.0);
         const double image_paint_roughness = clamp_range(json_number_field(request, "image_paint_roughness", 1.0), 0.0, 1.0);
         const double image_paint_emissive = clamp_range(json_number_field(request, "image_paint_emissive", 0.0), 0.0, 1.0);
+        const double image_paint_fill_color_r =
+            clamp_range(json_number_field(request, "image_paint_fill_color_r", 1.0), 0.0, 1.0);
+        const double image_paint_fill_color_g =
+            clamp_range(json_number_field(request, "image_paint_fill_color_g", 1.0), 0.0, 1.0);
+        const double image_paint_fill_color_b =
+            clamp_range(json_number_field(request, "image_paint_fill_color_b", 1.0), 0.0, 1.0);
+        const double image_paint_fill_metallic =
+            clamp_range(json_number_field(request, "image_paint_fill_metallic", 1.0), 0.0, 1.0);
+        const double image_paint_fill_roughness =
+            clamp_range(json_number_field(request, "image_paint_fill_roughness", 0.0), 0.0, 1.0);
+        const double image_paint_fill_emissive =
+            clamp_range(json_number_field(request, "image_paint_fill_emissive", 0.0), 0.0, 1.0);
         const int image_paint_revision = json_int_field(request, "image_paint_revision", 0, 0, 1000000000);
         const std::string image_paint_rgba_base64 =
             json_string_field(request, "image_paint_rgba_base64", "");
@@ -11623,6 +11939,8 @@ namespace
         MeshFirstProfile profile{};
         std::string profile_failure{};
         const bool profile_available = select_mesh_first_profile_for_candidate(ref, profile_catalog, selected_mesh, profile, profile_failure);
+        MeshFirstProfile image_reference_profile{};
+        bool image_reference_profile_available = false;
         if (profile_available)
         {
             metadata += ",";
@@ -11660,6 +11978,29 @@ namespace
                                      "The selected image body does not match the live mesh profile",
                                      metadata + ",\"replay_blocked\":true");
             }
+
+            const auto image_reference_catalog = load_mesh_first_image_reference_profile_catalog();
+            metadata += ",\"image_paint_reference_profile_catalog_count\":" +
+                        std::to_string(image_reference_catalog.size());
+            std::string image_reference_failure{};
+            if (!select_mesh_first_image_reference_profile(profile,
+                                                           image_reference_catalog,
+                                                           image_reference_profile,
+                                                           image_reference_failure))
+            {
+                return response_json(false,
+                                     "image_paint_reference_profile_unavailable",
+                                     0,
+                                     1,
+                                     "The fixed image reference pose is unavailable for the verified mesh profile.",
+                                     metadata + ",\"image_paint_reference_profile_failure\":\"" +
+                                         json_escape(image_reference_failure) + "\",\"replay_blocked\":true");
+            }
+            image_reference_profile_available = true;
+            metadata += ",\"image_paint_reference_profile_id\":\"" +
+                        json_escape(image_reference_profile.profile_id) + "\"";
+            metadata += ",\"image_paint_reference_profile_hash\":\"" +
+                        json_escape(image_reference_profile.profile_hash) + "\"";
         }
 
         write_bridge_progress("pose_resolve",
@@ -11864,6 +12205,16 @@ namespace
         metadata += ",\"runtime_triangle_cache_offset\":\"" + (runtime_triangle_cache.owner_offset >= 0 ? hex_address(static_cast<std::uintptr_t>(runtime_triangle_cache.owner_offset)) : std::string("none")) + "\"";
         metadata += ",\"runtime_triangle_cache_stride\":" + std::to_string(runtime_triangle_cache.stride);
         metadata += ",\"runtime_triangle_cache_triangles\":" + std::to_string(runtime_triangle_cache.triangle_count);
+        metadata += ",\"runtime_triangle_cache_expected_triangles\":" + std::to_string(runtime_triangle_cache.expected_triangle_count);
+        metadata += ",\"runtime_triangle_cache_array_headers_seen\":" + std::to_string(runtime_triangle_cache.array_headers_seen);
+        metadata += ",\"runtime_triangle_cache_matching_count_arrays_seen\":" + std::to_string(runtime_triangle_cache.matching_count_arrays_seen);
+        metadata += ",\"runtime_triangle_cache_capacity_rejections\":" + std::to_string(runtime_triangle_cache.capacity_rejections);
+        metadata += ",\"runtime_triangle_cache_read_rejections\":" + std::to_string(runtime_triangle_cache.read_rejections);
+        metadata += ",\"runtime_triangle_cache_uv_rejections\":" + std::to_string(runtime_triangle_cache.uv_rejections);
+        metadata += ",\"runtime_triangle_cache_closest_triangle_count\":" + std::to_string(runtime_triangle_cache.closest_triangle_count);
+        metadata += ",\"runtime_triangle_cache_closest_rejected_uv_error\":" + std::to_string(runtime_triangle_cache.closest_rejected_uv_error);
+        metadata += ",\"runtime_triangle_cache_profile_uv_mapping_mode\":\"" +
+                    json_escape(runtime_triangle_cache.profile_uv_mapping_mode) + "\"";
         metadata += ",\"runtime_triangle_cache_profile_uv_avg_error\":" + std::to_string(runtime_triangle_cache.profile_uv_avg_error);
         metadata += ",\"runtime_triangle_cache_failure\":\"" + json_escape(runtime_triangle_cache.failure) + "\"";
         const bool runtime_uses_profile_component_world =
@@ -12146,14 +12497,16 @@ namespace
             int cube_edge_assignments = 0;
             int cube_canonical_mapping_failures = 0;
             int round_canonical_mapping_failures = 0;
-            const bool image_paint_cube = image_paint_body_type == "cube";
+            const bool image_paint_cube = mesh_first_is_cube_profile(image_reference_profile);
             CubeCanonicalImageAtlas cube_canonical_atlas{};
             RoundCanonicalImageAtlas round_canonical_atlas{};
             if (image_paint_cube)
             {
                 std::string cube_canonical_failure{};
-                if (!profile_available || !mesh_first_is_cube_profile(profile) ||
-                    !mesh_first_build_cube_canonical_image_atlas(profile, cube_canonical_atlas, cube_canonical_failure))
+                if (!image_reference_profile_available ||
+                    !mesh_first_build_cube_canonical_image_atlas(image_reference_profile,
+                                                                  cube_canonical_atlas,
+                                                                  cube_canonical_failure))
                 {
                     return response_json(false,
                                          "image_paint_cube_reference_unavailable",
@@ -12169,8 +12522,10 @@ namespace
             else
             {
                 std::string round_canonical_failure{};
-                if (!profile_available || mesh_first_is_cube_profile(profile) ||
-                    !mesh_first_build_round_canonical_image_atlas(profile, round_canonical_atlas, round_canonical_failure))
+                if (!image_reference_profile_available ||
+                    !mesh_first_build_round_canonical_image_atlas(image_reference_profile,
+                                                                   round_canonical_atlas,
+                                                                   round_canonical_failure))
                 {
                     return response_json(false,
                                          "image_paint_round_reference_unavailable",
@@ -12193,7 +12548,7 @@ namespace
                 if (image_paint_cube)
                 {
                     runtime_contract::CubeCanonicalImageProjectionResult image_coordinate{};
-                    if (!mesh_first_map_cube_canonical_sample(profile,
+                    if (!mesh_first_map_cube_canonical_sample(image_reference_profile,
                                                               cube_canonical_atlas,
                                                               sample.triangle_index,
                                                               sample.barycentric_a,
@@ -12233,7 +12588,7 @@ namespace
                 else
                 {
                     runtime_contract::RoundCanonicalImageProjectionResult image_coordinate{};
-                    if (!mesh_first_map_round_canonical_sample(profile,
+                    if (!mesh_first_map_round_canonical_sample(image_reference_profile,
                                                                round_canonical_atlas,
                                                                sample.triangle_index,
                                                                sample.barycentric_a,
@@ -12288,6 +12643,12 @@ namespace
             metadata += ",\"image_paint_metallic\":" + std::to_string(image_paint_metallic);
             metadata += ",\"image_paint_roughness\":" + std::to_string(image_paint_roughness);
             metadata += ",\"image_paint_emissive\":" + std::to_string(image_paint_emissive);
+            metadata += ",\"image_paint_fill_color_r\":" + std::to_string(image_paint_fill_color_r);
+            metadata += ",\"image_paint_fill_color_g\":" + std::to_string(image_paint_fill_color_g);
+            metadata += ",\"image_paint_fill_color_b\":" + std::to_string(image_paint_fill_color_b);
+            metadata += ",\"image_paint_fill_metallic\":" + std::to_string(image_paint_fill_metallic);
+            metadata += ",\"image_paint_fill_roughness\":" + std::to_string(image_paint_fill_roughness);
+            metadata += ",\"image_paint_fill_emissive\":" + std::to_string(image_paint_fill_emissive);
         }
         else if (!image_paint_enabled && research_force_paint_color && any_paint_region)
         {
@@ -12845,12 +13206,12 @@ namespace
             sdk::FPaintChannelData channel{};
             if (fill_mode)
             {
-                const double reset_r = fill_color_r;
-                const double reset_g = fill_color_g;
-                const double reset_b = fill_color_b;
-                const double stroke_metallic = fill_metallic;
-                const double stroke_roughness = fill_roughness;
-                const double stroke_emissive = fill_emissive;
+                const double reset_r = image_paint_enabled ? image_paint_fill_color_r : fill_color_r;
+                const double reset_g = image_paint_enabled ? image_paint_fill_color_g : fill_color_g;
+                const double reset_b = image_paint_enabled ? image_paint_fill_color_b : fill_color_b;
+                const double stroke_metallic = image_paint_enabled ? image_paint_fill_metallic : fill_metallic;
+                const double stroke_roughness = image_paint_enabled ? image_paint_fill_roughness : fill_roughness;
+                const double stroke_emissive = image_paint_enabled ? image_paint_fill_emissive : fill_emissive;
                 ++material_properties_fill_manual_samples;
                 const auto apply_mode = research_apply_mode >= 0
                                             ? static_cast<sdk::EPaintChannelApplyMode>(research_apply_mode)

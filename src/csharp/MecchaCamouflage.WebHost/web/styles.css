@@ -522,6 +522,7 @@ body.editing .image-choice-list > strong {
 .image-design-actions {
   display: grid;
   gap: 8px;
+  padding-bottom: 16px;
 }
 
 .image-design-actions > .group-title {

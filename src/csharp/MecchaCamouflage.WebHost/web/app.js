@@ -51,8 +51,8 @@ const IMAGE_ALPHA_THRESHOLD = 128;
 const IMAGE_TRANSFER_CHUNK_CHARACTERS = 128 * 1024;
 const IMAGE_RESIZE_HANDLE_SIZE = 20;
 const IMAGE_GUIDE_PROFILE_FILES = Object.freeze({
-  round: "mesh-profiles/paintman.mesh-profile-v2.json",
-  cube: "mesh-profiles/paintman_cube.mesh-profile-v2.json"
+  round: "mesh-profiles/paintman.image-profile-v2.json",
+  cube: "mesh-profiles/paintman_cube.image-profile-v2.json"
 });
 const imageGuideCanvasCache = new Map();
 const imageGuideProfileLoads = new Map();
@@ -307,21 +307,20 @@ function statusClass(value) {
 
 function renderSettings(snapshot) {
   const paint = snapshot.settings.paint;
+  const editable = canStartLiveDraftEdit();
   setNumberPair("brush-size", "brush-size-number", paint.brushSizeTexels);
   setNumberPair("color-compression-tolerance", "color-compression-tolerance-number", paint.colorCompressionTolerance);
   setChecked("auto-material", paint.autoMaterial);
   setNumberPair("metallic", "metallic-number", paint.metallic);
   setNumberPair("roughness", "roughness-number", paint.roughness);
   setNumberPair("emissive", "emissive-number", paint.emissive);
-  renderRegionButtons('[data-region="paint.frontRegionMode"]', "paint.frontRegionMode", paint.frontRegionMode);
-  renderRegionButtons('[data-region="paint.sideRegionMode"]', "paint.sideRegionMode", paint.sideRegionMode);
-  renderRegionButtons('[data-region="paint.backRegionMode"]', "paint.backRegionMode", paint.backRegionMode);
+  renderRegionButtons('[data-region="paint.frontRegionMode"]', "paint.frontRegionMode", paint.frontRegionMode, editable);
+  renderRegionButtons('[data-region="paint.sideRegionMode"]', "paint.sideRegionMode", paint.sideRegionMode, editable);
+  renderRegionButtons('[data-region="paint.backRegionMode"]', "paint.backRegionMode", paint.backRegionMode, editable);
   setColor(paint.fillColor);
   setNumberPair("fill-metallic", "fill-metallic-number", paint.fillMetallic);
   setNumberPair("fill-roughness", "fill-roughness-number", paint.fillRoughness);
   setNumberPair("fill-emissive", "fill-emissive-number", paint.fillEmissive);
-  renderImageSharedFill(paint, editing);
-
   const app = snapshot.settings.app;
   applyThemeColor(app.themeColor);
   setChecked("always-on-top", app.alwaysOnTop);
@@ -348,16 +347,16 @@ function renderSettings(snapshot) {
   setValue("language", snapshot.language);
 
   for (const control of document.querySelectorAll(".setting-control")) {
-    setControlDisabled(control, !editing);
+    setControlDisabled(control, !editable);
   }
   for (const button of document.querySelectorAll(".record-hotkey")) {
-    button.disabled = !editing;
+    button.disabled = !editable;
   }
 
-  const materialLocked = paint.autoMaterial || !editing;
+  const materialLocked = paint.autoMaterial || !editable;
   setDisabled(["metallic", "metallic-number", "roughness", "roughness-number", "emissive", "emissive-number"], materialLocked);
 
-  const fillLocked = !editing || !usesFill(paint);
+  const fillLocked = !editable || !usesFill(paint);
   byId("fill-section").classList.toggle("disabled", !usesFill(paint));
   setDisabled([
     "fill-color-picker",
@@ -380,13 +379,13 @@ function setColor(value) {
   setColorPair("fill-color-picker", "fill-color", value);
 }
 
-function renderImageSharedFill(paint, editable) {
-  if (!paint) return;
-  setColorPair("image-fill-color-picker", "image-fill-color", paint.fillColor);
-  setNumberPair("image-fill-metallic", "image-fill-metallic-number", paint.fillMetallic);
-  setNumberPair("image-fill-roughness", "image-fill-roughness-number", paint.fillRoughness);
-  setNumberPair("image-fill-emissive", "image-fill-emissive-number", paint.fillEmissive);
-  const fillEnabled = usesImageFill(imageEditor);
+function renderImageFill(editor, editable) {
+  if (!editor) return;
+  setColorPair("image-fill-color-picker", "image-fill-color", editor.fillColor);
+  setNumberPair("image-fill-metallic", "image-fill-metallic-number", editor.fillMetallic);
+  setNumberPair("image-fill-roughness", "image-fill-roughness-number", editor.fillRoughness);
+  setNumberPair("image-fill-emissive", "image-fill-emissive-number", editor.fillEmissive);
+  const fillEnabled = usesImageFill(editor);
   byId("image-fill-section").classList.toggle("disabled", !fillEnabled);
   setDisabled([
     "image-fill-color-picker", "image-fill-color",
@@ -434,7 +433,7 @@ function setControlDisabled(control, disabled) {
   }
 }
 
-function renderRegionButtons(selector, key, current) {
+function renderRegionButtons(selector, key, current, editable) {
   for (const container of document.querySelectorAll(selector)) {
     container.innerHTML = "";
     for (const mode of ["paint", "fill", "skip"]) {
@@ -442,9 +441,9 @@ function renderRegionButtons(selector, key, current) {
       button.type = "button";
       button.textContent = i18n(`mode.${mode}`);
       button.className = mode === current ? "active" : "";
-      button.disabled = !editing;
+      button.disabled = !editable;
       button.addEventListener("click", () => {
-        if (!editing) {
+        if (!ensureLiveDraftEdit()) {
           return;
         }
         setDraftSetting(key, mode);
@@ -493,8 +492,25 @@ function usesImageFill(editor) {
     .some(property => editor[property] === "fill");
 }
 
+// A running job owns an immutable payload. Its controls remain usable only as
+// the draft for the next job; they never mutate the job already in flight.
+function canStartLiveDraftEdit() {
+  return Boolean(editing || liveSnapshot?.runtime?.paintRunning);
+}
+
+function ensureLiveDraftEdit() {
+  if (editing) {
+    return true;
+  }
+  if (!canStartLiveDraftEdit()) {
+    return false;
+  }
+  beginEdit();
+  return editing;
+}
+
 function beginEdit() {
-  if (!liveSnapshot) {
+  if (!liveSnapshot || editing) {
     return;
   }
   editing = true;
@@ -621,7 +637,7 @@ function setDraftSetting(key, value) {
 }
 
 function canEditControl(control = null) {
-  if (editing && control?.getAttribute("aria-disabled") !== "true" && !control?.disabled) {
+  if (ensureLiveDraftEdit() && control?.getAttribute("aria-disabled") !== "true" && !control?.disabled) {
     return true;
   }
   const snapshot = currentSnapshot();
@@ -701,6 +717,27 @@ function normalizeColor(value) {
     return null;
   }
   return ("#" + textValue.replace("#", "")).toUpperCase();
+}
+
+function imageFillColorPayload(color) {
+  const normalized = normalizeColor(color) || "#FFFFFF";
+  return {
+    r: Number.parseInt(normalized.slice(1, 3), 16),
+    g: Number.parseInt(normalized.slice(3, 5), 16),
+    b: Number.parseInt(normalized.slice(5, 7), 16)
+  };
+}
+
+function normalizeImageFillColor(value) {
+  if (value && typeof value === "object") {
+    const r = Number(value.r ?? value.R);
+    const g = Number(value.g ?? value.G);
+    const b = Number(value.b ?? value.B);
+    if ([r, g, b].every(Number.isInteger) && [r, g, b].every(channel => channel >= 0 && channel <= 255)) {
+      return "#" + [r, g, b].map(channel => channel.toString(16).padStart(2, "0")).join("").toUpperCase();
+    }
+  }
+  return normalizeColor(value);
 }
 
 function bindRangePair(sliderId, numberId, key, transform = Number) {
@@ -808,7 +845,7 @@ function clamp(value, min, max) {
 }
 
 function beginHotkeyRecord(key, inputId) {
-  if (!editing) {
+  if (!ensureLiveDraftEdit()) {
     return;
   }
   recordingHotkey = { key, inputId };
@@ -907,6 +944,10 @@ function newImageEditor() {
     rightRegionMode: "fill",
     backRegionMode: "fill",
     leftRegionMode: "fill",
+    fillColor: "#FFFFFF",
+    fillMetallic: 1,
+    fillRoughness: 0,
+    fillEmissive: 0,
     brushSizeTexels: 5,
     colorCompressionTolerance: 0,
     metallic: 0,
@@ -965,10 +1006,10 @@ function initializeImageEditor() {
   bindImageRangePair("image-metallic", "image-metallic-number", "metallic");
   bindImageRangePair("image-roughness", "image-roughness-number", "roughness");
   bindImageRangePair("image-emissive", "image-emissive-number", "emissive");
-  bindColorPair("image-fill-color-picker", "image-fill-color", "paint.fillColor");
-  bindRangePair("image-fill-metallic", "image-fill-metallic-number", "paint.fillMetallic");
-  bindRangePair("image-fill-roughness", "image-fill-roughness-number", "paint.fillRoughness");
-  bindRangePair("image-fill-emissive", "image-fill-emissive-number", "paint.fillEmissive");
+  bindImageColorPair("image-fill-color-picker", "image-fill-color", "fillColor");
+  bindImageRangePair("image-fill-metallic", "image-fill-metallic-number", "fillMetallic");
+  bindImageRangePair("image-fill-roughness", "image-fill-roughness-number", "fillRoughness");
+  bindImageRangePair("image-fill-emissive", "image-fill-emissive-number", "fillEmissive");
   for (const eventName of ["dragenter", "dragover"]) {
     byId("image-drop-zone").addEventListener(eventName, event => {
       if (!canEditImage()) return;
@@ -1011,8 +1052,27 @@ function bindImageRangePair(sliderId, numberId, property) {
   number.addEventListener("change", () => commit(number));
 }
 
+function bindImageColorPair(pickerId, inputId, property) {
+  const picker = byId(pickerId);
+  const textInput = byId(inputId);
+  const commit = value => {
+    if (!canEditImage()) return;
+    const color = normalizeColor(value);
+    if (!color) return;
+    imageEditor[property] = color;
+    picker.value = color;
+    textInput.value = color;
+    markImageDraftDirty();
+  };
+  picker.addEventListener("input", () => commit(picker.value));
+  textInput.addEventListener("change", () => commit(textInput.value));
+  textInput.addEventListener("keydown", event => {
+    if (event.key === "Enter") textInput.blur();
+  });
+}
+
 function canEditImage() {
-  return Boolean(editing && imageEditor);
+  return Boolean(ensureLiveDraftEdit() && imageEditor && !imageEditor.restoring);
 }
 
 function setImageBodyType(value) {
@@ -1733,10 +1793,15 @@ function buildReferenceImageGuideCanvasFromTriangles(triangles, options = {}) {
   guide.width = IMAGE_CANVAS_WIDTH;
   guide.height = IMAGE_CANVAS_HEIGHT;
   const context = guide.getContext("2d");
+  const silhouette = document.createElement("canvas");
+  silhouette.width = IMAGE_CANVAS_WIDTH;
+  silhouette.height = IMAGE_CANVAS_HEIGHT;
+  const silhouetteContext = silhouette.getContext("2d");
   const labels = ["FRONT", "RIGHT", "BACK", "LEFT"];
-  context.fillStyle = "rgba(255,255,255,0.32)";
-  context.strokeStyle = "rgba(255,255,255,0.42)";
-  context.lineWidth = 3;
+  // Rasterise every triangle into an opaque mask first, then display that
+  // mask once. Stacking translucent triangles made a checker/grid pattern
+  // which looked like image pixels even though it was only a guide overlay.
+  silhouetteContext.fillStyle = "#ffffff";
   for (const triangle of triangles) {
     const points = [
       [Number(triangle.u0), Number(triangle.v0)],
@@ -1746,23 +1811,17 @@ function buildReferenceImageGuideCanvasFromTriangles(triangles, options = {}) {
     if (!points.flat().every(Number.isFinite) || points.some(([, v]) => v < -0.000001 || v > 1.000001)) {
       throw new Error("The reference mesh guide contains invalid atlas coordinates.");
     }
-    context.beginPath();
-    context.moveTo(points[0][0] * IMAGE_CANVAS_WIDTH, (1 - points[0][1]) * IMAGE_CANVAS_HEIGHT);
-    context.lineTo(points[1][0] * IMAGE_CANVAS_WIDTH, (1 - points[1][1]) * IMAGE_CANVAS_HEIGHT);
-    context.lineTo(points[2][0] * IMAGE_CANVAS_WIDTH, (1 - points[2][1]) * IMAGE_CANVAS_HEIGHT);
-    context.closePath();
-    // Cube top/bottom entries are painted atlas triangles too. Draw their
-    // fill first; the edge line is only a diagnostic overlay, never the sole
-    // representation of that surface.
-    context.fill();
-    if (triangle.edge) {
-      context.save();
-      context.strokeStyle = "rgba(255,255,255,0.70)";
-      context.lineWidth = 2;
-      context.stroke();
-      context.restore();
-    }
+    silhouetteContext.beginPath();
+    silhouetteContext.moveTo(points[0][0] * IMAGE_CANVAS_WIDTH, (1 - points[0][1]) * IMAGE_CANVAS_HEIGHT);
+    silhouetteContext.lineTo(points[1][0] * IMAGE_CANVAS_WIDTH, (1 - points[1][1]) * IMAGE_CANVAS_HEIGHT);
+    silhouetteContext.lineTo(points[2][0] * IMAGE_CANVAS_WIDTH, (1 - points[2][1]) * IMAGE_CANVAS_HEIGHT);
+    silhouetteContext.closePath();
+    silhouetteContext.fill();
   }
+  context.save();
+  context.globalAlpha = 0.24;
+  context.drawImage(silhouette, 0, 0);
+  context.restore();
   if (options.cubeSkeleton) drawCubeCanonicalSkeleton(context, options.cubeSkeleton, options.projection);
   if (options.roundSkeleton) drawRoundCanonicalSkeleton(context, options.roundSkeleton, options.roundProjection);
   for (let face = 0; face < 4; ++face) {
@@ -1827,10 +1886,10 @@ function renderImageEditor() {
   setNumberPair("image-metallic", "image-metallic-number", imageEditor.metallic);
   setNumberPair("image-roughness", "image-roughness-number", imageEditor.roughness);
   setNumberPair("image-emissive", "image-emissive-number", imageEditor.emissive);
-  const editable = editing && !imageEditor.restoring;
+  const editable = canStartLiveDraftEdit() && !imageEditor.restoring;
   for (const control of document.querySelectorAll(".image-edit-control")) control.disabled = !editable;
   renderImageRegionButtons(imageEditor, editable);
-  renderImageSharedFill(currentSnapshot()?.settings?.paint, editable);
+  renderImageFill(imageEditor, editable);
   byId("image-drop-zone").classList.toggle("readonly", !editable);
   renderImageLayerList();
 }
@@ -1843,7 +1902,7 @@ function renderImageLayerList() {
     row.className = "image-layer-row";
     const name = document.createElement("button");
     name.type = "button";
-    name.disabled = !editing || imageEditor.restoring;
+    name.disabled = !canStartLiveDraftEdit() || imageEditor.restoring;
     name.className = `image-layer-item${index === imageEditor.selected ? " active" : ""}`;
     name.textContent = layer.fileName || `Image ${index + 1}`;
     name.title = layer.fileName || `Image ${index + 1}`;
@@ -1861,7 +1920,7 @@ function renderImageLayerList() {
       button.className = `image-layer-action${active ? " active" : ""}${danger ? " danger" : ""}`;
       button.textContent = label;
       button.title = title;
-      button.disabled = !editing || imageEditor.restoring;
+      button.disabled = !canStartLiveDraftEdit() || imageEditor.restoring;
       button.addEventListener("click", event => {
         event.stopPropagation();
         if (!canEditImage()) return;
@@ -1932,6 +1991,10 @@ function buildImageDesign() {
     backRegionMode: imageEditor.backRegionMode,
     leftRegionMode: imageEditor.leftRegionMode,
     placement: "fit",
+    fillColor: imageFillColorPayload(imageEditor.fillColor),
+    fillMetallic: imageEditor.fillMetallic,
+    fillRoughness: imageEditor.fillRoughness,
+    fillEmissive: imageEditor.fillEmissive,
     brushSizeTexels: imageEditor.brushSizeTexels,
     colorCompressionTolerance: imageEditor.colorCompressionTolerance,
     metallic: imageEditor.metallic,
@@ -2022,6 +2085,10 @@ async function hydrateImageEditor(design, transferId, draft) {
   next.rightRegionMode = design?.rightRegionMode === "skip" ? "skip" : "fill";
   next.backRegionMode = design?.backRegionMode === "skip" ? "skip" : "fill";
   next.leftRegionMode = design?.leftRegionMode === "skip" ? "skip" : "fill";
+  next.fillColor = normalizeImageFillColor(design?.fillColor) || "#FFFFFF";
+  next.fillMetallic = clamp(Number(design?.fillMetallic ?? 1), 0, 1);
+  next.fillRoughness = clamp(Number(design?.fillRoughness ?? 0), 0, 1);
+  next.fillEmissive = clamp(Number(design?.fillEmissive ?? 0), 0, 1);
   const legacyWrapAtlasSeam = Boolean(design?.wrapFaces);
   const legacyMirrorFrontBack = Boolean(design?.mirrorFrontBack);
   next.brushSizeTexels = clamp(Number(design?.brushSizeTexels ?? 5), 1, 10);

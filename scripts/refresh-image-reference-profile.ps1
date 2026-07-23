@@ -51,7 +51,8 @@ $configuration = if ($BodyType -eq "cube") {
     [PSCustomObject]@{
         AssetPath = "Chameleon/Content/3Dmodel/cLeon/charactor/paintman/skeltal_cube/paintman_cube.uasset"
         ExportName = "paintman_cube"
-        ProfileFile = "paintman_cube.mesh-profile-v2.json"
+        RawProfileFile = "paintman_cube.mesh-profile-v2.json"
+        ImageProfileFile = "paintman_cube.image-profile-v2.json"
         ExpectedVertices = 452
         ExpectedIndices = 1080
         ExpectedBones = 28
@@ -60,15 +61,17 @@ $configuration = if ($BodyType -eq "cube") {
     [PSCustomObject]@{
         AssetPath = "Chameleon/Content/3Dmodel/cLeon/charactor/paintman/skeltal/paintman.uasset"
         ExportName = "paintman"
-        ProfileFile = "paintman.mesh-profile-v2.json"
+        RawProfileFile = "paintman.mesh-profile-v2.json"
+        ImageProfileFile = "paintman.image-profile-v2.json"
         ExpectedVertices = 1660
         ExpectedIndices = 8352
         ExpectedBones = 28
     }
 }
-$profilePath = Join-Path $repoRoot (Join-Path "resources\mesh-profiles" $configuration.ProfileFile)
-$previousProfile = if (Test-Path -LiteralPath $profilePath) {
-    [System.IO.File]::ReadAllBytes($profilePath)
+$rawProfilePath = Join-Path $repoRoot (Join-Path "resources\mesh-profiles" $configuration.RawProfileFile)
+$imageProfilePath = Join-Path $repoRoot (Join-Path "resources\mesh-profiles" $configuration.ImageProfileFile)
+$previousImageProfile = if (Test-Path -LiteralPath $imageProfilePath) {
+    [System.IO.File]::ReadAllBytes($imageProfilePath)
 } else {
     $null
 }
@@ -78,7 +81,7 @@ try {
         Invoke-Step -Name "regenerate $BodyType mesh profile" -ScriptBlock {
             $meshArguments = @{
                 GameVersion = $GameVersion
-                OutputPath = $profilePath
+                OutputPath = $rawProfilePath
                 AssetPath = $configuration.AssetPath
                 ExportName = $configuration.ExportName
                 ExpectedVertices = $configuration.ExpectedVertices
@@ -94,8 +97,8 @@ try {
         }
     }
 
-    if (-not (Test-Path -LiteralPath $profilePath)) {
-        throw "Mesh profile is missing after generation: $profilePath"
+    if (-not (Test-Path -LiteralPath $rawProfilePath)) {
+        throw "Raw mesh profile is missing after generation: $rawProfilePath"
     }
     if (-not $SkipBuild) {
         Invoke-Step -Name "build capture host" -ScriptBlock {
@@ -112,12 +115,16 @@ try {
         throw "Image reference pose capture was rejected: $($snapshot.Message)"
     }
 
-    $profile = [System.IO.File]::ReadAllText($profilePath) | ConvertFrom-Json
-    if ($snapshot.ProfileId -ne $profile.ProfileId) {
-        throw "Capture profile mismatch. Expected '$($profile.ProfileId)', received '$($snapshot.ProfileId)'. Keep the requested $BodyType mesh active and retry."
+    $rawProfileText = [System.IO.File]::ReadAllText($rawProfilePath)
+    $rawProfile = $rawProfileText | ConvertFrom-Json
+    if ($rawProfile.PSObject.Properties["ImageReferencePose"]) {
+        throw "Raw mesh profile must not contain ImageReferencePose. Regenerate the dump instead of editing it: $rawProfilePath"
     }
-    $expectedTransforms = @($profile.Bones).Count
-    $expectedVertices = @($profile.Lod0.Vertices).Count
+    if ($snapshot.ProfileId -ne $rawProfile.ProfileId) {
+        throw "Capture profile mismatch. Expected '$($rawProfile.ProfileId)', received '$($snapshot.ProfileId)'. Keep the requested $BodyType mesh active and retry."
+    }
+    $expectedTransforms = @($rawProfile.Bones).Count
+    $expectedVertices = @($rawProfile.Lod0.Vertices).Count
     if (@($snapshot.ComponentTransforms).Count -ne $expectedTransforms -or @($snapshot.Vertices).Count -ne $expectedVertices) {
         throw "Capture topology mismatch. Expected bones=$expectedTransforms vertices=$expectedVertices; received bones=$(@($snapshot.ComponentTransforms).Count) vertices=$(@($snapshot.Vertices).Count)."
     }
@@ -127,23 +134,25 @@ try {
         ComponentTransforms = @($snapshot.ComponentTransforms)
         Vertices = @($snapshot.Vertices)
     }
-    if ($profile.PSObject.Properties["ImageReferencePose"]) {
-        $profile.ImageReferencePose = $referencePose
-    } else {
-        $profile | Add-Member -NotePropertyName "ImageReferencePose" -NotePropertyValue $referencePose
-    }
-    $json = $profile | ConvertTo-Json -Depth 16
+    # The raw dump is an immutable input. Clone it for the editor-only static
+    # reference profile, then bake the explicit neutral-pose capture there.
+    $imageProfile = $rawProfileText | ConvertFrom-Json
+    $imageProfile | Add-Member -NotePropertyName "ProfileRole" -NotePropertyValue "image_reference"
+    $imageProfile | Add-Member -NotePropertyName "BaseProfileId" -NotePropertyValue $rawProfile.ProfileId
+    $imageProfile | Add-Member -NotePropertyName "BaseProfileHash" -NotePropertyValue $rawProfile.ProfileHash
+    $imageProfile | Add-Member -NotePropertyName "ImageReferencePose" -NotePropertyValue $referencePose
+    $json = $imageProfile | ConvertTo-Json -Depth 16
     [System.IO.File]::WriteAllText(
-        $profilePath,
+        $imageProfilePath,
         $json + [Environment]::NewLine,
         (New-Object System.Text.UTF8Encoding($false))
     )
-    Write-Host "Updated $BodyType profile and fixed ImageReferencePose: $profilePath"
+    Write-Host "Generated $BodyType Image reference profile from raw dump: $imageProfilePath"
 }
 catch {
-    if ($null -ne $previousProfile) {
-        [System.IO.File]::WriteAllBytes($profilePath, $previousProfile)
-        Write-Warning "Restored the previous profile because refresh did not complete."
+    if ($null -ne $previousImageProfile) {
+        [System.IO.File]::WriteAllBytes($imageProfilePath, $previousImageProfile)
+        Write-Warning "Restored the previous derived Image profile because refresh did not complete."
     }
     throw
 }
