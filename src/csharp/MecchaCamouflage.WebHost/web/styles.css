@@ -371,6 +371,10 @@ body.editing .image-toggle-row label {
   gap: 6px 10px;
 }
 
+.image-fill-region-grid {
+  margin-bottom: 12px;
+}
+
 .region-grid > strong {
   color: var(--muted);
   font: 700 12px/14px var(--font-mono);
@@ -405,7 +409,7 @@ body.editing .region-grid > strong {
 }
 
 #fill-section.disabled,
-#image-fill-section.disabled {
+#image-fill-section.disabled .image-fill-material-controls {
   opacity: 0.55;
 }
 
@@ -691,7 +695,7 @@ body.editing .image-choice-list > strong {
   border: 1px solid var(--hairline);
   border-radius: 2px;
   padding: 10px 12px;
-  background: var(--surface-low);
+  background: #000;
 }
 
 .manual-paint-row {
@@ -809,7 +813,7 @@ body.editing .image-choice-list > strong {
   margin: 0;
   overflow: auto;
   padding: 8px;
-  background-color: var(--surface);
+  background-color: #000;
   color: var(--text);
   font: 13px/19px var(--font-mono);
   white-space: pre-wrap;

@@ -151,10 +151,10 @@ public sealed class ImagePaintSettings
     public string AlphaMode { get; set; } = "skip";
     // Image Paint always draws the imported raster on enabled faces. These
     // modes only choose the base beneath it: Fill first, or leave it skipped.
-    public string FrontRegionMode { get; set; } = "fill";
-    public string RightRegionMode { get; set; } = "fill";
-    public string BackRegionMode { get; set; } = "fill";
-    public string LeftRegionMode { get; set; } = "fill";
+    public string FrontRegionMode { get; set; } = "skip";
+    public string RightRegionMode { get; set; } = "skip";
+    public string BackRegionMode { get; set; } = "skip";
+    public string LeftRegionMode { get; set; } = "skip";
     // Image Fill belongs to the saved Image design. It intentionally mirrors
     // the normal Paint Fill controls, but does not inherit mutable Paint-tab
     // state when a preset is loaded later.

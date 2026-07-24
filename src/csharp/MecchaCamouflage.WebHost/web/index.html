@@ -159,16 +159,7 @@
                 </div>
                 <div class="group" id="image-fill-section">
                   <div class="group-title" data-i18n="mode.fill">Fill</div>
-                  <div class="setting-grid">
-                    <label class="field app-wide"><span data-i18n="fill.color">Color</span><div class="color-row"><input id="image-fill-color-picker" class="image-edit-control color-picker" type="color" value="#FFFFFF"><input id="image-fill-color" class="image-edit-control mono-input" type="text" spellcheck="false" placeholder="#FFFFFF"></div></label>
-                    <label class="field"><span data-i18n="metallic">Metallic</span><div class="range-row"><input id="image-fill-metallic" class="image-edit-control" type="range" min="0" max="1" step="0.01" value="1"><input id="image-fill-metallic-number" class="image-edit-control range-number" type="number" min="0" max="1" step="0.01" value="1"></div></label>
-                    <label class="field"><span data-i18n="roughness">Roughness</span><div class="range-row"><input id="image-fill-roughness" class="image-edit-control" type="range" min="0" max="1" step="0.01" value="0"><input id="image-fill-roughness-number" class="image-edit-control range-number" type="number" min="0" max="1" step="0.01" value="0"></div></label>
-                    <label class="field"><span data-i18n="emissive">Emissive</span><div class="range-row"><input id="image-fill-emissive" class="image-edit-control" type="range" min="0" max="1" step="0.01" value="0"><input id="image-fill-emissive-number" class="image-edit-control range-number" type="number" min="0" max="1" step="0.01" value="0"></div></label>
-                  </div>
-                </div>
-                <div class="group">
-                  <div class="group-title" data-i18n="regions">Regions</div>
-                  <div class="region-grid">
+                  <div class="region-grid image-fill-region-grid">
                     <strong data-i18n="region.front">Front</strong>
                     <div class="region-choice" data-image-region="frontRegionMode"></div>
                     <strong data-i18n="region.right">Right</strong>
@@ -177,6 +168,12 @@
                     <div class="region-choice" data-image-region="backRegionMode"></div>
                     <strong data-i18n="region.left">Left</strong>
                     <div class="region-choice" data-image-region="leftRegionMode"></div>
+                  </div>
+                  <div class="setting-grid image-fill-material-controls">
+                    <label class="field app-wide"><span data-i18n="fill.color">Color</span><div class="color-row"><input id="image-fill-color-picker" class="image-edit-control color-picker" type="color" value="#FFFFFF"><input id="image-fill-color" class="image-edit-control mono-input" type="text" spellcheck="false" placeholder="#FFFFFF"></div></label>
+                    <label class="field"><span data-i18n="metallic">Metallic</span><div class="range-row"><input id="image-fill-metallic" class="image-edit-control" type="range" min="0" max="1" step="0.01" value="1"><input id="image-fill-metallic-number" class="image-edit-control range-number" type="number" min="0" max="1" step="0.01" value="1"></div></label>
+                    <label class="field"><span data-i18n="roughness">Roughness</span><div class="range-row"><input id="image-fill-roughness" class="image-edit-control" type="range" min="0" max="1" step="0.01" value="0"><input id="image-fill-roughness-number" class="image-edit-control range-number" type="number" min="0" max="1" step="0.01" value="0"></div></label>
+                    <label class="field"><span data-i18n="emissive">Emissive</span><div class="range-row"><input id="image-fill-emissive" class="image-edit-control" type="range" min="0" max="1" step="0.01" value="0"><input id="image-fill-emissive-number" class="image-edit-control range-number" type="number" min="0" max="1" step="0.01" value="0"></div></label>
                   </div>
                 </div>
               </div>

@@ -182,11 +182,11 @@ static void ImageDesignDefaultsAreSafeAndPersist()
            Math.Abs(settings.Image.FillRoughness) < 0.000001 &&
            Math.Abs(settings.Image.FillEmissive) < 0.000001 &&
            settings.Image.CanvasEncodingVersion == 0 &&
-           settings.Image.FrontRegionMode == "fill" &&
-           settings.Image.RightRegionMode == "fill" &&
-           settings.Image.BackRegionMode == "fill" &&
-           settings.Image.LeftRegionMode == "fill",
-        "image paint should preserve full source detail, own safe Fill defaults, and Fill all four atlas faces by default");
+           settings.Image.FrontRegionMode == "skip" &&
+           settings.Image.RightRegionMode == "skip" &&
+           settings.Image.BackRegionMode == "skip" &&
+           settings.Image.LeftRegionMode == "skip",
+        "image paint should preserve full source detail, own safe Fill defaults, and Skip all four atlas faces by default");
 
     settings.ActiveImageDesignId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     new SettingsStore(paths).Save(settings);
@@ -221,8 +221,12 @@ static void WebImageFillPayloadUsesRgbObject()
 
     Assert(app.Contains("function imageFillColorPayload(color)", StringComparison.Ordinal) &&
            app.Contains("fillColor: imageFillColorPayload(imageEditor.fillColor)", StringComparison.Ordinal) &&
-           app.Contains("function normalizeImageFillColor(value)", StringComparison.Ordinal),
-        "the web Image design must serialize Fill color as the RGB object expected by ImagePaintSettings and accept the same object when it is loaded");
+           app.Contains("function normalizeImageFillColor(value)", StringComparison.Ordinal) &&
+           app.Contains("frontRegionMode: \"skip\"", StringComparison.Ordinal) &&
+           app.Contains("rightRegionMode: \"skip\"", StringComparison.Ordinal) &&
+           app.Contains("backRegionMode: \"skip\"", StringComparison.Ordinal) &&
+           app.Contains("leftRegionMode: \"skip\"", StringComparison.Ordinal),
+        "a new web Image design must default every Fill face to Skip and serialize its Fill color as an RGB object");
 }
 
 static void ImageLayerCropValidatesNormalizedBounds()
@@ -727,8 +731,9 @@ static void ImageRegionSkipSuppressesOnlyFill()
         "an Image design must Paint its opaque pixels even when every Fill region is skipped; Fill and image Paint are separate passes");
     var fillSection = markup.IndexOf("id=\"image-fill-section\"", StringComparison.Ordinal);
     var fillRegion = markup.IndexOf("data-image-region=\"frontRegionMode\"", StringComparison.Ordinal);
-    Assert(fillSection >= 0 && fillRegion > fillSection,
-        "Image Fill regions must appear after the Fill material group because they control only that base pass");
+    var fillColor = markup.IndexOf("id=\"image-fill-color-picker\"", StringComparison.Ordinal);
+    Assert(fillSection >= 0 && fillRegion > fillSection && fillColor > fillRegion,
+        "Image Fill regions must appear directly below the Fill heading, before its material controls");
 }
 
 static void NativeWarmsUnavailableTriangleCache()
