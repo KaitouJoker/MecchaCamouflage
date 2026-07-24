@@ -24,6 +24,19 @@ public sealed class MainForm : Form
     private const int HotkeyImagePreview = 6;
     private const int HotkeyImageUnPreview = 7;
     private const int HotkeyImageStop = 8;
+
+    private enum PaintAction
+    {
+        Start,
+        Stop,
+        Preview,
+        Unpreview,
+        ImageStart,
+        ImageStop,
+        ImagePreview,
+        ImageUnpreview
+    }
+
     // Keep WebView messages comfortably below the sizes where Windows message
     // transport or JSON allocation becomes unreliable. Image assets are never
     // included in a regular settings snapshot.
@@ -878,21 +891,14 @@ public sealed class MainForm : Form
             case "saveImagePreset":
                 return HandleSaveImagePreset(command.Payload);
             case "paint":
-                return ApplyResult(await RunPaintCommandAsync(previewOnly: false, unpreviewOnly: false));
-            case "preview":
-                return ApplyResult(await RunPaintCommandAsync(previewOnly: true, unpreviewOnly: false));
-            case "unpreview":
-                return ApplyResult(await RunPaintCommandAsync(previewOnly: false, unpreviewOnly: true));
             case "stop":
-                return ApplyResult(await session.StopPaintAsync());
+            case "preview":
+            case "unpreview":
             case "imagePaint":
-                return ApplyResult(await RunPaintCommandAsync(PaintKind.Image, previewOnly: false, unpreviewOnly: false));
-            case "imagePreview":
-                return ApplyResult(await RunPaintCommandAsync(PaintKind.Image, previewOnly: true, unpreviewOnly: false));
-            case "imageUnpreview":
-                return ApplyResult(await RunPaintCommandAsync(PaintKind.Image, previewOnly: false, unpreviewOnly: true));
             case "imageStop":
-                return ApplyResult(await session.StopPaintAsync());
+            case "imagePreview":
+            case "imageUnpreview":
+                return ApplyPaintResult(await RunPaintActionAsync(PaintActionFromCommand(command.Command)));
             default:
                 return new { success = false, message = "Unknown command: " + command.Command };
         }
@@ -1219,6 +1225,32 @@ public sealed class MainForm : Form
         }
     }
 
+    private Task<HostCommandResult> RunPaintActionAsync(PaintAction action) => action switch
+    {
+        PaintAction.Start => RunPaintCommandAsync(previewOnly: false, unpreviewOnly: false),
+        PaintAction.Stop => session.StopPaintAsync(),
+        PaintAction.Preview => RunPaintCommandAsync(previewOnly: true, unpreviewOnly: false),
+        PaintAction.Unpreview => RunPaintCommandAsync(previewOnly: false, unpreviewOnly: true),
+        PaintAction.ImageStart => RunPaintCommandAsync(PaintKind.Image, previewOnly: false, unpreviewOnly: false),
+        PaintAction.ImageStop => session.StopPaintAsync(),
+        PaintAction.ImagePreview => RunPaintCommandAsync(PaintKind.Image, previewOnly: true, unpreviewOnly: false),
+        PaintAction.ImageUnpreview => RunPaintCommandAsync(PaintKind.Image, previewOnly: false, unpreviewOnly: true),
+        _ => throw new ArgumentOutOfRangeException(nameof(action), action, null)
+    };
+
+    private static PaintAction PaintActionFromCommand(string command) => command switch
+    {
+        "paint" => PaintAction.Start,
+        "stop" => PaintAction.Stop,
+        "preview" => PaintAction.Preview,
+        "unpreview" => PaintAction.Unpreview,
+        "imagePaint" => PaintAction.ImageStart,
+        "imageStop" => PaintAction.ImageStop,
+        "imagePreview" => PaintAction.ImagePreview,
+        "imageUnpreview" => PaintAction.ImageUnpreview,
+        _ => throw new ArgumentOutOfRangeException(nameof(command), command, null)
+    };
+
     private async Task RefreshSnapshotsUntilCancelledAsync(CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
@@ -1300,6 +1332,20 @@ public sealed class MainForm : Form
         return new { success = result.Success, message = result.Message };
     }
 
+    private object ApplyPaintResult(HostCommandResult result)
+    {
+        var response = ApplyResult(result);
+        NotifyPaintResult(result);
+        return response;
+    }
+
+    private void NotifyPaintResult(HostCommandResult result)
+    {
+        if (string.IsNullOrWhiteSpace(result.Message) || result.Level == CommandResultLevel.Success)
+            return;
+        SendToast(result.Message, result.Level == CommandResultLevel.Warn ? "warn" : "error");
+    }
+
     private void HandlePreviewWindow(JsonElement payload)
     {
         if (payload.TryGetProperty("opacity", out var opacityValue) && opacityValue.TryGetDouble(out var opacity))
@@ -1308,33 +1354,22 @@ public sealed class MainForm : Form
 
     private async Task HandleHotkeyAsync(int id)
     {
-        switch (id)
+        PaintAction? action = id switch
         {
-            case HotkeyStart:
-                _ = await RunPaintCommandAsync(previewOnly: false, unpreviewOnly: false);
-                break;
-            case HotkeyPreview:
-                _ = await RunPaintCommandAsync(previewOnly: true, unpreviewOnly: false);
-                break;
-            case HotkeyUnPreview:
-                _ = await RunPaintCommandAsync(previewOnly: false, unpreviewOnly: true);
-                break;
-            case HotkeyStop:
-                _ = await session.StopPaintAsync();
-                break;
-            case HotkeyImageStart:
-                _ = await RunPaintCommandAsync(PaintKind.Image, previewOnly: false, unpreviewOnly: false);
-                break;
-            case HotkeyImagePreview:
-                _ = await RunPaintCommandAsync(PaintKind.Image, previewOnly: true, unpreviewOnly: false);
-                break;
-            case HotkeyImageUnPreview:
-                _ = await RunPaintCommandAsync(PaintKind.Image, previewOnly: false, unpreviewOnly: true);
-                break;
-            case HotkeyImageStop:
-                _ = await session.StopPaintAsync();
-                break;
-        }
+            HotkeyStart => PaintAction.Start,
+            HotkeyStop => PaintAction.Stop,
+            HotkeyPreview => PaintAction.Preview,
+            HotkeyUnPreview => PaintAction.Unpreview,
+            HotkeyImageStart => PaintAction.ImageStart,
+            HotkeyImageStop => PaintAction.ImageStop,
+            HotkeyImagePreview => PaintAction.ImagePreview,
+            HotkeyImageUnPreview => PaintAction.ImageUnpreview,
+            _ => null
+        };
+        if (action is null)
+            return;
+        var result = await RunPaintActionAsync(action.Value);
+        NotifyPaintResult(result);
         await PushSnapshotAsync();
     }
 

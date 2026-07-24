@@ -684,6 +684,49 @@ body.editing .image-choice-list > strong {
   padding: 10px 12px;
 }
 
+.manual-paint-controls {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 8px;
+  border: 1px solid var(--hairline);
+  border-radius: 2px;
+  padding: 10px 12px;
+  background: var(--surface-low);
+}
+
+.manual-paint-row {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+
+.manual-paint-label {
+  color: var(--muted);
+  font: 700 11px/13px var(--font-mono);
+}
+
+.manual-paint-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.manual-paint-grid button {
+  min-width: 0;
+  padding: 0 8px;
+  font: 700 11px/13px var(--font-mono);
+}
+
+.manual-paint-stop {
+  border-color: color-mix(in srgb, var(--error) 72%, var(--hairline));
+  color: #ffabab;
+}
+
+.manual-paint-stop:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--error) 24%, var(--surface-high));
+}
+
 .log-panel {
   display: flex;
   position: relative;
@@ -748,6 +791,17 @@ body.editing .image-choice-list > strong {
 
 .log-actions button + button {
   border-left: 1px solid var(--hairline);
+}
+
+@media (max-width: 1050px) {
+  .manual-paint-row {
+    grid-template-columns: 76px minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .manual-paint-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .logs {

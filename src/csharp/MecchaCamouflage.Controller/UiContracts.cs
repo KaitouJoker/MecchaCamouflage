@@ -26,6 +26,8 @@ public sealed record RuntimeSnapshot(
     string PaintElapsed,
     string Logs,
     bool PaintRunning,
+    string ActivePaintKind,
+    string ActivePreviewKind,
     bool ProgressVisible,
     DiagnosticsSnapshot Diagnostics);
 
@@ -143,7 +145,17 @@ public sealed record ResetSnapshot(
 
 public sealed record LocaleSnapshot(string Code, string NativeName);
 
-public sealed record HostCommandResult(bool Success, string Message = "");
+public enum CommandResultLevel
+{
+    Success,
+    Warn,
+    Error
+}
+
+public sealed record HostCommandResult(
+    bool Success,
+    string Message = "",
+    CommandResultLevel Level = CommandResultLevel.Success);
 
 public sealed record SettingChange(string Key, JsonElement Value);
 

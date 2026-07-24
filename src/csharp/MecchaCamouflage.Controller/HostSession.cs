@@ -89,6 +89,8 @@ public sealed class HostSession
     private bool finalProgressLogged;
     private bool currentProgressIsServerPaint;
     private bool nativePaintMayBeRunning;
+    private PaintKind? activePaintKind;
+    private PaintKind? activePreviewKind;
     private PaintCancelState cancelState;
     private int nextPaintGeneration;
     private int activePaintGeneration;
@@ -720,7 +722,7 @@ public sealed class HostSession
         {
             const string message = "Image Paint: save or cancel the image design before starting.";
             Log.Warn(message);
-            return new HostCommandResult(false, message);
+            return new HostCommandResult(false, message, CommandResultLevel.Warn);
         }
         if (kind == PaintKind.Image && selectedImage is null)
         {
@@ -730,7 +732,7 @@ public sealed class HostSession
                 ? "Image Paint: open Image settings and Save the design to migrate Background material data."
                 : "Image Paint: save an image design before starting.";
             Log.Warn(message);
-            return new HostCommandResult(false, message);
+            return new HostCommandResult(false, message, CommandResultLevel.Warn);
         }
         int runGeneration;
         lock (paintStateGate)
@@ -739,9 +741,10 @@ public sealed class HostSession
             {
                 const string alreadyRunning = "Paint: already running.";
                 Log.Warn(alreadyRunning);
-                return new HostCommandResult(false, alreadyRunning);
+                return new HostCommandResult(false, alreadyRunning, CommandResultLevel.Warn);
             }
             PaintRunning = true;
+            activePaintKind = kind;
             runGeneration = ++nextPaintGeneration;
             activePaintGeneration = runGeneration;
             cancelState = PaintCancelState.None;
@@ -758,8 +761,9 @@ public sealed class HostSession
             using var process = Runtime.FindGameProcess(Settings.GameProcessName);
             if (process is null)
             {
-                Log.Warn("Game process not found.");
-                return new HostCommandResult(false, "Game process not found.");
+                const string gameProcessNotFound = "Game process not found.";
+                Log.Warn(gameProcessNotFound);
+                return new HostCommandResult(false, gameProcessNotFound, CommandResultLevel.Warn);
             }
             var ready = await Runtime.EnsureReadyAsync(process, cancellationToken);
             if (IsPreDispatchCancellationPending(runGeneration))
@@ -769,7 +773,11 @@ public sealed class HostSession
                 return new HostCommandResult(false, canceledBeforeDispatch);
             }
             if (!ready)
-                return new HostCommandResult(false, "Bridge is not connected.");
+            {
+                const string bridgeNotConnected = "Bridge is not connected.";
+                Log.Warn(bridgeNotConnected);
+                return new HostCommandResult(false, bridgeNotConnected, CommandResultLevel.Warn);
+            }
             var startedMessage = previewOnly ? "Preview: started." :
                 (unpreviewOnly ? "UnPreview: started." : (kind == PaintKind.Image ? "Image Paint: started." : "Paint: started."));
             Log.Info(startedMessage);
@@ -807,7 +815,10 @@ public sealed class HostSession
                 lock (paintStateGate)
                 {
                     if (activePaintGeneration == runGeneration)
+                    {
                         nativePaintMayBeRunning = false;
+                        activePreviewKind = previewOnly ? kind : null;
+                    }
                 }
                 LogFinalProgressOnce();
                 Log.Info(message);
@@ -832,7 +843,7 @@ public sealed class HostSession
                         nativePaintMayBeRunning = message == "Paint: already running.";
                 }
                 Log.Warn(message);
-                return new HostCommandResult(false, message);
+                return new HostCommandResult(false, message, CommandResultLevel.Warn);
             }
             lock (paintStateGate)
             {
@@ -844,7 +855,7 @@ public sealed class HostSession
             var failureDetail = PaintFailureDetail(response);
             if (failureDetail is not null)
                 Log.Warn("Paint detail: " + failureDetail);
-            return new HostCommandResult(false, message);
+            return new HostCommandResult(false, message, CommandResultLevel.Error);
         }
         finally
         {
@@ -853,6 +864,7 @@ public sealed class HostSession
                 if (activePaintGeneration == runGeneration)
                 {
                     PaintRunning = false;
+                    activePaintKind = null;
                     activePaintGeneration = 0;
                     cancelState = PaintCancelState.None;
                     cancelPaintGeneration = 0;
@@ -879,7 +891,7 @@ public sealed class HostSession
             {
                 const string noActivePaint = "Paint: no active paint to cancel.";
                 Log.Warn(noActivePaint);
-                return new HostCommandResult(false, noActivePaint);
+                return new HostCommandResult(false, noActivePaint, CommandResultLevel.Warn);
             }
             controllerOwnedPaint = PaintRunning;
             requestedGeneration = controllerOwnedPaint ? activePaintGeneration : 0;
@@ -925,7 +937,10 @@ public sealed class HostSession
             var ownsCancelState = cancelState == PaintCancelState.Sending &&
                                   cancelPaintGeneration == requestedGeneration;
             if (!ownsCancelState)
-                return new HostCommandResult(response.Success, "Paint: cancellation completed after the paint terminalized.");
+                return new HostCommandResult(
+                    response.Success,
+                    "Paint: cancellation completed after the paint terminalized.",
+                    response.Success ? CommandResultLevel.Success : CommandResultLevel.Error);
 
             if (!response.Success)
             {
@@ -935,7 +950,7 @@ public sealed class HostSession
                     Log.Warn(message);
                 else
                     Log.Error("Paint: cancel failed: " + message);
-                return new HostCommandResult(false, message);
+                return new HostCommandResult(false, message, IsGuardWarning(message) ? CommandResultLevel.Warn : CommandResultLevel.Error);
             }
 
             if (cancelledJobs == 0 && !nativeCancellationLatched)
@@ -947,11 +962,11 @@ public sealed class HostSession
                 {
                     const string nativeAdmissionMissed = "Paint: cancel was not observed by the native paint request. Retry stop.";
                     Log.Warn(nativeAdmissionMissed);
-                    return new HostCommandResult(false, nativeAdmissionMissed);
+                    return new HostCommandResult(false, nativeAdmissionMissed, CommandResultLevel.Warn);
                 }
                 const string noActivePaint = "Paint: no active paint to cancel.";
                 Log.Warn(noActivePaint);
-                return new HostCommandResult(false, noActivePaint);
+                return new HostCommandResult(false, noActivePaint, CommandResultLevel.Warn);
             }
 
             if (cancelledJobs is null)
@@ -960,7 +975,7 @@ public sealed class HostSession
                 cancelPaintGeneration = 0;
                 const string malformed = "Paint: cancel response did not include native job counts.";
                 Log.Error(malformed);
-                return new HostCommandResult(false, malformed);
+                return new HostCommandResult(false, malformed, CommandResultLevel.Error);
             }
 
             if (!sameControllerPaint)
@@ -1466,6 +1481,15 @@ public sealed class HostSession
 
     private UiSnapshot CreateSnapshot(string process, string bridge, string service, ProgressSnapshot? progress)
     {
+        bool paintRunning;
+        PaintKind? currentPaintKind;
+        PaintKind? currentPreviewKind;
+        lock (paintStateGate)
+        {
+            paintRunning = PaintRunning;
+            currentPaintKind = activePaintKind;
+            currentPreviewKind = activePreviewKind;
+        }
         var defaults = new AppSettings();
         var percent = 0.0;
         var progressSource = "";
@@ -1490,13 +1514,20 @@ public sealed class HostSession
         return new UiSnapshot(
             VersionInfo.Current,
             Settings.Language,
-            new RuntimeSnapshot(process, bridge, service, percent, progressSource, pass, passProgress, passEta, eta, elapsed, Log.Text, PaintRunning, progress is not null, DiagnosticsState.Snapshot(Paths)),
+            new RuntimeSnapshot(process, bridge, service, percent, progressSource, pass, passProgress, passEta, eta, elapsed, Log.Text, paintRunning, PaintKindSnapshotValue(currentPaintKind), PaintKindSnapshotValue(currentPreviewKind), progress is not null, DiagnosticsState.Snapshot(Paths)),
             ToSnapshot(Settings),
             ToSnapshot(defaults),
             BuildResetSnapshot(Settings, defaults),
             LocalizationCatalog.SupportedLocales.Select(locale => new LocaleSnapshot(locale.Code, locale.NativeName)).ToArray(),
             Localization.All);
     }
+
+    private static string PaintKindSnapshotValue(PaintKind? kind) => kind switch
+    {
+        PaintKind.Standard => "standard",
+        PaintKind.Image => "image",
+        _ => ""
+    };
 
     private static SettingsSnapshot ToSnapshot(AppSettings settings)
     {

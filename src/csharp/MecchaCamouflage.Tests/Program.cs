@@ -77,6 +77,9 @@ var tests = new List<(string Name, Action Run)>
     ("web ui keeps mesh guides visible with imported images", WebUiKeepsMeshGuidesVisibleWithImportedImages),
     ("web ui rebuilds image guides when the language changes", WebUiRebuildsImageGuidesWhenLanguageChanges),
     ("web ui separates setting and log tabs", WebUiSeparatesSettingAndLogTabs),
+    ("web ui offers manual paint controls above logs", WebUiOffersManualPaintControls),
+    ("runtime snapshot reports manual paint state", RuntimeSnapshotReportsManualPaintState),
+    ("paint feedback uses one severity path for buttons and hotkeys", PaintFeedbackUsesOneSeverityPath),
     ("web ui reports the WebView zoom factor in the footer", WebUiReportsWebViewZoomFactorInFooter),
     ("web ui localizes every settings tab", WebUiLocalizesEverySettingsTab),
     ("web ui localizes image editor controls and crop dialog", WebUiLocalizesImageEditorControlsAndCropDialog),
@@ -499,7 +502,8 @@ static void ImagePaintRejectsUnsavedImageDesignDraft()
     session.SetImageDesignDraftDirty(true);
     var result = session.RunImagePaintAsync(previewOnly: false, unpreviewOnly: false).GetAwaiter().GetResult();
 
-    Assert(!result.Success && result.Message == "Image Paint: save or cancel the image design before starting.",
+    Assert(!result.Success && result.Level == CommandResultLevel.Warn &&
+           result.Message == "Image Paint: save or cancel the image design before starting.",
         "F5-F8 must not silently run the last saved design while an Image draft is unsaved");
 }
 
@@ -1662,6 +1666,90 @@ static void WebUiSeparatesSettingAndLogTabs()
            styles.Contains(".log-actions {\n  display: grid;", StringComparison.Ordinal) &&
            styles.Contains(".log-actions button + button", StringComparison.Ordinal),
         "log actions must occupy two more equal tab-sized cells with their own divider");
+}
+
+static void WebUiOffersManualPaintControls()
+{
+    var repository = FindRepositoryRoot();
+    var markup = ReadRepositoryText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "index.html"));
+    var app = ReadRepositoryText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "app.js"));
+    var styles = ReadRepositoryText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "styles.css"));
+    var controlsIndex = markup.IndexOf("id=\"manual-paint-controls\"", StringComparison.Ordinal);
+    var logsIndex = markup.IndexOf("class=\"log-panel\"", StringComparison.Ordinal);
+    var commands = new[]
+    {
+        "paint", "preview", "unpreview", "stop",
+        "imagePaint", "imagePreview", "imageUnpreview", "imageStop"
+    };
+
+    Assert(controlsIndex >= 0 && controlsIndex < logsIndex,
+        "manual Paint controls must appear immediately above Logs");
+    foreach (var command in commands)
+    {
+        Assert(markup.Contains($"data-manual-paint-command=\"{command}\"", StringComparison.Ordinal),
+            $"manual Paint controls must expose the {command} command");
+    }
+    Assert(CountOccurrences(markup, "data-manual-paint-command=") == commands.Length,
+        "manual Paint controls must expose exactly the eight existing Paint commands");
+    Assert(markup.IndexOf("data-manual-paint-command=\"paint\"", StringComparison.Ordinal) <
+           markup.IndexOf("data-manual-paint-command=\"stop\"", StringComparison.Ordinal) &&
+           markup.IndexOf("data-manual-paint-command=\"stop\"", StringComparison.Ordinal) <
+           markup.IndexOf("data-manual-paint-command=\"preview\"", StringComparison.Ordinal) &&
+           markup.IndexOf("data-manual-paint-command=\"preview\"", StringComparison.Ordinal) <
+           markup.IndexOf("data-manual-paint-command=\"unpreview\"", StringComparison.Ordinal) &&
+           markup.IndexOf("data-manual-paint-command=\"imagePaint\"", StringComparison.Ordinal) <
+           markup.IndexOf("data-manual-paint-command=\"imageStop\"", StringComparison.Ordinal) &&
+           markup.IndexOf("data-manual-paint-command=\"imageStop\"", StringComparison.Ordinal) <
+           markup.IndexOf("data-manual-paint-command=\"imagePreview\"", StringComparison.Ordinal) &&
+           markup.IndexOf("data-manual-paint-command=\"imagePreview\"", StringComparison.Ordinal) <
+           markup.IndexOf("data-manual-paint-command=\"imageUnpreview\"", StringComparison.Ordinal),
+        "manual Paint controls must order actions as Start, Stop, Preview, then Unpreview");
+    Assert(app.Contains("function renderManualPaintControls()", StringComparison.Ordinal) &&
+           app.Contains("function runManualPaintCommand(command)", StringComparison.Ordinal) &&
+           app.Contains("button.dataset.manualPaintCommand", StringComparison.Ordinal) &&
+           app.Contains("runtime?.activePaintKind", StringComparison.Ordinal) &&
+           app.Contains("runtime?.activePreviewKind", StringComparison.Ordinal),
+        "manual Paint controls must distinguish the running and previewed Paint kind before enabling actions");
+    Assert(styles.Contains(".manual-paint-controls", StringComparison.Ordinal) &&
+           styles.Contains(".manual-paint-grid", StringComparison.Ordinal) &&
+           styles.Contains("@media (max-width: 1050px)", StringComparison.Ordinal) &&
+           styles.Contains("grid-template-columns: repeat(2, minmax(0, 1fr));", StringComparison.Ordinal),
+        "manual Paint controls must be four-wide normally and collapse to two columns on narrow windows");
+}
+
+static void RuntimeSnapshotReportsManualPaintState()
+{
+    using var temp = new TempHome();
+    var session = new HostSession("manual-paint-state-test-" + Guid.NewGuid().ToString("N"));
+    var flags = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic;
+    var activePaintField = typeof(HostSession).GetField("activePaintKind", flags)
+        ?? throw new InvalidOperationException("activePaintKind field missing");
+    var activePreviewField = typeof(HostSession).GetField("activePreviewKind", flags)
+        ?? throw new InvalidOperationException("activePreviewKind field missing");
+    var createSnapshot = typeof(HostSession).GetMethod("CreateSnapshot", flags)
+        ?? throw new InvalidOperationException("CreateSnapshot method missing");
+    activePaintField.SetValue(session, PaintKind.Image);
+    activePreviewField.SetValue(session, PaintKind.Standard);
+
+    var snapshot = (UiSnapshot)(createSnapshot.Invoke(session, new object?[] { "waiting", "waiting", "stopped", null })
+        ?? throw new InvalidOperationException("CreateSnapshot returned null"));
+
+    Assert(snapshot.Runtime.ActivePaintKind == "image" && snapshot.Runtime.ActivePreviewKind == "standard",
+        "the runtime snapshot must identify which manual Stop and Unpreview actions are valid");
+}
+
+static void PaintFeedbackUsesOneSeverityPath()
+{
+    var repository = FindRepositoryRoot();
+    var app = ReadRepositoryText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "app.js"));
+    var mainForm = ReadRepositoryText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "MainForm.cs"));
+
+    Assert(!app.Contains("toast(result?.message || i18n(\"error.operation.failed\"), \"error\");", StringComparison.Ordinal),
+        "manual Paint commands must not turn every rejected result into a red toast in the browser");
+    Assert(mainForm.Contains("ApplyPaintResult(", StringComparison.Ordinal) &&
+           mainForm.Contains("NotifyPaintResult(result);", StringComparison.Ordinal) &&
+           mainForm.Contains("private void NotifyPaintResult", StringComparison.Ordinal),
+        "manual Paint commands and hotkeys must share one host-side result notification path");
 }
 
 static void WebUiReportsWebViewZoomFactorInFooter()

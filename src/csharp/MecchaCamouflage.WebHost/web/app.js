@@ -60,6 +60,8 @@ let imageGuideCanvasLocale = "";
 let activeSettingsTab = "paint";
 let imageEditor = null;
 let imageCropEditor = null;
+let manualPaintStartPending = false;
+let manualPaintStopPending = false;
 
 webview.addEventListener("message", event => {
   const message = event.data;
@@ -214,6 +216,62 @@ function renderRuntime(snapshot) {
   setStatus("footer-bridge", runtime.bridge);
   text("version", snapshot.version);
   renderLogs(runtime);
+  renderManualPaintControls();
+}
+
+function renderManualPaintControls() {
+  const runtime = liveSnapshot?.runtime;
+  const running = Boolean(runtime?.paintRunning);
+  const activePaintKind = runtime?.activePaintKind || "";
+  const activePreviewKind = runtime?.activePreviewKind || "";
+  const canStart = Boolean(liveSnapshot) && !editing && !running && !manualPaintStartPending;
+  for (const button of document.querySelectorAll("[data-manual-paint-command]")) {
+    const command = button.dataset.manualPaintCommand;
+    const kind = manualPaintKindForCommand(command);
+    if (isManualPaintStopCommand(command)) {
+      button.disabled = !running || activePaintKind !== kind || manualPaintStopPending;
+    } else if (isManualPaintUnpreviewCommand(command)) {
+      button.disabled = running || editing || activePreviewKind !== kind || manualPaintStartPending;
+    } else {
+      button.disabled = !canStart;
+    }
+  }
+}
+
+function isManualPaintStopCommand(command) {
+  return command === "stop" || command === "imageStop";
+}
+
+function isManualPaintUnpreviewCommand(command) {
+  return command === "unpreview" || command === "imageUnpreview";
+}
+
+function manualPaintKindForCommand(command) {
+  return command.startsWith("image") ? "image" : "standard";
+}
+
+async function runManualPaintCommand(command) {
+  const stopping = isManualPaintStopCommand(command);
+  if (stopping) {
+    if (manualPaintStopPending) return;
+    manualPaintStopPending = true;
+  } else {
+    if (manualPaintStartPending) return;
+    manualPaintStartPending = true;
+  }
+  renderManualPaintControls();
+  try {
+    await send(command);
+  } catch (error) {
+    showError(error.message || String(error));
+  } finally {
+    if (stopping) {
+      manualPaintStopPending = false;
+    } else {
+      manualPaintStartPending = false;
+    }
+    renderManualPaintControls();
+  }
 }
 
 function renderLogs(runtime) {
@@ -2384,6 +2442,9 @@ document.addEventListener("DOMContentLoaded", () => {
       showError(error.message || String(error));
     }
   });
+  for (const button of document.querySelectorAll("[data-manual-paint-command]")) {
+    button.addEventListener("click", () => runManualPaintCommand(button.dataset.manualPaintCommand));
+  }
   for (const button of document.querySelectorAll(".record-hotkey")) {
     button.addEventListener("click", () => beginHotkeyRecord(button.dataset.hotkeyKey, button.dataset.hotkeyInput));
   }
