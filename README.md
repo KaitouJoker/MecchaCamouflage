@@ -2,6 +2,11 @@
   <img src="docs/assets/meccha-camouflage-readme-banner-v151-1600w.jpg" alt="Meccha Camouflage demo" width="900" />
 </p>
 
+<p align="center">
+  <a href="LICENSE.txt"><img src="https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg" alt="License: GPL-3.0-or-later" /></a>
+  <a href="#download"><img src="https://img.shields.io/badge/platform-Windows%2010%20%7C%20Windows%2011-0078D4?logo=windows&amp;logoColor=white" alt="Platform: Windows 10 and Windows 11" /></a>
+</p>
+
 <h1>
   <img src="resources/app-icons/icon.png" alt="Meccha Camouflage icon" width="36" />
   Meccha Camouflage
@@ -57,15 +62,18 @@ cd MecchaCamouflage
 make run
 ```
 
-Core development references:
+## Contributors
 
-- [Repository layout](docs/repository-layout.md)
-- [Direct bridge injection](docs/runtime-direct-bridge.md)
-- [Runtime maintenance](docs/runtime-maintenance.md)
-- [Paint replication validation](docs/runtime-paint-replication-validation.md)
-- [Research tools](docs/research-tools.md)
-- [Release checklist](docs/release-checklist.md)
+[![Contributors](https://contrib.rocks/image?repo=acentrist/MecchaCamouflage)](https://github.com/acentrist/MecchaCamouflage/graphs/contributors)
+
+## Contributing
+
+Pull requests welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, code style, and the PR process.
+
+## Security
+
+Follow the disclosure process in [SECURITY.md](SECURITY.md).
 
 ## License
 
-This project is licensed under [GPL-3.0-or-later](LICENSE.txt).
+[GPL-3.0-or-later](LICENSE.txt) © Acentrist
