@@ -62,7 +62,7 @@ public sealed class ImagePresetStore
                 {
                     var layer = design.Layers[index];
                     layer.AssetId = Guid.TryParse(layer.AssetId, out var assetId) ? assetId.ToString("N") : Guid.NewGuid().ToString("N");
-                    var extension = layer.MimeType == "image/jpeg" ? "jpg" : "png";
+                    var extension = layer.MimeType switch { "image/jpeg" => "jpg", "image/webp" => "webp", _ => "png" };
                     entries.Add(new PresetEntry($"layers/{index}.{extension}", Convert.FromBase64String(layer.DataBase64)));
                     layer.DataBase64 = "";
                 }
@@ -202,7 +202,7 @@ public sealed class ImagePresetStore
             for (var index = 0; index < design.Layers.Count; ++index)
             {
                 var layer = design.Layers[index];
-                var extension = layer.MimeType == "image/jpeg" ? "jpg" : "png";
+                var extension = layer.MimeType switch { "image/jpeg" => "jpg", "image/webp" => "webp", _ => "png" };
                 if (!data.Remove($"layers/{index}.{extension}", out var source))
                 {
                     message = "Preset layer source is missing.";

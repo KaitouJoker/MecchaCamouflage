@@ -1115,25 +1115,58 @@ function setImageBodyType(value) {
   loadImageGuideProfile(value).catch(error => showError(error.message || String(error)));
 }
 
+function detectImageMimeTypeAndBase64(file, dataUrl) {
+  const base64Match = /^data:[^;]*;base64,(.+)$/i.exec(dataUrl || "");
+  if (!base64Match || !base64Match[1]) return null;
+  const dataBase64 = base64Match[1];
+
+  let mimeType = String(file.type || "").toLowerCase();
+  if (mimeType === "image/png" || mimeType === "image/jpeg" || mimeType === "image/webp") {
+    return { mimeType, dataBase64 };
+  }
+  if (mimeType === "image/jpg" || mimeType === "image/pjpeg") {
+    return { mimeType: "image/jpeg", dataBase64 };
+  }
+  if (mimeType === "image/x-webp") {
+    return { mimeType: "image/webp", dataBase64 };
+  }
+
+  const name = String(file.name || "").toLowerCase();
+  if (name.endsWith(".webp")) return { mimeType: "image/webp", dataBase64 };
+  if (name.endsWith(".png")) return { mimeType: "image/png", dataBase64 };
+  if (name.endsWith(".jpg") || name.endsWith(".jpeg")) return { mimeType: "image/jpeg", dataBase64 };
+
+  const headerMatch = /^data:(image\/(?:png|jpeg|jpg|pjpeg|webp|x-webp));base64,/i.exec(dataUrl || "");
+  if (headerMatch) {
+    const headerMime = headerMatch[1].toLowerCase();
+    if (headerMime === "image/webp" || headerMime === "image/x-webp") return { mimeType: "image/webp", dataBase64 };
+    if (headerMime === "image/jpeg" || headerMime === "image/jpg" || headerMime === "image/pjpeg") return { mimeType: "image/jpeg", dataBase64 };
+    if (headerMime === "image/png") return { mimeType: "image/png", dataBase64 };
+  }
+
+  return null;
+}
+
 async function loadImageLayers(files) {
   if (!canEditImage()) return;
   let total = imageEditor.layers.reduce((sum, layer) => sum + base64ByteLength(layer.dataBase64), 0);
   for (const file of files) {
-    if (!file || !["image/png", "image/jpeg"].includes(String(file.type).toLowerCase()))
-      throw new Error("Image Paint accepts PNG or JPEG files only.");
+    if (!file) continue;
     if (file.size < 1 || file.size > IMAGE_SOURCE_MAXIMUM_BYTES)
       throw new Error("Each image file must be at most 12 MiB.");
     total += file.size;
     if (total > IMAGE_TOTAL_SOURCE_MAXIMUM_BYTES)
       throw new Error("All image layers together must be at most 64 MiB.");
     const dataUrl = await readFileAsDataUrl(file);
-    const image = await loadImageSource(dataUrl);
-    const [, mimeType, dataBase64] = /^data:(image\/(?:png|jpeg));base64,(.+)$/i.exec(dataUrl) || [];
-    if (!mimeType || !dataBase64) throw new Error("Image data could not be prepared.");
+    const parsed = detectImageMimeTypeAndBase64(file, dataUrl);
+    if (!parsed)
+      throw new Error("Image Paint accepts PNG, JPEG, or WebP files only.");
+    const validDataUrl = `data:${parsed.mimeType};base64,${parsed.dataBase64}`;
+    const image = await loadImageSource(validDataUrl);
     const layer = makeImageLayer(imageEditor.layers.length);
     layer.fileName = file.name || `image-${imageEditor.layers.length + 1}`;
-    layer.mimeType = mimeType.toLowerCase();
-    layer.dataBase64 = dataBase64;
+    layer.mimeType = parsed.mimeType;
+    layer.dataBase64 = parsed.dataBase64;
     layer.image = image;
     fitImageLayerToCanvas(layer);
     imageEditor.layers.push(layer);

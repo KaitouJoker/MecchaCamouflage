@@ -85,9 +85,9 @@ public sealed class ImagePaintLayer
     public bool TryValidate(out string message)
     {
         message = "";
-        if (MimeType is not ("image/png" or "image/jpeg"))
+        if (MimeType is not ("image/png" or "image/jpeg" or "image/webp"))
         {
-            message = "Image layers must be PNG or JPEG files.";
+            message = "Image layers must be PNG, JPEG, or WebP files.";
             return false;
         }
         if (string.IsNullOrWhiteSpace(FileName) || FileName.Length > 260)
