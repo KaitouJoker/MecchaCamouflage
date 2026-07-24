@@ -77,6 +77,7 @@ var tests = new List<(string Name, Action Run)>
     ("web ui keeps mesh guides visible with imported images", WebUiKeepsMeshGuidesVisibleWithImportedImages),
     ("web ui rebuilds image guides when the language changes", WebUiRebuildsImageGuidesWhenLanguageChanges),
     ("web ui separates setting and log tabs", WebUiSeparatesSettingAndLogTabs),
+    ("web ui scopes edit actions to the active settings tab", WebUiScopesEditActionsToActiveSettingsTab),
     ("web ui offers manual paint controls above logs", WebUiOffersManualPaintControls),
     ("runtime snapshot reports manual paint state", RuntimeSnapshotReportsManualPaintState),
     ("paint feedback uses one severity path for buttons and hotkeys", PaintFeedbackUsesOneSeverityPath),
@@ -1671,6 +1672,53 @@ static void WebUiSeparatesSettingAndLogTabs()
            styles.Contains(".log-actions {\n  display: grid;", StringComparison.Ordinal) &&
            styles.Contains(".log-actions button + button", StringComparison.Ordinal),
         "log actions must occupy two more equal tab-sized cells with their own divider");
+}
+
+static void WebUiScopesEditActionsToActiveSettingsTab()
+{
+    var repository = FindRepositoryRoot();
+    var markup = ReadRepositoryText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "index.html"));
+    var app = ReadRepositoryText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "app.js"));
+    var styles = ReadRepositoryText(Path.Combine(repository, "src", "csharp", "MecchaCamouflage.WebHost", "web", "styles.css"));
+    var catalog = LocalizationCatalog.Load();
+
+    Assert(CountOccurrences(markup, "data-settings-actions=") == 3 &&
+           markup.Contains("data-settings-actions=\"paint\"", StringComparison.Ordinal) &&
+           markup.Contains("data-settings-actions=\"image\"", StringComparison.Ordinal) &&
+           markup.Contains("data-settings-actions=\"application\"", StringComparison.Ordinal),
+        "each settings tab must own its Edit, Reset, Cancel, and Save action bar");
+    Assert(app.Contains("if (editing && tab.dataset.settingsTab !== activeSettingsTab)", StringComparison.Ordinal) &&
+           app.Contains("tab.disabled = editing && tab.dataset.settingsTab !== activeSettingsTab;", StringComparison.Ordinal),
+        "an editing settings tab must be saved or cancelled before another tab can be selected");
+    Assert(app.Contains("if (activeSettingsTab === \"paint\")", StringComparison.Ordinal) &&
+           app.Contains("draftSnapshot.settings.paint = clone(liveSnapshot.defaults.paint);", StringComparison.Ordinal) &&
+           app.Contains("if (activeSettingsTab === \"image\")", StringComparison.Ordinal) &&
+           app.Contains("draftSnapshot.settings.app = clone(liveSnapshot.defaults.app);", StringComparison.Ordinal),
+        "Reset must restore only the settings belonging to the active tab");
+    Assert(styles.Contains(".action-bar[hidden] {\n  display: none;\n}", StringComparison.Ordinal),
+        "inactive settings action bars must not remain visible");
+    Assert(markup.Contains("class=\"danger-action\" type=\"button\" disabled data-settings-action=\"reset\"", StringComparison.Ordinal) &&
+           markup.IndexOf("data-settings-action=\"reset\"", StringComparison.Ordinal) <
+               markup.IndexOf("data-settings-action=\"edit\"", StringComparison.Ordinal) &&
+           styles.Contains("grid-template-columns: repeat(4, minmax(0, 1fr));", StringComparison.Ordinal) &&
+           styles.Contains(".danger-action", StringComparison.Ordinal) &&
+           app.Contains("toast(i18n(\"toast.settings.reset\", i18n(settingsTabTitleKey())));", StringComparison.Ordinal),
+        "Reset must be the leftmost equal-width danger action and confirm the active tab reset with a toast");
+    var resetStart = app.IndexOf("async function resetDraft()", StringComparison.Ordinal);
+    var resetEnd = app.IndexOf("async function saveDraft()", resetStart, StringComparison.Ordinal);
+    var reset = app[resetStart..resetEnd];
+    Assert(!reset.Contains("updateSettings", StringComparison.Ordinal) &&
+           !reset.Contains("commitSettingsWithImage", StringComparison.Ordinal) &&
+           string.Equals(catalog.Text("en", "toast.settings.reset"), "{0} reset in draft. Save to apply.", StringComparison.Ordinal),
+        "Reset must remain a draft-only operation and say that Save is required to apply it");
+    var cancelStart = app.IndexOf("function cancelEdit()", StringComparison.Ordinal);
+    var cancelEnd = app.IndexOf("async function resetDraft()", cancelStart, StringComparison.Ordinal);
+    var cancel = app[cancelStart..cancelEnd];
+    Assert(cancel.Contains("const imageEditorBeforeEdit = imageEditorAtEditStart;", StringComparison.Ordinal) &&
+           cancel.Contains("imageEditor = imageEditorBeforeEdit;", StringComparison.Ordinal) &&
+           !cancel.Contains("updateSettings", StringComparison.Ordinal) &&
+           !cancel.Contains("commitSettingsWithImage", StringComparison.Ordinal),
+        "Cancel must immediately restore the pre-edit Image state without persisting the reset draft");
 }
 
 static void WebUiOffersManualPaintControls()

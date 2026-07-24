@@ -679,13 +679,17 @@ body.editing .image-choice-list > strong {
 }
 
 .action-bar {
-  display: flex;
+  display: grid;
   z-index: 3;
   flex: 0 0 auto;
-  justify-content: flex-end;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
   border-top: 1px solid var(--hairline);
   padding: 10px 12px;
+}
+
+.action-bar[hidden] {
+  display: none;
 }
 
 .manual-paint-controls {
@@ -722,12 +726,12 @@ body.editing .image-choice-list > strong {
   font: 700 11px/13px var(--font-mono);
 }
 
-.manual-paint-stop {
+.danger-action {
   border-color: color-mix(in srgb, var(--error) 72%, var(--hairline));
   color: #ffabab;
 }
 
-.manual-paint-stop:hover:not(:disabled) {
+.danger-action:hover:not(:disabled) {
   background: color-mix(in srgb, var(--error) 24%, var(--surface-high));
 }
 

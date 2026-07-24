@@ -59,6 +59,7 @@ const imageGuideProfileLoads = new Map();
 let imageGuideCanvasLocale = "";
 let activeSettingsTab = "paint";
 let imageEditor = null;
+let imageEditorAtEditStart = null;
 let imageCropEditor = null;
 let manualPaintStartPending = false;
 let manualPaintStopPending = false;
@@ -564,10 +565,19 @@ function renderImageRegionButtons(editor, editable) {
 function renderEditState() {
   const restoringImageDesign = Boolean(imageEditor?.restoring);
   document.body.classList.toggle("editing", editing);
-  byId("edit-settings").disabled = editing;
-  byId("save-settings").disabled = !editing || restoringImageDesign;
-  byId("cancel-edit").disabled = !editing;
-  byId("reset-settings").disabled = !editing;
+  for (const tab of document.querySelectorAll("[data-settings-tab]")) {
+    tab.disabled = editing && tab.dataset.settingsTab !== activeSettingsTab;
+  }
+  for (const actions of document.querySelectorAll("[data-settings-actions]")) {
+    actions.hidden = actions.dataset.settingsActions !== activeSettingsTab;
+  }
+  for (const button of document.querySelectorAll("[data-settings-action]")) {
+    button.disabled = button.dataset.settingsAction === "edit"
+      ? editing
+      : button.dataset.settingsAction === "save"
+        ? !editing || restoringImageDesign
+        : !editing;
+  }
 }
 
 function usesFill(paint) {
@@ -602,38 +612,56 @@ function beginEdit() {
   }
   editing = true;
   draftSnapshot = clone(liveSnapshot);
+  imageEditorAtEditStart = snapshotImageEditor(imageEditor);
   send("setEditing", { editing: true }).catch(error => showError(error.message || String(error)));
   render();
 }
 
+function settingsTabTitleKey() {
+  return activeSettingsTab === "application" ? "settings.app" : `settings.${activeSettingsTab}`;
+}
+
 function cancelEdit() {
+  const imageEditorBeforeEdit = imageEditorAtEditStart;
   editing = false;
   draftSnapshot = null;
+  imageEditorAtEditStart = null;
+  if (imageEditorBeforeEdit) {
+    imageEditor = imageEditorBeforeEdit;
+  }
   closeHotkeyDialog();
   setImageDesignDraftState(false).catch(error => showError(error.message || String(error)));
   send("setEditing", { editing: false }).catch(error => showError(error.message || String(error)));
   previewSavedWindow();
   render();
-  loadCommittedImageDesign().catch(error => showError(error.message || String(error)));
+  if (!imageEditorBeforeEdit?.loaded) {
+    loadCommittedImageDesign().catch(error => showError(error.message || String(error)));
+  }
 }
 
 async function resetDraft() {
   if (!editing || !liveSnapshot || !draftSnapshot) {
     return;
   }
-  const currentProcessName = liveSnapshot.settings.app.processName;
-  draftSnapshot.settings = clone(liveSnapshot.defaults);
-  draftSnapshot.settings.app.processName = currentProcessName;
-  draftSnapshot.language = liveSnapshot.language;
-  if (imageEditor) {
+  if (activeSettingsTab === "paint") {
+    draftSnapshot.settings.paint = clone(liveSnapshot.defaults.paint);
+  } else if (activeSettingsTab === "image") {
     // Reset is strictly draft-local. The last GUI Save remains the active
     // F5-F8 state until the user chooses Save again.
-    imageEditor = { ...newImageEditor(), loaded: true, dirty: true };
-    applyCachedImageGuide(imageEditor);
-    await setImageDesignDraftState(true);
+    if (imageEditor) {
+      imageEditor = { ...newImageEditor(), loaded: true, dirty: true };
+      applyCachedImageGuide(imageEditor);
+      await setImageDesignDraftState(true);
+    }
+  } else if (activeSettingsTab === "application") {
+    const currentProcessName = liveSnapshot.settings.app.processName;
+    draftSnapshot.settings.app = clone(liveSnapshot.defaults.app);
+    draftSnapshot.settings.app.processName = currentProcessName;
+    draftSnapshot.language = liveSnapshot.language;
   }
   render();
   previewDraftWindow();
+  toast(i18n("toast.settings.reset", i18n(settingsTabTitleKey())));
 }
 
 async function saveDraft() {
@@ -645,6 +673,7 @@ async function saveDraft() {
   if (changes.length === 0 && !imageDirty) {
     editing = false;
     draftSnapshot = null;
+    imageEditorAtEditStart = null;
     closeHotkeyDialog();
     await send("setEditing", { editing: false });
     previewSavedWindow();
@@ -674,6 +703,7 @@ async function saveDraft() {
   }
   editing = false;
   draftSnapshot = null;
+  imageEditorAtEditStart = null;
   if (imageEditor) {
     imageEditor.dirty = false;
     imageEditor.revision = Number(result.revision || imageEditor.revision);
@@ -1055,15 +1085,53 @@ function newImageEditor() {
   };
 }
 
+function snapshotImageEditor(editor) {
+  if (!editor) return null;
+  const snapshot = newImageEditor();
+  Object.assign(snapshot, {
+    selected: editor.selected,
+    bodyType: editor.bodyType,
+    frontRegionMode: editor.frontRegionMode,
+    rightRegionMode: editor.rightRegionMode,
+    backRegionMode: editor.backRegionMode,
+    leftRegionMode: editor.leftRegionMode,
+    fillColor: editor.fillColor,
+    fillMetallic: editor.fillMetallic,
+    fillRoughness: editor.fillRoughness,
+    fillEmissive: editor.fillEmissive,
+    brushSizeTexels: editor.brushSizeTexels,
+    colorCompressionTolerance: editor.colorCompressionTolerance,
+    metallic: editor.metallic,
+    roughness: editor.roughness,
+    emissive: editor.emissive,
+    revision: editor.revision,
+    committedEnabled: editor.committedEnabled,
+    loaded: editor.loaded,
+    guideCanvas: editor.guideCanvas,
+    guideProfileState: editor.guideProfileState,
+    guideRequested: editor.guideRequested,
+    guideError: editor.guideError,
+    guideReferenceOnly: editor.guideReferenceOnly,
+    layers: editor.layers.map(layer => ({ ...layer }))
+  });
+  return snapshot;
+}
+
 function initializeSettingsTabs() {
   for (const tab of document.querySelectorAll("[data-settings-tab]")) {
     tab.addEventListener("click", () => {
+      if (editing && tab.dataset.settingsTab !== activeSettingsTab) {
+        return;
+      }
       activeSettingsTab = tab.dataset.settingsTab;
       for (const candidate of document.querySelectorAll("[data-settings-tab]")) {
         candidate.classList.toggle("active", candidate === tab);
       }
       for (const panel of document.querySelectorAll("[data-settings-panel]")) {
         panel.hidden = panel.dataset.settingsPanel !== activeSettingsTab;
+      }
+      for (const actions of document.querySelectorAll("[data-settings-actions]")) {
+        actions.hidden = actions.dataset.settingsActions !== activeSettingsTab;
       }
       if (activeSettingsTab === "image" && imageEditor && !imageEditor.loaded) {
         loadCommittedImageDesign().catch(error => showError(error.message || String(error)));
@@ -2429,10 +2497,24 @@ document.addEventListener("DOMContentLoaded", () => {
     setDraftSetting("app.language", event.target.value);
     render();
   });
-  byId("edit-settings").addEventListener("click", beginEdit);
-  byId("cancel-edit").addEventListener("click", cancelEdit);
-  byId("reset-settings").addEventListener("click", resetDraft);
-  byId("save-settings").addEventListener("click", () => saveDraft().catch(error => showError(error.message || String(error))));
+  for (const button of document.querySelectorAll("[data-settings-action]")) {
+    button.addEventListener("click", () => {
+      switch (button.dataset.settingsAction) {
+        case "edit":
+          beginEdit();
+          break;
+        case "reset":
+          resetDraft().catch(error => showError(error.message || String(error)));
+          break;
+        case "cancel":
+          cancelEdit();
+          break;
+        case "save":
+          saveDraft().catch(error => showError(error.message || String(error)));
+          break;
+      }
+    });
+  }
   byId("open-logs").addEventListener("click", () => send("openLogs").catch(error => showError(error.message || String(error))));
   byId("copy-logs").addEventListener("click", async () => {
     try {
